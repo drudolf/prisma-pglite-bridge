@@ -7,13 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      '@electric-sql/pglite':
-        specifier: ^0.4.4
-        version: 0.4.4
-      pg:
-        specifier: ^8.13.0
-        version: 8.20.0
     devDependencies:
       '@arethetypeswrong/cli':
         specifier: ^0.18.2
@@ -30,6 +23,9 @@ importers:
       '@biomejs/biome':
         specifier: ^1.9.0
         version: 1.9.4
+      '@electric-sql/pglite':
+        specifier: ^0.4.4
+        version: 0.4.4
       '@prisma/adapter-pg':
         specifier: ^7.7.0
         version: 7.7.0
@@ -41,6 +37,9 @@ importers:
         version: 22.19.17
       '@types/pg':
         specifier: ^8.11.0
+        version: 8.20.0
+      pg:
+        specifier: ^8.13.0
         version: 8.20.0
       pglite-prisma-adapter:
         specifier: ^0.7.2

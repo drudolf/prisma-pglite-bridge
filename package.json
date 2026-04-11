@@ -45,9 +45,9 @@
     "bench": "tsx benchmark/run.ts",
     "prepublishOnly": "pnpm build && pnpm check:exports"
   },
-  "dependencies": {
-    "@electric-sql/pglite": "^0.4.4",
-    "pg": "^8.13.0"
+  "peerDependencies": {
+    "@electric-sql/pglite": "^0.4.0",
+    "pg": "^8.0.0"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.2",
@@ -55,10 +55,12 @@
     "@augment-vir/common": "^31.68.4",
     "@augment-vir/test": "^31.68.4",
     "@biomejs/biome": "^1.9.0",
+    "@electric-sql/pglite": "^0.4.4",
     "@prisma/adapter-pg": "^7.7.0",
     "@prisma/client": "^7.7.0",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
+    "pg": "^8.13.0",
     "pglite-prisma-adapter": "^0.7.2",
     "prisma": "^7.7.0",
     "prisma-pglite": "^2.0.2",

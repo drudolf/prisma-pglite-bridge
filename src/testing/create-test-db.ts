@@ -42,7 +42,7 @@ export interface CreateTestDbOptions {
   /** PGlite data directory. Omit for in-memory. */
   dataDir?: string;
 
-  /** Maximum pool connections (default: 5) */
+  /** Maximum pool connections (default: 1 — see createPool docs for why) */
   max?: number;
 }
 
@@ -156,11 +156,13 @@ export const createTestDb = async (options: CreateTestDbOptions = {}): Promise<T
     );
 
     if (rows.length > 0) {
-      await pglite.exec('SET session_replication_role = replica');
-      for (const row of rows) {
-        await pglite.exec(`TRUNCATE TABLE "${row.tablename}" CASCADE`);
+      const tables = rows.map((r) => `"${r.tablename}"`).join(', ');
+      try {
+        await pglite.exec('SET session_replication_role = replica');
+        await pglite.exec(`TRUNCATE TABLE ${tables} CASCADE`);
+      } finally {
+        await pglite.exec('SET session_replication_role = DEFAULT');
       }
-      await pglite.exec('SET session_replication_role = DEFAULT');
     }
   };
 
