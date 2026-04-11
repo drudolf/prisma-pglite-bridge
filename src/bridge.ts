@@ -44,7 +44,8 @@ const EQP_MESSAGES = new Set([PARSE, BIND, DESCRIBE, EXECUTE, CLOSE, FLUSH]);
  * keep, then assembling the result. Returns the original buffer (no copy)
  * if there are 0 or 1 RFQ messages.
  */
-const stripIntermediateReadyForQuery = (response: Uint8Array): Uint8Array => {
+/** @internal — exported for testing only */
+export const stripIntermediateReadyForQuery = (response: Uint8Array): Uint8Array => {
   // Quick scan: count RFQ occurrences and find their positions
   const rfqPositions: number[] = [];
   let offset = 0;
