@@ -1,0 +1,7 @@
+node_modules/
+dist/
+prisma/migrations/
+*.tsbuildinfo
+.claude/
+benchmark/
+.bench-tmp/

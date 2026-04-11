@@ -1,0 +1,79 @@
+{
+  "name": "prisma-enlite",
+  "version": "0.1.0",
+  "description": "In-process PGlite bridge for Prisma — zero-TCP, zero-Docker PostgreSQL testing",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./testing": {
+      "import": {
+        "types": "./dist/testing.d.ts",
+        "default": "./dist/testing.js"
+      },
+      "require": {
+        "types": "./dist/testing.d.cts",
+        "default": "./dist/testing.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check:exports": "attw --pack --profile node16",
+    "bench": "tsx benchmark/run.ts",
+    "prepublishOnly": "pnpm build && pnpm check:exports"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.4.4",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.2",
+    "@augment-vir/assert": "^31.68.4",
+    "@augment-vir/common": "^31.68.4",
+    "@augment-vir/test": "^31.68.4",
+    "@biomejs/biome": "^1.9.0",
+    "@prisma/adapter-pg": "^7.7.0",
+    "@prisma/client": "^7.7.0",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "pglite-prisma-adapter": "^0.7.2",
+    "prisma": "^7.7.0",
+    "prisma-pglite": "^2.0.2",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/engines",
+      "esbuild",
+      "prisma"
+    ]
+  }
+}

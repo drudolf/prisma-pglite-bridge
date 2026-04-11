@@ -1,0 +1,225 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ───
+
+enum Role {
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum Status {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+// ─── Multi-tenant core ───
+
+model Tenant {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  config    Json?                          // nullable Json
+  flags     Json?     @db.JsonB            // explicit JsonB
+  labels    String[]  @default([])         // String array
+  users     TenantUser[]
+  workspaces Workspace[]
+  createdAt DateTime  @default(now())
+}
+
+model TenantUser {
+  id        String   @id @default(cuid())
+  role      Role     @default(MEMBER)
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  externalId String
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, externalId])         // composite unique
+}
+
+model Workspace {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  rateLimit    Decimal  @default("5.00") @db.Decimal(6, 2)  // Decimal with precision
+  tags         String[] @default([])
+  settings     Json     @default("{}")
+  apiKey       String   @unique
+  items        Item[]
+  jobs         Job[]
+  channels     Channel[]
+  createdAt    DateTime @default(now())
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+}
+
+// ─── Job lifecycle (status transitions, nested relations, Json payloads) ───
+
+model Job {
+  id          String    @id @default(cuid())
+  friendlyId  String    @unique
+  status      Status    @default(DRAFT)
+  priority    Int       @default(0)
+  payload     Json?     @db.JsonB
+  result      Json?     @db.JsonB
+  error       Json?
+  tags        String[]  @default([])
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  attempts    Attempt[]
+  dependencies Dependency[]
+  batchId     String?
+  batch       Batch?    @relation(fields: [batchId], references: [id])
+  snapshots   Snapshot[]
+
+  @@index([status])
+  @@index([workspaceId, status])
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([tags], type: Gin)               // GIN index on array
+}
+
+model Attempt {
+  id          String    @id @default(cuid())
+  number      Int
+  status      Status    @default(ACTIVE)
+  output      Json?
+  error       Json?
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  jobId       String
+  job         Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, number])
+}
+
+model Dependency {
+  id          String    @id @default(cuid())
+  friendlyId  String    @unique
+  type        String
+  status      Status    @default(DRAFT)
+  output      Json?
+  resolvedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  jobId       String
+  job         Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, status])
+}
+
+model Batch {
+  id         String   @id @default(cuid())
+  friendlyId String   @unique
+  status     Status   @default(DRAFT)
+  jobs       Job[]
+  metadata   Json?
+  createdAt  DateTime @default(now())
+}
+
+model Snapshot {
+  id        String   @id @default(cuid())
+  data      Json
+  isValid   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, createdAt(sort: Desc)])
+}
+
+// ─── Catalog (Decimal precision, nullable semantics, nested writes) ───
+
+model CatalogEntry {
+  id           String        @id @default(cuid())
+  friendlyId   String        @unique
+  name         String
+  pattern      String
+  provider     String
+  description  String?
+  capabilities String[]      @default([])
+  isHidden     Boolean       @default(false)
+  baseName     String?                     // nullable string (regression: null vs undefined)
+  source       String        @default("default")
+  startDate    DateTime?
+  tiers        CatalogTier[]
+  createdAt    DateTime      @default(now())
+
+  @@index([name])
+}
+
+model CatalogTier {
+  id         String         @id @default(cuid())
+  name       String
+  isDefault  Boolean        @default(false)
+  priority   Int            @default(0)
+  conditions Json           @default("[]") @db.JsonB
+  entryId    String
+  entry      CatalogEntry   @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  prices     CatalogPrice[]
+
+  @@index([entryId])
+}
+
+model CatalogPrice {
+  id        String      @id @default(cuid())
+  kind      String
+  amount    Decimal     @db.Decimal(20, 12)  // high-precision Decimal
+  tierId    String
+  tier      CatalogTier @relation(fields: [tierId], references: [id], onDelete: Cascade)
+
+  @@unique([tierId, kind])
+}
+
+// ─── Channel + Item (upsert on composite unique, many-to-many) ───
+
+model Channel {
+  id               String    @id @default(cuid())
+  friendlyId       String    @unique
+  name             String
+  concurrencyLimit Int?
+  type             String    @default("FIFO")
+  workspaceId      String
+  workspace        Workspace @relation(fields: [workspaceId], references: [id])
+  items            Item[]
+
+  @@unique([workspaceId, name])            // composite unique for upsert
+}
+
+model Item {
+  id          String    @id @default(cuid())
+  key         String
+  value       Json
+  version     Int       @default(1)
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  channels    Channel[]                    // implicit many-to-many
+
+  @@unique([workspaceId, key])
+  @@index([key])
+}
+
+// ─── Binary data ───
+
+model Blob {
+  id          String   @id @default(cuid())
+  name        String
+  data        Bytes                         // binary column
+  contentType String   @default("application/octet-stream")
+  size        Int
+  createdAt   DateTime @default(now())
+}
