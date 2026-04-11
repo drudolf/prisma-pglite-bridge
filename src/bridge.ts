@@ -38,85 +38,32 @@ const READY_FOR_QUERY = 0x5a; // Z — 6 bytes: Z + length(5) + status
 const EQP_MESSAGES = new Set([PARSE, BIND, DESCRIBE, EXECUTE, CLOSE, FLUSH]);
 
 /**
- * Strips all ReadyForQuery messages from a response except the last one.
- *
- * PGlite's single-user mode sends ReadyForQuery after every sub-message in
- * a pipeline. pg.Client expects only one ReadyForQuery after Sync.
+ * Strips a trailing ReadyForQuery from a response buffer.
+ * ReadyForQuery is always exactly 6 bytes: Z(0x5a) + length(0x00000005) + status.
+ * Returns the original buffer (no copy) if no trailing RFQ found.
  */
-const stripIntermediateReadyForQuery = (response: Uint8Array): Uint8Array => {
-  // First pass: find all message boundaries and ReadyForQuery positions
-  const segments: { start: number; end: number; isRfq: boolean }[] = [];
-  let offset = 0;
-
-  while (offset < response.length) {
-    const type = response[offset];
-    if (offset + 4 >= response.length) break;
-
-    if (
-      type === READY_FOR_QUERY &&
-      response[offset + 1] === 0x00 &&
-      response[offset + 2] === 0x00 &&
-      response[offset + 3] === 0x00 &&
-      response[offset + 4] === 0x05
-    ) {
-      segments.push({ start: offset, end: offset + 6, isRfq: true });
-      offset += 6;
-    } else {
-      // Standard backend message: type(1) + length(4) + payload
-      const view = new DataView(response.buffer, response.byteOffset + offset + 1, 4);
-      const len = 1 + view.getInt32(0);
-      segments.push({ start: offset, end: offset + len, isRfq: false });
-      offset += len;
-    }
+const stripTrailingReadyForQuery = (response: Uint8Array): Uint8Array => {
+  if (response.length < 6) return response;
+  const i = response.length - 6;
+  if (
+    response[i] === READY_FOR_QUERY &&
+    response[i + 1] === 0x00 &&
+    response[i + 2] === 0x00 &&
+    response[i + 3] === 0x00 &&
+    response[i + 4] === 0x05
+  ) {
+    return response.subarray(0, i); // subarray — zero-copy view
   }
-
-  // Count RFQ messages — if 0 or 1, no stripping needed
-  const rfqCount = segments.filter((s) => s.isRfq).length;
-  if (rfqCount <= 1) return response;
-
-  // Keep all non-RFQ segments + the LAST RFQ
-  let lastRfqSeen = false;
-  const keep: { start: number; end: number }[] = [];
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const seg = segments[i];
-    if (!seg) continue;
-    if (seg.isRfq && !lastRfqSeen) {
-      lastRfqSeen = true;
-      keep.unshift(seg);
-    } else if (!seg.isRfq) {
-      keep.unshift(seg);
-    }
-    // Skip intermediate RFQ segments
-  }
-
-  const total = keep.reduce((sum, s) => sum + (s.end - s.start), 0);
-  const result = new Uint8Array(total);
-  let pos = 0;
-  for (const seg of keep) {
-    result.set(response.subarray(seg.start, seg.end), pos);
-    pos += seg.end - seg.start;
-  }
-  return result;
-};
-
-/**
- * Concatenates multiple Uint8Array messages into one buffer.
- */
-const concatMessages = (messages: Uint8Array[]): Uint8Array => {
-  if (messages.length === 1) return messages[0] ?? new Uint8Array(0);
-  const total = messages.reduce((sum, m) => sum + m.length, 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const msg of messages) {
-    result.set(msg, offset);
-    offset += msg.length;
-  }
-  return result;
+  return response;
 };
 
 export class PGliteBridge extends Duplex {
   private readonly pglite: PGlite;
-  private buf = Buffer.alloc(0);
+  /** Incoming bytes not yet compacted into buf */
+  private pending: Buffer[] = [];
+  private pendingLen = 0;
+  /** Compacted input buffer for message framing */
+  private buf: Buffer = Buffer.alloc(0);
   private phase: 'pre_startup' | 'ready' = 'pre_startup';
   private draining = false;
   /** Buffered EQP messages awaiting Sync */
@@ -165,7 +112,23 @@ export class PGliteBridge extends Duplex {
     _encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
-    this.buf = Buffer.concat([this.buf, chunk]);
+    // Avoid Buffer.concat on every write — append to list, only concat when framing
+    this.pending.push(chunk);
+    this.pendingLen += chunk.length;
+    this.drain()
+      .then(() => callback())
+      .catch(callback);
+  }
+
+  /** Handles corked batches — pg.Client corks during prepared queries (P+B+D+E+S) */
+  override _writev(
+    chunks: Array<{ chunk: Buffer; encoding: BufferEncoding }>,
+    callback: (error?: Error | null) => void,
+  ): void {
+    for (const { chunk } of chunks) {
+      this.pending.push(chunk);
+      this.pendingLen += chunk.length;
+    }
     this.drain()
       .then(() => callback())
       .catch(callback);
@@ -177,6 +140,19 @@ export class PGliteBridge extends Duplex {
   }
 
   // ── Message processing ──
+
+  /** Merge pending chunks into buf only when needed for framing */
+  private compact(): void {
+    if (this.pending.length === 0) return;
+    if (this.buf.length === 0 && this.pending.length === 1) {
+      // Fast path: empty buf + single chunk — use chunk directly, no copy
+      this.buf = this.pending[0] as Buffer;
+    } else {
+      this.buf = Buffer.concat([this.buf, ...this.pending]);
+    }
+    this.pending.length = 0;
+    this.pendingLen = 0;
+  }
 
   private async drain(): Promise<void> {
     if (this.draining) return;
@@ -201,16 +177,17 @@ export class PGliteBridge extends Duplex {
    * No type byte — length includes itself.
    */
   private async processPreStartup(): Promise<void> {
+    this.compact();
     if (this.buf.length < 4) return;
     const len = this.buf.readInt32BE(0);
     if (this.buf.length < len) return;
 
-    const message = new Uint8Array(this.buf.subarray(0, len));
+    const message = this.buf.subarray(0, len);
     this.buf = this.buf.subarray(len);
 
     await this.pglite.runExclusive(async () => {
       const response = await this.execRaw(message);
-      this.push(Buffer.from(response));
+      this.push(response);
     });
 
     this.phase = 'ready';
@@ -227,11 +204,12 @@ export class PGliteBridge extends Duplex {
    * SimpleQuery messages are sent directly (they're self-contained).
    */
   private async processMessages(): Promise<void> {
+    this.compact();
     while (this.buf.length >= 5) {
       const len = 1 + this.buf.readInt32BE(1);
       if (this.buf.length < len) break;
 
-      const message = new Uint8Array(this.buf.subarray(0, len));
+      const message = this.buf.subarray(0, len);
       this.buf = this.buf.subarray(len);
       const msgType = message[0] ?? 0;
 
@@ -257,7 +235,7 @@ export class PGliteBridge extends Duplex {
       await this.pglite.runExclusive(async () => {
         const response = await this.execRaw(message);
         if (response.length > 0) {
-          this.push(Buffer.from(response));
+          this.push(response);
         }
       });
     }
@@ -265,19 +243,30 @@ export class PGliteBridge extends Duplex {
 
   /**
    * Sends the accumulated EQP pipeline as one atomic operation.
-   * Strips intermediate ReadyForQuery messages from the response.
+   *
+   * Each message is processed individually through execRaw (so PGlite
+   * handles framing), but all within one runExclusive to prevent portal
+   * interleaving. ReadyForQuery is stripped from all responses except
+   * the last (Sync), matching what pg.Client expects.
    */
   private async flushPipeline(): Promise<void> {
     const messages = this.pipeline;
     this.pipeline = [];
 
-    const batch = concatMessages(messages);
-
     await this.pglite.runExclusive(async () => {
-      const response = await this.execRaw(batch);
-      const cleaned = stripIntermediateReadyForQuery(response);
-      if (cleaned.length > 0) {
-        this.push(Buffer.from(cleaned));
+      for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+        if (!msg) continue;
+        const response = await this.execRaw(msg);
+        if (response.length === 0) continue;
+
+        // Strip ReadyForQuery from all EQP responses except the last (Sync)
+        if (i < messages.length - 1) {
+          const stripped = stripTrailingReadyForQuery(response);
+          if (stripped.length > 0) this.push(stripped);
+        } else {
+          this.push(response);
+        }
       }
     });
   }
