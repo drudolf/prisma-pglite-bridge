@@ -125,6 +125,9 @@ export class PGliteBridge extends Duplex {
   private buf: Buffer = Buffer.alloc(0);
   private phase: 'pre_startup' | 'ready' = 'pre_startup';
   private draining = false;
+  private tornDown = false;
+  /** Callbacks waiting for drain to process their data */
+  private drainQueue: Array<(error?: Error | null) => void> = [];
   /** Buffered EQP messages awaiting Sync */
   private pipeline: Uint8Array[] = [];
   private pipelineLen = 0;
@@ -174,9 +177,7 @@ export class PGliteBridge extends Duplex {
   ): void {
     this.pending.push(chunk);
     this.pendingLen += chunk.length;
-    this.drain()
-      .then(() => callback())
-      .catch(callback);
+    this.enqueue(callback);
   }
 
   /** Handles corked batches — pg.Client corks during prepared queries (P+B+D+E+S) */
@@ -188,14 +189,21 @@ export class PGliteBridge extends Duplex {
       this.pending.push(chunk);
       this.pendingLen += chunk.length;
     }
-    this.drain()
-      .then(() => callback())
-      .catch(callback);
+    this.enqueue(callback);
   }
 
   override _final(callback: (error?: Error | null) => void): void {
     this.push(null);
     callback();
+  }
+
+  override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
+    this.tornDown = true;
+    this.pipeline.length = 0;
+    this.pipelineLen = 0;
+    this.pending.length = 0;
+    this.pendingLen = 0;
+    callback(error);
   }
 
   // ── Message processing ──
@@ -212,19 +220,54 @@ export class PGliteBridge extends Duplex {
     this.pendingLen = 0;
   }
 
+  /**
+   * Enqueue a write callback and start draining if not already running.
+   * The callback is NOT called until drain has processed the data.
+   */
+  private enqueue(callback: (error?: Error | null) => void): void {
+    this.drainQueue.push(callback);
+    if (!this.draining) {
+      this.drain().catch(() => {});
+    }
+  }
+
+  /**
+   * Process all pending data, looping until no new data arrives.
+   * Fires all queued callbacks on completion or error.
+   */
   private async drain(): Promise<void> {
     if (this.draining) return;
     this.draining = true;
 
+    let error: Error | null = null;
+
     try {
-      if (this.phase === 'pre_startup') {
-        await this.processPreStartup();
+      // Loop until no more pending data to process
+      while (this.pending.length > 0 || this.buf.length > 0) {
+        if (this.tornDown) break;
+
+        if (this.phase === 'pre_startup') {
+          await this.processPreStartup();
+        }
+        if (this.phase === 'ready') {
+          await this.processMessages();
+        }
+
+        // If processMessages couldn't consume anything (incomplete message),
+        // stop looping — more data will arrive via _write
+        if (this.pending.length === 0) break;
       }
-      if (this.phase === 'ready') {
-        await this.processMessages();
-      }
+    } catch (err) {
+      error = err instanceof Error ? err : new Error(String(err));
     } finally {
       this.draining = false;
+
+      // Fire all waiting callbacks
+      const callbacks = this.drainQueue;
+      this.drainQueue = [];
+      for (const cb of callbacks) {
+        cb(error);
+      }
     }
   }
 
@@ -264,7 +307,7 @@ export class PGliteBridge extends Duplex {
     this.compact();
     while (this.buf.length >= 5) {
       const len = 1 + this.buf.readInt32BE(1);
-      if (this.buf.length < len) break;
+      if (len < 5 || this.buf.length < len) break;
 
       const message = this.buf.subarray(0, len);
       this.buf = this.buf.subarray(len);
@@ -330,7 +373,7 @@ export class PGliteBridge extends Duplex {
         onRawData: (chunk: Uint8Array) => chunks.push(chunk),
       });
 
-      if (chunks.length === 0) return;
+      if (this.tornDown || chunks.length === 0) return;
 
       // Single chunk: strip intermediate RFQ and push
       if (chunks.length === 1) {
@@ -356,7 +399,7 @@ export class PGliteBridge extends Duplex {
   private async execAndPush(message: Uint8Array): Promise<void> {
     await this.pglite.execProtocolRawStream(message, {
       onRawData: (chunk: Uint8Array) => {
-        if (chunk.length > 0) this.push(chunk);
+        if (!this.tornDown && chunk.length > 0) this.push(chunk);
       },
     });
   }
