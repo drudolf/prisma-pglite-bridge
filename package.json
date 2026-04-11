@@ -29,9 +29,7 @@
       }
     }
   },
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "sideEffects": false,
   "engines": {
     "node": ">=20"
@@ -70,10 +68,6 @@
     "vitest": "^4.1.4"
   },
   "pnpm": {
-    "onlyBuiltDependencies": [
-      "@prisma/engines",
-      "esbuild",
-      "prisma"
-    ]
+    "onlyBuiltDependencies": ["@prisma/engines", "esbuild", "prisma"]
   }
 }
