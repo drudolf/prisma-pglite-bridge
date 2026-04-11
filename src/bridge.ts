@@ -8,10 +8,9 @@
  * PGlite processes via execProtocolRawStream → bridge pushes responses back.
  *
  * Extended Query Protocol pipelines (Parse→Bind→Describe→Execute→Sync) are
- * buffered and sent as a single atomic operation. This prevents "portal does
- * not exist" errors when multiple bridges share one PGlite instance — without
- * batching, another bridge could interleave between Bind (creates portal) and
- * Execute (uses portal), destroying the portal.
+ * concatenated into a single buffer and sent as one atomic execProtocolRawStream
+ * call within one runExclusive. This prevents portal interleaving between
+ * concurrent bridges AND reduces async overhead (1 WASM call instead of 5).
  *
  * The response from a batched pipeline contains spurious ReadyForQuery messages
  * after each sub-message (PGlite's single-user mode). These are stripped,
@@ -27,8 +26,7 @@ const DESCRIBE = 0x44; // D
 const EXECUTE = 0x45; // E
 const CLOSE = 0x43; // C
 const FLUSH = 0x48; // H
-const SYNC = 0x53; // S (frontend) — also ParameterStatus in backend, but we only parse frontend
-const SIMPLE_QUERY = 0x51; // Q
+const SYNC = 0x53; // S (frontend)
 const TERMINATE = 0x58; // X
 
 // Backend message type
@@ -38,23 +36,84 @@ const READY_FOR_QUERY = 0x5a; // Z — 6 bytes: Z + length(5) + status
 const EQP_MESSAGES = new Set([PARSE, BIND, DESCRIBE, EXECUTE, CLOSE, FLUSH]);
 
 /**
- * Strips a trailing ReadyForQuery from a response buffer.
- * ReadyForQuery is always exactly 6 bytes: Z(0x5a) + length(0x00000005) + status.
- * Returns the original buffer (no copy) if no trailing RFQ found.
+ * Strips all intermediate ReadyForQuery messages from a response, keeping
+ * only the last one. PGlite's single-user mode emits RFQ after every
+ * sub-message; pg.Client expects exactly one after Sync.
+ *
+ * Operates in-place on the response by building a list of byte ranges to
+ * keep, then assembling the result. Returns the original buffer (no copy)
+ * if there are 0 or 1 RFQ messages.
  */
-const stripTrailingReadyForQuery = (response: Uint8Array): Uint8Array => {
-  if (response.length < 6) return response;
-  const i = response.length - 6;
-  if (
-    response[i] === READY_FOR_QUERY &&
-    response[i + 1] === 0x00 &&
-    response[i + 2] === 0x00 &&
-    response[i + 3] === 0x00 &&
-    response[i + 4] === 0x05
-  ) {
-    return response.subarray(0, i); // subarray — zero-copy view
+const stripIntermediateReadyForQuery = (response: Uint8Array): Uint8Array => {
+  // Quick scan: count RFQ occurrences and find their positions
+  const rfqPositions: number[] = [];
+  let offset = 0;
+
+  while (offset < response.length) {
+    if (offset + 5 >= response.length) break;
+
+    if (
+      response[offset] === READY_FOR_QUERY &&
+      response[offset + 1] === 0x00 &&
+      response[offset + 2] === 0x00 &&
+      response[offset + 3] === 0x00 &&
+      response[offset + 4] === 0x05
+    ) {
+      rfqPositions.push(offset);
+      offset += 6;
+    } else {
+      // Skip this backend message: type(1) + length(4, big-endian)
+      const view = new DataView(response.buffer, response.byteOffset + offset + 1, 4);
+      offset += 1 + view.getInt32(0);
+    }
   }
-  return response;
+
+  if (rfqPositions.length <= 1) return response;
+
+  // Build result: copy everything except intermediate RFQ messages (all but last)
+  const removeSet = new Set(rfqPositions.slice(0, -1));
+  const resultLen = response.length - removeSet.size * 6;
+  const result = new Uint8Array(resultLen);
+  // Copy non-RFQ segments in bulk using subarray + set
+  let src = 0;
+  let dst = 0;
+  const sortedRemove = [...removeSet].sort((a, b) => a - b);
+  let removeIdx = 0;
+
+  while (src < response.length) {
+    const nextRemove =
+      removeIdx < sortedRemove.length
+        ? (sortedRemove[removeIdx] ?? response.length)
+        : response.length;
+    // Copy bytes from src up to the next RFQ to remove
+    if (src < nextRemove) {
+      const copyLen = nextRemove - src;
+      result.set(response.subarray(src, src + copyLen), dst);
+      dst += copyLen;
+      src += copyLen;
+    }
+    if (src < response.length && removeSet.has(src)) {
+      src += 6; // skip RFQ
+      removeIdx++;
+    }
+  }
+
+  return result;
+};
+
+/**
+ * Concatenates multiple Uint8Array views into one contiguous buffer.
+ */
+const concat = (parts: Uint8Array[]): Uint8Array => {
+  if (parts.length === 1) return parts[0] ?? new Uint8Array(0);
+  const total = parts.reduce((sum, p) => sum + p.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
 };
 
 export class PGliteBridge extends Duplex {
@@ -68,6 +127,7 @@ export class PGliteBridge extends Duplex {
   private draining = false;
   /** Buffered EQP messages awaiting Sync */
   private pipeline: Uint8Array[] = [];
+  private pipelineLen = 0;
 
   constructor(pglite: PGlite) {
     super();
@@ -112,7 +172,6 @@ export class PGliteBridge extends Duplex {
     _encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
-    // Avoid Buffer.concat on every write — append to list, only concat when framing
     this.pending.push(chunk);
     this.pendingLen += chunk.length;
     this.drain()
@@ -145,7 +204,6 @@ export class PGliteBridge extends Duplex {
   private compact(): void {
     if (this.pending.length === 0) return;
     if (this.buf.length === 0 && this.pending.length === 1) {
-      // Fast path: empty buf + single chunk — use chunk directly, no copy
       this.buf = this.pending[0] as Buffer;
     } else {
       this.buf = Buffer.concat([this.buf, ...this.pending]);
@@ -186,8 +244,7 @@ export class PGliteBridge extends Duplex {
     this.buf = this.buf.subarray(len);
 
     await this.pglite.runExclusive(async () => {
-      const response = await this.execRaw(message);
-      this.push(response);
+      await this.execAndPush(message);
     });
 
     this.phase = 'ready';
@@ -198,8 +255,8 @@ export class PGliteBridge extends Duplex {
    *
    * Extended Query Protocol messages (Parse, Bind, Describe, Execute, Close,
    * Flush) are buffered in `this.pipeline`. When Sync arrives, the entire
-   * pipeline is sent to PGlite as one atomic `runExclusive` call. This
-   * prevents portal/statement interleaving between concurrent bridges.
+   * pipeline is concatenated and sent to PGlite as one atomic
+   * execProtocolRawStream call within one runExclusive.
    *
    * SimpleQuery messages are sent directly (they're self-contained).
    */
@@ -219,24 +276,21 @@ export class PGliteBridge extends Duplex {
       }
 
       if (EQP_MESSAGES.has(msgType)) {
-        // Buffer until Sync — don't touch PGlite yet
         this.pipeline.push(message);
+        this.pipelineLen += message.length;
         continue;
       }
 
       if (msgType === SYNC) {
-        // Pipeline complete — send all buffered messages + Sync atomically
         this.pipeline.push(message);
+        this.pipelineLen += message.length;
         await this.flushPipeline();
         continue;
       }
 
-      // SimpleQuery or other standalone message — send directly
+      // SimpleQuery or other standalone message
       await this.pglite.runExclusive(async () => {
-        const response = await this.execRaw(message);
-        if (response.length > 0) {
-          this.push(response);
-        }
+        await this.execAndPush(message);
       });
     }
   }
@@ -244,53 +298,66 @@ export class PGliteBridge extends Duplex {
   /**
    * Sends the accumulated EQP pipeline as one atomic operation.
    *
-   * Each message is processed individually through execRaw (so PGlite
-   * handles framing), but all within one runExclusive to prevent portal
-   * interleaving. ReadyForQuery is stripped from all responses except
-   * the last (Sync), matching what pg.Client expects.
+   * All buffered messages are concatenated into a single buffer and sent
+   * as one execProtocolRawStream call. This is both correct (prevents
+   * portal interleaving) and fast (1 WASM call + 1 async boundary instead
+   * of 5). Intermediate ReadyForQuery messages are stripped from the
+   * combined response.
    */
   private async flushPipeline(): Promise<void> {
     const messages = this.pipeline;
+    const totalLen = this.pipelineLen;
     this.pipeline = [];
+    this.pipelineLen = 0;
+
+    // Concatenate pipeline into one buffer
+    let batch: Uint8Array;
+    if (messages.length === 1) {
+      batch = messages[0] ?? new Uint8Array(0);
+    } else {
+      batch = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const msg of messages) {
+        batch.set(msg, offset);
+        offset += msg.length;
+      }
+    }
 
     await this.pglite.runExclusive(async () => {
-      for (let i = 0; i < messages.length; i++) {
-        const msg = messages[i];
-        if (!msg) continue;
-        const response = await this.execRaw(msg);
-        if (response.length === 0) continue;
+      const chunks: Uint8Array[] = [];
 
-        // Strip ReadyForQuery from all EQP responses except the last (Sync)
-        if (i < messages.length - 1) {
-          const stripped = stripTrailingReadyForQuery(response);
-          if (stripped.length > 0) this.push(stripped);
-        } else {
-          this.push(response);
-        }
+      await this.pglite.execProtocolRawStream(batch, {
+        onRawData: (chunk: Uint8Array) => chunks.push(chunk),
+      });
+
+      if (chunks.length === 0) return;
+
+      // Single chunk: strip intermediate RFQ and push
+      if (chunks.length === 1) {
+        const cleaned = stripIntermediateReadyForQuery(chunks[0] ?? new Uint8Array(0));
+        if (cleaned.length > 0) this.push(cleaned);
+        return;
       }
+
+      // Multiple chunks: concat first, then strip
+      const combined = concat(chunks);
+      const cleaned = stripIntermediateReadyForQuery(combined);
+      if (cleaned.length > 0) this.push(cleaned);
     });
   }
 
   /**
-   * Sends a wire protocol message to PGlite and collects the response.
-   * Must be called inside runExclusive — does NOT acquire the mutex itself.
+   * Sends a message to PGlite and pushes response chunks directly to the
+   * stream as they arrive. Avoids collecting and concatenating for large
+   * multi-row responses (e.g., findMany 500 rows = ~503 onRawData chunks).
+   *
+   * Must be called inside runExclusive.
    */
-  private async execRaw(message: Uint8Array): Promise<Uint8Array> {
-    const chunks: Uint8Array[] = [];
-
+  private async execAndPush(message: Uint8Array): Promise<void> {
     await this.pglite.execProtocolRawStream(message, {
-      onRawData: (chunk: Uint8Array) => chunks.push(chunk),
+      onRawData: (chunk: Uint8Array) => {
+        if (chunk.length > 0) this.push(chunk);
+      },
     });
-
-    if (chunks.length === 1) return chunks[0] ?? new Uint8Array(0);
-
-    const total = chunks.reduce((sum, c) => sum + c.length, 0);
-    const result = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return result;
   }
 }
