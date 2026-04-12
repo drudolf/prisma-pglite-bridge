@@ -499,6 +499,22 @@ describe('transactions', () => {
     expect(count).toBe(2);
   });
 
+  it('commits with SERIALIZABLE isolation level', async () => {
+    const tenant = await createTenant();
+    const ws = await createWorkspace(tenant.id);
+
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.job.create({ data: { friendlyId: 'iso_1', workspaceId: ws.id } });
+        await tx.job.create({ data: { friendlyId: 'iso_2', workspaceId: ws.id } });
+      },
+      { isolationLevel: 'Serializable' },
+    );
+
+    const count = await prisma.job.count({ where: { workspaceId: ws.id } });
+    expect(count).toBe(2);
+  });
+
   it('rolls back on error', async () => {
     const tenant = await createTenant();
     const ws = await createWorkspace(tenant.id);
