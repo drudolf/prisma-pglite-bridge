@@ -3,5 +3,6 @@ dist/
 prisma/migrations/
 *.tsbuildinfo
 .claude/
+CLAUDE.md
 benchmark/
 .bench-tmp/
