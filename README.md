@@ -5,7 +5,7 @@ In-process PGlite bridge for Prisma. Replaces the TCP socket in `pg.Client` with
 ## Install
 
 ```sh
-pnpm add prisma-enlite @electric-sql/pglite @prisma/adapter-pg pg
+pnpm add -D prisma-enlite @electric-sql/pglite @prisma/adapter-pg pg
 ```
 
 TypeScript users also need `@types/pg`.
