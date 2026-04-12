@@ -1,6 +1,8 @@
 # prisma-enlite
 
-In-process PGlite bridge for Prisma. Replaces the TCP socket in `pg.Client` with a Duplex stream that speaks PostgreSQL wire protocol directly to PGlite's WASM engine.
+In-process PGlite bridge for Prisma. Replaces the TCP socket in
+`pg.Client` with a Duplex stream that speaks PostgreSQL wire protocol
+directly to PGlite's WASM engine.
 
 ## Install
 
@@ -23,17 +25,21 @@ const prisma = new PrismaClient({ adapter });
 beforeEach(() => resetDb());
 ```
 
-That's it. Schema is auto-discovered from `prisma.config.ts` and migration files.
+That's it. Schema is auto-discovered from `prisma.config.ts`
+and migration files.
 
 ## Schema Resolution
 
 `createPgliteAdapter()` resolves schema SQL in this order:
 
 1. **`sql` option** — pre-generated SQL string, applied directly
-2. **`migrationsPath` option** — reads migration files from the given directory
-3. **Auto-discovered migrations** — uses `@prisma/config` to find migration files (same resolution as `prisma migrate dev`)
+2. **`migrationsPath` option** — reads migration files from the
+   given directory
+3. **Auto-discovered migrations** — uses `@prisma/config` to find
+   migration files (same resolution as `prisma migrate dev`)
 
-If no migration files are found, it throws with a message to run `prisma migrate dev` first.
+If no migration files are found, it throws with a message to run
+`prisma migrate dev` first.
 
 ## API
 
@@ -47,19 +53,25 @@ const { adapter, resetDb, close } = await createPgliteAdapter({
   migrationsPath: './prisma/migrations',
   sql: 'CREATE TABLE ...',
   dataDir: './data/pglite',  // omit for in-memory
-  extensions: {},            // PGlite extensions (e.g., { uuid_ossp: uuidOssp() })
+  extensions: {},            // PGlite extensions
   max: 5,                    // pool connections (default: 5)
 });
 ```
 
 Returns:
+
 - `adapter` — pass to `new PrismaClient({ adapter })`
-- `resetDb()` — truncates all user tables, resets session state (`RESET ALL`, `DEALLOCATE ALL`). Call in `beforeEach` for per-test isolation.
-- `close()` — shuts down pool and PGlite. Not needed in tests (process exit handles it). Use in long-running scripts or dev servers.
+- `resetDb()` — truncates all user tables, resets session state
+  (`RESET ALL`, `DEALLOCATE ALL`). Call in `beforeEach` for
+  per-test isolation.
+- `close()` — shuts down pool and PGlite. Not needed in tests
+  (process exit handles it). Use in long-running scripts or dev
+  servers.
 
 ### `createPool(options?)`
 
-Lower-level escape hatch. Creates a `pg.Pool` backed by PGlite without Prisma wiring.
+Lower-level escape hatch. Creates a `pg.Pool` backed by PGlite
+without Prisma wiring.
 
 ```typescript
 import { createPool } from 'prisma-enlite';
@@ -69,11 +81,14 @@ const { pool, pglite, close } = await createPool();
 const adapter = new PrismaPg(pool);
 ```
 
-Accepts `dataDir`, `extensions`, `max`, and `pglite` (bring your own pre-configured PGlite instance).
+Accepts `dataDir`, `extensions`, `max`, and `pglite` (bring your
+own pre-configured PGlite instance).
 
 ### `PGliteBridge`
 
-The Duplex stream that replaces `pg.Client`'s TCP socket. Exported for advanced use cases (custom `pg.Client` setup, direct wire protocol access).
+The Duplex stream that replaces `pg.Client`'s TCP socket. Exported
+for advanced use cases (custom `pg.Client` setup, direct wire
+protocol access).
 
 ```typescript
 import { PGliteBridge } from 'prisma-enlite';
@@ -119,7 +134,11 @@ it('creates a user', async () => {
 const { adapter } = await createPgliteAdapter({
   sql: `
     CREATE TABLE "User" (id text PRIMARY KEY, name text NOT NULL);
-    CREATE TABLE "Post" (id text PRIMARY KEY, title text NOT NULL, "userId" text REFERENCES "User"(id));
+    CREATE TABLE "Post" (
+      id text PRIMARY KEY,
+      title text NOT NULL,
+      "userId" text REFERENCES "User"(id)
+    );
   `,
 });
 ```
@@ -140,11 +159,22 @@ try {
 
 ## Limitations
 
-- **Node.js only** — requires `node:stream`, `node:fs`, `node:child_process`. Does not work in browsers despite PGlite's browser support.
-- **WASM cold start** — first `createPgliteAdapter()` call takes ~2s for PGlite WASM compilation. Subsequent calls in the same process reuse the compiled module.
-- **Single PostgreSQL session** — PGlite runs in single-user mode. All pool connections share one session. A `SessionLock` serializes transactions (one at a time), but `SET` variables leak between connections within a single test. `resetDb()` clears this between tests via `RESET ALL` and `DEALLOCATE ALL`.
-- **PGlite extensions** — if your schema uses `pgcrypto`, `uuid-ossp`, etc., pass them via the `extensions` option. See PGlite docs for available extensions.
-- **Migration files required** — run `prisma migrate dev` once to generate migration files, or pass schema SQL directly via the `sql` option.
+- **Node.js only** — requires `node:stream` and `node:fs`. Does
+  not work in browsers despite PGlite's browser support.
+- **WASM cold start** — first `createPgliteAdapter()` call takes
+  ~2s for PGlite WASM compilation. Subsequent calls in the same
+  process reuse the compiled module.
+- **Single PostgreSQL session** — PGlite runs in single-user mode.
+  All pool connections share one session. A `SessionLock` serializes
+  transactions (one at a time), but `SET` variables leak between
+  connections within a single test. `resetDb()` clears this between
+  tests via `RESET ALL` and `DEALLOCATE ALL`.
+- **PGlite extensions** — if your schema uses `pgcrypto`,
+  `uuid-ossp`, etc., pass them via the `extensions` option. See
+  PGlite docs for available extensions.
+- **Migration files required** — run `prisma migrate dev` once to
+  generate migration files, or pass schema SQL directly via the
+  `sql` option.
 
 ## License
 
