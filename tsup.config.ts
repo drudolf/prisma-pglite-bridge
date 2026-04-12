@@ -8,5 +8,11 @@ export default defineConfig({
   clean: true,
   shims: true,
   splitting: false,
-  external: ['@electric-sql/pglite', 'pg', '@prisma/adapter-pg', '@prisma/client'],
+  external: [
+    '@electric-sql/pglite',
+    'pg',
+    '@prisma/adapter-pg',
+    '@prisma/client',
+    '@prisma/config',
+  ],
 });

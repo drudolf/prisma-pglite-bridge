@@ -16,15 +16,15 @@
  */
 import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createPool } from './create-pool.ts';
 
 export interface CreatePgliteAdapterOptions {
-  /** Path to schema.prisma (auto-discovered if omitted) */
+  /** Path to schema.prisma (auto-discovered via prisma.config.ts if omitted) */
   schemaPath?: string;
 
-  /** Path to prisma/migrations/ directory — replays migration files instead of using migrate diff */
+  /** Path to prisma/migrations/ directory (auto-discovered via prisma.config.ts if omitted) */
   migrationsPath?: string;
 
   /** Pre-generated SQL to apply instead of auto-generating from schema */
@@ -52,34 +52,40 @@ export interface PgliteAdapter {
 }
 
 /**
- * Auto-discover schema.prisma by walking up from cwd.
+ * Load Prisma config to discover schema path and migrations directory.
+ * Uses the same resolution as `prisma migrate dev` — reads prisma.config.ts,
+ * resolves paths relative to config file location.
+ *
+ * Returns null if @prisma/config is not available (older Prisma versions).
  */
-const findSchemaPath = (): string | undefined => {
-  const candidates = ['prisma/schema.prisma', 'schema.prisma'];
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
+const loadPrismaConfig = async (): Promise<{
+  schemaPath: string | undefined;
+  migrationsPath: string | undefined;
+} | null> => {
+  try {
+    const { loadConfigFromFile } = await import('@prisma/config');
+    const { config, error } = await loadConfigFromFile({ configRoot: process.cwd() });
+    if (error) return null;
+
+    const schemaPath = config.schema ?? undefined;
+
+    // config.migrations?.path is set when prisma.config.ts specifies it.
+    // Fallback: Prisma convention is {schemaDir}/migrations
+    const migrationsPath =
+      config.migrations?.path ?? (schemaPath ? join(dirname(schemaPath), 'migrations') : undefined);
+
+    return { schemaPath, migrationsPath };
+  } catch {
+    return null;
   }
-  return undefined;
 };
 
 /**
- * Generate SQL from schema.prisma using `prisma migrate diff`.
- * Fully offline — no database connection needed.
+ * Read migration SQL files from a migrations directory in directory order.
+ * Returns null if the directory doesn't exist or has no migration files.
  */
-const generateSchemaSQL = (schemaPath: string): string =>
-  execSync(`npx prisma migrate diff --from-empty --to-schema ${schemaPath} --script`, {
-    encoding: 'utf8',
-    timeout: 30_000,
-    env: { ...process.env, DATABASE_URL: 'postgresql://dummy@localhost/dummy' },
-  });
-
-/**
- * Read migration SQL files from prisma/migrations/ in directory order.
- */
-const readMigrationFiles = (migrationsPath: string): string => {
-  if (!existsSync(migrationsPath)) {
-    throw new Error(`Migrations directory not found: ${migrationsPath}`);
-  }
+const tryReadMigrationFiles = (migrationsPath: string): string | null => {
+  if (!existsSync(migrationsPath)) return null;
 
   const dirs = readdirSync(migrationsPath)
     .filter((d) => statSync(join(migrationsPath, d)).isDirectory())
@@ -93,24 +99,51 @@ const readMigrationFiles = (migrationsPath: string): string => {
     }
   }
 
-  if (sqlParts.length === 0) {
-    throw new Error(`No migration.sql files found in ${migrationsPath}`);
-  }
-
-  return sqlParts.join('\n');
+  return sqlParts.length > 0 ? sqlParts.join('\n') : null;
 };
 
 /**
- * Resolve the SQL to apply: explicit sql > migrations > migrate diff.
+ * Generate SQL from schema.prisma using `prisma migrate diff`.
+ * Spawns the Prisma CLI — ~1.9s. Used only as fallback when no migration
+ * files exist.
  */
-const resolveSQL = (options: CreatePgliteAdapterOptions): string => {
+const generateSchemaSQL = (schemaPath: string): string =>
+  execSync(`npx prisma migrate diff --from-empty --to-schema ${schemaPath} --script`, {
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: { ...process.env, DATABASE_URL: 'postgresql://dummy@localhost/dummy' },
+  });
+
+/**
+ * Resolve schema SQL. Priority:
+ *   1. Explicit `sql` option — use directly
+ *   2. Explicit `migrationsPath` — read migration files
+ *   3. Auto-discovered migrations (via prisma.config.ts) — read migration files (~0ms)
+ *   4. Auto-discovered schema (via prisma.config.ts) — `prisma migrate diff` (~1.9s fallback)
+ *   5. Conventional paths (prisma/schema.prisma) — `prisma migrate diff` (~1.9s fallback)
+ */
+const resolveSQL = async (options: CreatePgliteAdapterOptions): Promise<string> => {
   if (options.sql) return options.sql;
 
+  // Explicit migrationsPath
   if (options.migrationsPath) {
-    return readMigrationFiles(options.migrationsPath);
+    const sql = tryReadMigrationFiles(options.migrationsPath);
+    if (sql) return sql;
+    throw new Error(`No migration.sql files found in ${options.migrationsPath}`);
   }
 
-  const schemaPath = options.schemaPath ?? findSchemaPath();
+  // Auto-discover via Prisma config
+  const prismaConfig = await loadPrismaConfig();
+
+  // Try migrations first (instant)
+  if (prismaConfig?.migrationsPath) {
+    const sql = tryReadMigrationFiles(prismaConfig.migrationsPath);
+    if (sql) return sql;
+  }
+
+  // Fall back to prisma migrate diff (slow but works without migration files)
+  const schemaPath = options.schemaPath ?? prismaConfig?.schemaPath ?? findSchemaPath();
+
   if (!schemaPath) {
     throw new Error(
       'Could not find schema.prisma. Pass schemaPath, migrationsPath, or sql explicitly.',
@@ -118,6 +151,17 @@ const resolveSQL = (options: CreatePgliteAdapterOptions): string => {
   }
 
   return generateSchemaSQL(schemaPath);
+};
+
+/**
+ * Legacy fallback: find schema.prisma by checking conventional paths from cwd.
+ */
+const findSchemaPath = (): string | undefined => {
+  const candidates = ['prisma/schema.prisma', 'schema.prisma'];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
 };
 
 /**
@@ -129,7 +173,7 @@ const resolveSQL = (options: CreatePgliteAdapterOptions): string => {
 export const createPgliteAdapter = async (
   options: CreatePgliteAdapterOptions = {},
 ): Promise<PgliteAdapter> => {
-  const sql = resolveSQL(options);
+  const sql = await resolveSQL(options);
   const {
     pool,
     pglite,
