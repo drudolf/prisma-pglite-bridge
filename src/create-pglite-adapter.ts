@@ -168,14 +168,14 @@ export const createPgliteAdapter = async (
   const adapter = new PrismaPg(pool);
 
   const resetDb = async () => {
-    const { rows } = await pglite.query<{ tablename: string }>(
-      `SELECT tablename FROM pg_tables
-       WHERE schemaname = 'public'
+    const { rows } = await pglite.query<{ schemaname: string; tablename: string }>(
+      `SELECT schemaname, tablename FROM pg_tables
+       WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
        AND tablename NOT LIKE '_prisma%'`,
     );
 
     if (rows.length > 0) {
-      const tables = rows.map((r) => `"${r.tablename}"`).join(', ');
+      const tables = rows.map((r) => `"${r.schemaname}"."${r.tablename}"`).join(', ');
       try {
         await pglite.exec('SET session_replication_role = replica');
         await pglite.exec(`TRUNCATE TABLE ${tables} CASCADE`);
