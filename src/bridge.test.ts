@@ -104,11 +104,11 @@ describe('PGliteBridge concurrency', () => {
         constructor(config?: string | pg.ClientConfig) {
           const cfg = typeof config === 'string' ? { connectionString: config } : (config ?? {});
           super({
-              ...cfg,
-              user: 'postgres',
-              database: 'postgres',
-              stream: () => new PGliteBridge(pglite),
-            } as pg.ClientConfig);
+            ...cfg,
+            user: 'postgres',
+            database: 'postgres',
+            stream: () => new PGliteBridge(pglite),
+          } as pg.ClientConfig);
         }
       } as typeof Client,
       max: 5,
@@ -116,9 +116,7 @@ describe('PGliteBridge concurrency', () => {
 
     // Run 50 concurrent parameterized queries (EQP pipeline: P+B+D+E+S)
     const results = await Promise.all(
-      Array.from({ length: 50 }, (_, i) =>
-        pool.query('SELECT $1::int AS val', [i]),
-      ),
+      Array.from({ length: 50 }, (_, i) => pool.query('SELECT $1::int AS val', [i])),
     );
 
     for (let i = 0; i < 50; i++) {
@@ -134,11 +132,11 @@ describe('PGliteBridge concurrency', () => {
         constructor(config?: string | pg.ClientConfig) {
           const cfg = typeof config === 'string' ? { connectionString: config } : (config ?? {});
           super({
-              ...cfg,
-              user: 'postgres',
-              database: 'postgres',
-              stream: () => new PGliteBridge(pglite),
-            } as pg.ClientConfig);
+            ...cfg,
+            user: 'postgres',
+            database: 'postgres',
+            stream: () => new PGliteBridge(pglite),
+          } as pg.ClientConfig);
         }
       } as typeof Client,
       max: 3,
@@ -166,8 +164,7 @@ describe('stripIntermediateReadyForQuery', () => {
   const BIND_COMPLETE = new Uint8Array([0x32, 0x00, 0x00, 0x00, 0x04]);
   // CommandComplete: C + length + "INSERT 0 1\0"
   const CMD_COMPLETE = new Uint8Array([
-    0x43, 0x00, 0x00, 0x00, 0x0f,
-    0x49, 0x4e, 0x53, 0x45, 0x52, 0x54, 0x20, 0x30, 0x20, 0x31, 0x00,
+    0x43, 0x00, 0x00, 0x00, 0x0f, 0x49, 0x4e, 0x53, 0x45, 0x52, 0x54, 0x20, 0x30, 0x20, 0x31, 0x00,
   ]);
 
   const cat = (...parts: Uint8Array[]): Uint8Array => {
@@ -212,10 +209,23 @@ describe('stripIntermediateReadyForQuery', () => {
     // D + length(16) + fieldCount(1) + fieldLen(6) + "Z\x00\x00\x00\x05I"
     // Total = 1 (type) + 16 (length field value) = 17 bytes
     const dataRow = new Uint8Array([
-      0x44, 0x00, 0x00, 0x00, 0x10, // D + length 16
-      0x00, 0x01,                     // 1 field
-      0x00, 0x00, 0x00, 0x06,         // field length 6
-      0x5a, 0x00, 0x00, 0x00, 0x05, 0x49, // field data = RFQ bytes
+      0x44,
+      0x00,
+      0x00,
+      0x00,
+      0x10, // D + length 16
+      0x00,
+      0x01, // 1 field
+      0x00,
+      0x00,
+      0x00,
+      0x06, // field length 6
+      0x5a,
+      0x00,
+      0x00,
+      0x00,
+      0x05,
+      0x49, // field data = RFQ bytes
     ]);
     const input = cat(dataRow, RFQ);
     // Should NOT strip — the RFQ-like bytes are inside the DataRow, not a standalone message

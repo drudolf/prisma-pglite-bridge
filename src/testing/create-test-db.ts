@@ -1,35 +1,26 @@
 /**
- * Test helper — creates an in-process PGlite database with schema applied.
+ * Test helper — creates a Prisma adapter backed by in-process PGlite.
  *
- * Returns a pg.Pool backed by PGlite, ready for PrismaPg. No TCP, no Docker,
- * no worker threads — everything runs in the same process.
+ * No TCP, no Docker, no worker threads — everything runs in the same process.
+ * Process isolation (vitest `pool: 'forks'`) handles cleanup on exit.
  *
  * ```typescript
- * import { createTestDb } from 'prisma-enlite/testing';
- * import { PrismaPg } from '@prisma/adapter-pg';
+ * import { createPgliteAdapter } from 'prisma-enlite/testing';
  * import { PrismaClient } from '@prisma/client';
  *
- * let ctx: Awaited<ReturnType<typeof createTestDb>>;
- * let prisma: PrismaClient;
+ * const { adapter, resetDb } = await createPgliteAdapter();
+ * const prisma = new PrismaClient({ adapter });
  *
- * beforeAll(async () => {
- *   ctx = await createTestDb();
- *   const adapter = new PrismaPg(ctx.pool);
- *   prisma = new PrismaClient({ adapter });
- * });
- *
- * beforeEach(async () => { await ctx.truncate(); });
- * afterAll(async () => { await ctx.close(); });
+ * beforeEach(() => resetDb());
  * ```
  */
 import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { PGlite } from '@electric-sql/pglite';
-import type pg from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { createPool } from '../create-pool.ts';
 
-export interface CreateTestDbOptions {
+export interface CreatePgliteAdapterOptions {
   /** Path to schema.prisma (auto-discovered if omitted) */
   schemaPath?: string;
 
@@ -46,18 +37,12 @@ export interface CreateTestDbOptions {
   max?: number;
 }
 
-export interface TestDb {
-  /** pg.Pool backed by PGlite — pass to PrismaPg */
-  pool: pg.Pool;
+export interface PgliteAdapter {
+  /** Prisma adapter — pass directly to `new PrismaClient({ adapter })` */
+  adapter: PrismaPg;
 
-  /** The underlying PGlite instance */
-  pglite: PGlite;
-
-  /** Truncate all user tables (call in beforeEach) */
-  truncate: () => Promise<void>;
-
-  /** Shut down pool and PGlite */
-  close: () => Promise<void>;
+  /** Clear all user tables. Call in `beforeEach` for per-test isolation. */
+  resetDb: () => Promise<void>;
 }
 
 /**
@@ -112,7 +97,7 @@ const readMigrationFiles = (migrationsPath: string): string => {
 /**
  * Resolve the SQL to apply: explicit sql > migrations > migrate diff.
  */
-const resolveSQL = (options: CreateTestDbOptions): string => {
+const resolveSQL = (options: CreatePgliteAdapterOptions): string => {
   if (options.sql) return options.sql;
 
   if (options.migrationsPath) {
@@ -130,25 +115,25 @@ const resolveSQL = (options: CreateTestDbOptions): string => {
 };
 
 /**
- * Creates an in-process PGlite test database.
+ * Creates a Prisma adapter backed by an in-process PGlite instance.
  *
- * Applies the schema and returns a pg.Pool + lifecycle functions for test setup/teardown.
+ * Applies the schema and returns a ready-to-use adapter + a `resetDb`
+ * function for clearing tables between tests.
  */
-export const createTestDb = async (options: CreateTestDbOptions = {}): Promise<TestDb> => {
+export const createPgliteAdapter = async (
+  options: CreatePgliteAdapterOptions = {},
+): Promise<PgliteAdapter> => {
   const sql = resolveSQL(options);
-  const {
-    pool,
-    pglite,
-    close: poolClose,
-  } = await createPool({
+  const { pool, pglite } = await createPool({
     dataDir: options.dataDir,
     max: options.max,
   });
 
-  // Apply schema directly via PGlite (no need for pg.Client roundtrip)
   await pglite.exec(sql);
 
-  const truncate = async () => {
+  const adapter = new PrismaPg(pool);
+
+  const resetDb = async () => {
     const { rows } = await pglite.query<{ tablename: string }>(
       `SELECT tablename FROM pg_tables
        WHERE schemaname = 'public'
@@ -166,5 +151,5 @@ export const createTestDb = async (options: CreateTestDbOptions = {}): Promise<T
     }
   };
 
-  return { pool, pglite, truncate, close: poolClose };
+  return { adapter, resetDb };
 };

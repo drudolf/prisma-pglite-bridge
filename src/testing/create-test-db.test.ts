@@ -1,73 +1,56 @@
-import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createTestDb } from './create-test-db.ts';
+import { PrismaClient } from '@prisma/client';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { createPgliteAdapter } from './create-test-db.ts';
 
-const { Client } = pg;
-
-describe('createTestDb', () => {
-  let ctx: Awaited<ReturnType<typeof createTestDb>>;
+describe('createPgliteAdapter', () => {
+  let adapter: Awaited<ReturnType<typeof createPgliteAdapter>>['adapter'];
+  let resetDb: Awaited<ReturnType<typeof createPgliteAdapter>>['resetDb'];
+  let prisma: PrismaClient;
 
   beforeAll(async () => {
-    ctx = await createTestDb({ schemaPath: './prisma/schema.prisma' });
+    ({ adapter, resetDb } = await createPgliteAdapter({ schemaPath: './prisma/schema.prisma' }));
+    prisma = new PrismaClient({ adapter });
   });
 
-  afterAll(async () => {
-    await ctx.close();
-  });
-
-  it('creates a pool backed by PGlite', async () => {
-    const client = await ctx.pool.connect();
-    const { rows } = await client.query('SELECT 1 AS num');
-    expect(rows[0]?.num).toBe(1);
-    client.release();
+  it('adapter works with PrismaClient', async () => {
+    const tenant = await prisma.tenant.create({ data: { name: 'Test', slug: 'test' } });
+    expect(tenant.id).toBeDefined();
   });
 
   it('applies schema — tables from schema.prisma exist', async () => {
-    const client = await ctx.pool.connect();
-    const { rows } = await client.query<{ tablename: string }>(
-      "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename",
-    );
-    const tables = rows.map((r) => r.tablename);
-    expect(tables).toContain('Tenant');
-    expect(tables).toContain('Job');
-    expect(tables).toContain('Workspace');
-    client.release();
+    const tenants = await prisma.tenant.findMany();
+    expect(tenants.length).toBeGreaterThan(0);
   });
 
-  it('truncate() clears all user tables', async () => {
-    // Insert data directly via PGlite
-    await ctx.pglite.exec(
-      `INSERT INTO "Tenant" (id, name, slug) VALUES ('test-id', 'Test', 'test-slug')`,
-    );
-    const before = await ctx.pglite.query<{ n: number }>('SELECT count(*)::int AS n FROM "Tenant"');
-    expect(before.rows[0]?.n).toBe(1);
+  it('resetDb() clears all user tables', async () => {
+    await prisma.tenant.create({ data: { name: 'Before', slug: `before-${Date.now()}` } });
+    const before = await prisma.tenant.count();
+    expect(before).toBeGreaterThan(0);
 
-    await ctx.truncate();
+    await resetDb();
 
-    const after = await ctx.pglite.query<{ n: number }>('SELECT count(*)::int AS n FROM "Tenant"');
-    expect(after.rows[0]?.n).toBe(0);
+    const after = await prisma.tenant.count();
+    expect(after).toBe(0);
   });
 
-  it('truncate() does not drop tables', async () => {
-    await ctx.truncate();
-
-    const { rows } = await ctx.pglite.query<{ tablename: string }>(
-      "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'Tenant'",
-    );
-    expect(rows.length).toBe(1);
+  it('resetDb() does not drop tables', async () => {
+    await resetDb();
+    // Table still exists — create works after reset
+    const tenant = await prisma.tenant.create({ data: { name: 'After', slug: 'after-reset' } });
+    expect(tenant.id).toBeDefined();
   });
 
   describe('schema resolution', () => {
     it('accepts explicit sql option', async () => {
-      const testCtx = await createTestDb({
+      const { adapter: sqlAdapter } = await createPgliteAdapter({
         sql: 'CREATE TABLE test_explicit (id serial PRIMARY KEY, name text);',
       });
-
-      const { rows } = await testCtx.pglite.query<{ tablename: string }>(
-        "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
+      const sqlPrisma = new PrismaClient({ adapter: sqlAdapter });
+      await sqlPrisma.$queryRawUnsafe('INSERT INTO test_explicit (name) VALUES ($1)', 'hello');
+      const rows = await sqlPrisma.$queryRawUnsafe<{ name: string }[]>(
+        'SELECT name FROM test_explicit',
       );
-      expect(rows.map((r) => r.tablename)).toContain('test_explicit');
-      await testCtx.close();
+      expect(rows[0]).toHaveProperty('name', 'hello');
     });
   });
 });

@@ -17,28 +17,20 @@
  * - Transactions
  * - Sorted indexes and ordering
  */
-import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createTestDb } from './create-test-db.ts';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createPgliteAdapter } from './create-test-db.ts';
 
-let ctx: Awaited<ReturnType<typeof createTestDb>>;
 let prisma: PrismaClient;
+let resetDb: () => Promise<void>;
 
 beforeAll(async () => {
-  ctx = await createTestDb({ schemaPath: './prisma/schema.prisma' });
-  const adapter = new PrismaPg(ctx.pool);
-  prisma = new PrismaClient({ adapter });
+  const db = await createPgliteAdapter({ schemaPath: './prisma/schema.prisma' });
+  prisma = new PrismaClient({ adapter: db.adapter });
+  resetDb = db.resetDb;
 });
 
-beforeEach(async () => {
-  await ctx.truncate();
-});
-
-afterAll(async () => {
-  await prisma.$disconnect();
-  await ctx.close();
-});
+beforeEach(() => resetDb());
 
 // ─── Helpers ───
 
