@@ -2,18 +2,15 @@
  * Pool factory — creates a pg.Pool backed by an in-process PGlite instance.
  *
  * Each pool connection gets its own PGliteBridge stream, all sharing the
- * same PGlite WASM instance. PGlite's runExclusive mutex serializes access.
- *
- * IMPORTANT: PGlite is single-session — all pool connections share one
- * PostgreSQL session. SET variables, prepared statements, and transaction
- * state are global. The pool defaults to max=1 to prevent concurrent
- * connections from corrupting each other's transaction boundaries.
- * Increase max only if your workload is read-only or uses only Prisma's
- * managed interactive transactions (which hold a single connection).
+ * same PGlite WASM instance and SessionLock. The session lock ensures
+ * transaction isolation: when one bridge starts a transaction (BEGIN),
+ * it gets exclusive PGlite access until COMMIT/ROLLBACK. Non-transactional
+ * operations from any bridge serialize through PGlite's runExclusive mutex.
  */
 import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { PGliteBridge } from './pglite-bridge.ts';
+import { SessionLock } from './session-lock.ts';
 
 const { Client, Pool } = pg;
 
@@ -21,7 +18,7 @@ export interface CreatePoolOptions {
   /** PGlite data directory. Omit for in-memory. */
   dataDir?: string;
 
-  /** Maximum pool connections (default: 1 — see createPool docs for why) */
+  /** Maximum pool connections (default: 5) */
   max?: number;
 
   /** Existing PGlite instance to use instead of creating one */
@@ -53,11 +50,13 @@ export interface PoolResult {
  * ```
  */
 export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolResult> => {
-  const { dataDir, max = 1 } = options;
+  const { dataDir, max = 5 } = options;
   const ownsInstance = !options.pglite;
 
   const pglite = options.pglite ?? new PGlite(dataDir);
   await pglite.waitReady;
+
+  const sessionLock = new SessionLock();
 
   // Subclass pg.Client to inject PGliteBridge as the stream
   const BridgedClient = class extends Client {
@@ -67,7 +66,7 @@ export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolR
         ...cfg,
         user: 'postgres',
         database: 'postgres',
-        stream: (() => new PGliteBridge(pglite)) as pg.ClientConfig['stream'],
+        stream: (() => new PGliteBridge(pglite, sessionLock)) as pg.ClientConfig['stream'],
       });
     }
   };

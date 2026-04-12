@@ -18,6 +18,12 @@
  */
 import { Duplex } from 'node:stream';
 import type { PGlite } from '@electric-sql/pglite';
+import {
+  type BridgeId,
+  type SessionLock,
+  createBridgeId,
+  extractRfqStatus,
+} from './session-lock.ts';
 
 // Frontend message types
 const PARSE = 0x50; // P
@@ -119,6 +125,8 @@ const concat = (parts: Uint8Array[]): Uint8Array => {
 
 export class PGliteBridge extends Duplex {
   private readonly pglite: PGlite;
+  private readonly sessionLock: SessionLock | null;
+  private readonly bridgeId: BridgeId;
   /** Incoming bytes not yet compacted into buf */
   private pending: Buffer[] = [];
   private pendingLen = 0;
@@ -133,9 +141,11 @@ export class PGliteBridge extends Duplex {
   private pipeline: Uint8Array[] = [];
   private pipelineLen = 0;
 
-  constructor(pglite: PGlite) {
+  constructor(pglite: PGlite, sessionLock?: SessionLock) {
     super();
     this.pglite = pglite;
+    this.sessionLock = sessionLock ?? null;
+    this.bridgeId = createBridgeId();
   }
 
   // ── Socket compatibility (called by pg's Connection) ──
@@ -194,6 +204,7 @@ export class PGliteBridge extends Duplex {
   }
 
   override _final(callback: (error?: Error | null) => void): void {
+    this.sessionLock?.release(this.bridgeId);
     this.push(null);
     callback();
   }
@@ -204,6 +215,7 @@ export class PGliteBridge extends Duplex {
     this.pipelineLen = 0;
     this.pending.length = 0;
     this.pendingLen = 0;
+    this.sessionLock?.release(this.bridgeId);
     callback(error);
   }
 
@@ -287,6 +299,7 @@ export class PGliteBridge extends Duplex {
     const message = this.buf.subarray(0, len);
     this.buf = this.buf.subarray(len);
 
+    await this.acquireSession();
     await this.pglite.runExclusive(async () => {
       await this.execAndPush(message);
     });
@@ -315,6 +328,7 @@ export class PGliteBridge extends Duplex {
       const msgType = message[0] ?? 0;
 
       if (msgType === TERMINATE) {
+        this.sessionLock?.release(this.bridgeId);
         this.push(null);
         return;
       }
@@ -333,6 +347,7 @@ export class PGliteBridge extends Duplex {
       }
 
       // SimpleQuery or other standalone message
+      await this.acquireSession();
       await this.pglite.runExclusive(async () => {
         await this.execAndPush(message);
       });
@@ -367,6 +382,7 @@ export class PGliteBridge extends Duplex {
       }
     }
 
+    await this.acquireSession();
     await this.pglite.runExclusive(async () => {
       const chunks: Uint8Array[] = [];
 
@@ -378,13 +394,16 @@ export class PGliteBridge extends Duplex {
 
       // Single chunk: strip intermediate RFQ and push
       if (chunks.length === 1) {
-        const cleaned = stripIntermediateReadyForQuery(chunks[0] ?? new Uint8Array(0));
+        const raw = chunks[0] ?? new Uint8Array(0);
+        this.trackSessionStatus(raw);
+        const cleaned = stripIntermediateReadyForQuery(raw);
         if (cleaned.length > 0) this.push(cleaned);
         return;
       }
 
       // Multiple chunks: concat first, then strip
       const combined = concat(chunks);
+      this.trackSessionStatus(combined);
       const cleaned = stripIntermediateReadyForQuery(combined);
       if (cleaned.length > 0) this.push(cleaned);
     });
@@ -398,10 +417,29 @@ export class PGliteBridge extends Duplex {
    * Must be called inside runExclusive.
    */
   private async execAndPush(message: Uint8Array): Promise<void> {
+    let lastChunk: Uint8Array | null = null;
     await this.pglite.execProtocolRawStream(message, {
       onRawData: (chunk: Uint8Array) => {
-        if (!this.tornDown && chunk.length > 0) this.push(chunk);
+        if (!this.tornDown && chunk.length > 0) {
+          this.push(chunk);
+          lastChunk = chunk;
+        }
       },
     });
+    if (lastChunk) this.trackSessionStatus(lastChunk);
+  }
+
+  // ── Session lock helpers ──
+
+  private async acquireSession(): Promise<void> {
+    await this.sessionLock?.acquire(this.bridgeId);
+  }
+
+  private trackSessionStatus(response: Uint8Array): void {
+    if (!this.sessionLock) return;
+    const status = extractRfqStatus(response);
+    if (status !== null) {
+      this.sessionLock.updateStatus(this.bridgeId, status);
+    }
   }
 }

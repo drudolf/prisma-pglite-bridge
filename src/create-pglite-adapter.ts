@@ -33,7 +33,7 @@ export interface CreatePgliteAdapterOptions {
   /** PGlite data directory. Omit for in-memory. */
   dataDir?: string;
 
-  /** Maximum pool connections (default: 1 — see createPool docs for why) */
+  /** Maximum pool connections (default: 5) */
   max?: number;
 }
 

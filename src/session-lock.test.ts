@@ -1,0 +1,296 @@
+import { PGlite } from '@electric-sql/pglite';
+import pg from 'pg';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { PGliteBridge } from './pglite-bridge.ts';
+import { SessionLock, createBridgeId, extractRfqStatus } from './session-lock.ts';
+
+const { Client, Pool } = pg;
+
+// ─── Unit tests for SessionLock ───
+
+describe('SessionLock', () => {
+  it('allows any bridge when idle', async () => {
+    const lock = new SessionLock();
+    const a = createBridgeId();
+    const b = createBridgeId();
+
+    await lock.acquire(a); // should resolve immediately
+    await lock.acquire(b); // should resolve immediately
+  });
+
+  it('blocks other bridges during a transaction', async () => {
+    const lock = new SessionLock();
+    const a = createBridgeId();
+    const b = createBridgeId();
+
+    // Bridge A starts a transaction
+    lock.updateStatus(a, 0x54); // 'T' = in transaction
+
+    // Bridge B should be blocked
+    let bResolved = false;
+    const bPromise = lock.acquire(b).then(() => {
+      bResolved = true;
+    });
+
+    // Give the microtask queue a chance to run
+    await new Promise((r) => setTimeout(r, 10));
+    expect(bResolved).toBe(false);
+
+    // Bridge A commits — status back to idle
+    lock.updateStatus(a, 0x49); // 'I' = idle
+
+    await bPromise;
+    expect(bResolved).toBe(true);
+  });
+
+  it('allows the owning bridge to continue during its transaction', async () => {
+    const lock = new SessionLock();
+    const a = createBridgeId();
+
+    lock.updateStatus(a, 0x54); // 'T'
+
+    // Same bridge should not block
+    await lock.acquire(a);
+  });
+
+  it('blocks during failed transaction state', async () => {
+    const lock = new SessionLock();
+    const a = createBridgeId();
+    const b = createBridgeId();
+
+    lock.updateStatus(a, 0x45); // 'E' = failed transaction
+
+    let bResolved = false;
+    lock.acquire(b).then(() => {
+      bResolved = true;
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(bResolved).toBe(false);
+
+    // Rollback brings status back to idle
+    lock.updateStatus(a, 0x49);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(bResolved).toBe(true);
+  });
+
+  it('release() unblocks waiting bridges', async () => {
+    const lock = new SessionLock();
+    const a = createBridgeId();
+    const b = createBridgeId();
+
+    lock.updateStatus(a, 0x54);
+
+    let bResolved = false;
+    lock.acquire(b).then(() => {
+      bResolved = true;
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(bResolved).toBe(false);
+
+    // Force release (e.g., bridge destroyed mid-transaction)
+    lock.release(a);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(bResolved).toBe(true);
+  });
+});
+
+// ─── Unit tests for extractRfqStatus ───
+
+describe('extractRfqStatus', () => {
+  it('extracts idle status', () => {
+    const rfq = new Uint8Array([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    expect(extractRfqStatus(rfq)).toBe(0x49);
+  });
+
+  it('extracts transaction status', () => {
+    const rfq = new Uint8Array([0x5a, 0x00, 0x00, 0x00, 0x05, 0x54]);
+    expect(extractRfqStatus(rfq)).toBe(0x54);
+  });
+
+  it('extracts failed transaction status', () => {
+    const rfq = new Uint8Array([0x5a, 0x00, 0x00, 0x00, 0x05, 0x45]);
+    expect(extractRfqStatus(rfq)).toBe(0x45);
+  });
+
+  it('extracts from response with preceding messages', () => {
+    // ParseComplete(5 bytes) + RFQ(6 bytes)
+    const response = new Uint8Array([
+      0x31,
+      0x00,
+      0x00,
+      0x00,
+      0x04, // ParseComplete
+      0x5a,
+      0x00,
+      0x00,
+      0x00,
+      0x05,
+      0x54, // RFQ with 'T'
+    ]);
+    expect(extractRfqStatus(response)).toBe(0x54);
+  });
+
+  it('returns null for empty response', () => {
+    expect(extractRfqStatus(new Uint8Array(0))).toBeNull();
+  });
+
+  it('returns null for response without RFQ', () => {
+    const response = new Uint8Array([0x31, 0x00, 0x00, 0x00, 0x04]);
+    expect(extractRfqStatus(response)).toBeNull();
+  });
+});
+
+// ─── Integration: concurrent transactions through pool ───
+
+describe('session lock integration', () => {
+  let pglite: PGlite;
+  let pool: pg.Pool;
+
+  beforeAll(async () => {
+    pglite = new PGlite();
+    await pglite.waitReady;
+    await pglite.exec(`
+      CREATE TABLE session_test (id serial PRIMARY KEY, val text);
+    `);
+
+    const sessionLock = new SessionLock();
+
+    pool = new Pool({
+      Client: class extends Client {
+        constructor(config?: string | pg.ClientConfig) {
+          const cfg = typeof config === 'string' ? { connectionString: config } : (config ?? {});
+          super({
+            ...cfg,
+            user: 'postgres',
+            database: 'postgres',
+            stream: () => new PGliteBridge(pglite, sessionLock),
+          } as pg.ClientConfig);
+        }
+      } as typeof Client,
+      max: 5,
+    });
+  });
+
+  beforeEach(async () => {
+    await pglite.exec('TRUNCATE TABLE session_test');
+  });
+
+  afterAll(async () => {
+    await pool.end();
+    await pglite.close();
+  });
+
+  it('concurrent transactions do not interleave', async () => {
+    // Two transactions running concurrently — each should see only its own data
+    const results = await Promise.all([
+      pool.connect().then(async (client) => {
+        await client.query('BEGIN');
+        await client.query("INSERT INTO session_test (val) VALUES ('tx-a')");
+        const { rows } = await client.query('SELECT val FROM session_test');
+        await client.query('COMMIT');
+        client.release();
+        return rows.map((r: { val: string }) => r.val);
+      }),
+      pool.connect().then(async (client) => {
+        await client.query('BEGIN');
+        await client.query("INSERT INTO session_test (val) VALUES ('tx-b')");
+        const { rows } = await client.query('SELECT val FROM session_test');
+        await client.query('COMMIT');
+        client.release();
+        return rows.map((r: { val: string }) => r.val);
+      }),
+    ]);
+
+    // Each transaction should have seen only its own insert (session lock
+    // prevents interleaving). One ran first, saw 1 row. The other ran
+    // second, saw its own insert plus the committed row from the first.
+    // The key assertion: neither transaction saw the other's UNCOMMITTED data.
+    const [aVals, bVals] = results;
+
+    // One transaction ran first (saw only its own row), one ran second
+    // (saw its own + committed from first). Either order is valid.
+    const singleRow = aVals.length === 1 ? aVals : bVals;
+    expect(singleRow).toHaveLength(1);
+  });
+
+  it('non-transactional queries are not blocked by other non-transactional queries', async () => {
+    // Multiple concurrent non-transactional queries should all complete
+    await pglite.exec("INSERT INTO session_test (val) VALUES ('seed')");
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => pool.query('SELECT val FROM session_test')),
+    );
+
+    for (const result of results) {
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]?.val).toBe('seed');
+    }
+  });
+
+  it('transaction blocks other bridges until commit', async () => {
+    const clientA = await pool.connect();
+    await clientA.query('BEGIN');
+    await clientA.query("INSERT INTO session_test (val) VALUES ('exclusive')");
+
+    // Start a query on another connection — should be blocked until A commits
+    let otherResolved = false;
+    const otherPromise = pool.query('SELECT count(*)::int AS n FROM session_test').then((r) => {
+      otherResolved = true;
+      return r;
+    });
+
+    // Give time for the other query to attempt to run
+    await new Promise((r) => setTimeout(r, 50));
+    expect(otherResolved).toBe(false); // Still blocked
+
+    // Commit releases the session lock
+    await clientA.query('COMMIT');
+    clientA.release();
+
+    const result = await otherPromise;
+    expect(otherResolved).toBe(true);
+    // The other query sees the committed data
+    expect(result.rows[0]?.n).toBe(1);
+  });
+
+  it('rollback releases the session lock', async () => {
+    const clientA = await pool.connect();
+    await clientA.query('BEGIN');
+    await clientA.query("INSERT INTO session_test (val) VALUES ('will-rollback')");
+    await clientA.query('ROLLBACK');
+    clientA.release();
+
+    // Another query should work and see no data
+    const { rows } = await pool.query('SELECT count(*)::int AS n FROM session_test');
+    expect(rows[0]?.n).toBe(0);
+  });
+
+  it('release() frees session lock even without COMMIT (crash recovery)', async () => {
+    // Simulates a bridge being cleaned up mid-transaction. The SessionLock.release()
+    // method is called by _destroy and _final — this tests that it correctly
+    // unblocks waiting bridges.
+    const lock = new SessionLock();
+    const bridgeA = createBridgeId();
+    const bridgeB = createBridgeId();
+
+    // Bridge A starts a transaction
+    lock.updateStatus(bridgeA, 0x54); // 'T'
+
+    // Bridge B is blocked
+    let bResolved = false;
+    const bPromise = lock.acquire(bridgeB).then(() => {
+      bResolved = true;
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(bResolved).toBe(false);
+
+    // Bridge A is destroyed (crash) — release without COMMIT
+    lock.release(bridgeA);
+
+    await bPromise;
+    expect(bResolved).toBe(true);
+  });
+});
