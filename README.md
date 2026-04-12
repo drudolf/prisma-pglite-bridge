@@ -71,6 +71,8 @@ const { pool, pglite, close } = await createPool();
 const adapter = new PrismaPg(pool);
 ```
 
+Accepts `dataDir`, `extensions`, `max`, and `pglite` (bring your own pre-configured PGlite instance).
+
 ### `PGliteBridge`
 
 The Duplex stream that replaces `pg.Client`'s TCP socket. Exported for advanced use cases (custom `pg.Client` setup, direct wire protocol access).

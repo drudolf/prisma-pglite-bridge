@@ -14,7 +14,7 @@
  * beforeEach(() => resetDb());
  * ```
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -112,11 +112,15 @@ const tryReadMigrationFiles = (migrationsPath: string): string | null => {
  */
 const generateSchemaSQL = (schemaPath: string): string => {
   try {
-    return execSync(`npx prisma migrate diff --from-empty --to-schema ${schemaPath} --script`, {
-      encoding: 'utf8',
-      timeout: 30_000,
-      env: { ...process.env, DATABASE_URL: 'postgresql://dummy@localhost/dummy' },
-    });
+    return execFileSync(
+      'npx',
+      ['prisma', 'migrate', 'diff', '--from-empty', '--to-schema', schemaPath, '--script'],
+      {
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: { ...process.env, DATABASE_URL: 'postgresql://dummy@localhost/dummy' },
+      },
+    );
   } catch (err) {
     throw new Error(
       `Failed to generate schema SQL from ${schemaPath}. Ensure prisma is installed and the schema is valid. Alternatively, pass pre-generated SQL via the \`sql\` option or run \`prisma migrate dev\` to generate migration files (faster path).`,

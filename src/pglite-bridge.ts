@@ -71,7 +71,9 @@ export const stripIntermediateReadyForQuery = (response: Uint8Array): Uint8Array
     } else {
       // Skip this backend message: type(1) + length(4, big-endian)
       const view = new DataView(response.buffer, response.byteOffset + offset + 1, 4);
-      offset += 1 + view.getInt32(0);
+      const msgLen = view.getInt32(0);
+      if (msgLen < 4) break; // malformed — minimum length field is 4 (includes itself)
+      offset += 1 + msgLen;
     }
   }
 
@@ -231,6 +233,14 @@ export class PGliteBridge extends Duplex {
     this.pending.length = 0;
     this.pendingLen = 0;
     this.sessionLock?.release(this.bridgeId);
+
+    // Flush pending write callbacks so pg.Client doesn't hang
+    const callbacks = this.drainQueue;
+    this.drainQueue = [];
+    for (const cb of callbacks) {
+      cb(error);
+    }
+
     callback(error);
   }
 
@@ -255,6 +265,7 @@ export class PGliteBridge extends Duplex {
   private enqueue(callback: (error?: Error | null) => void): void {
     this.drainQueue.push(callback);
     if (!this.draining) {
+      // Errors are propagated through drainQueue callbacks, not through this promise
       this.drain().catch(() => {});
     }
   }
@@ -287,6 +298,9 @@ export class PGliteBridge extends Duplex {
       }
     } catch (err) {
       error = err instanceof Error ? err : new Error(String(err));
+      // Release session lock on error — prevents permanent deadlock if
+      // PGlite crashes mid-transaction (other bridges would wait forever)
+      this.sessionLock?.release(this.bridgeId);
     } finally {
       this.draining = false;
 
