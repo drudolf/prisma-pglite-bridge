@@ -1,4 +1,4 @@
-# prisma-enlite
+# prisma-pglite-bridge
 
 In-process PGlite bridge for Prisma. Replaces the TCP socket in
 `pg.Client` with a Duplex stream that speaks PostgreSQL wire protocol
@@ -6,8 +6,10 @@ directly to PGlite's WASM engine.
 
 ## Install
 
+Requires **Prisma 7+** and **Node.js 20+**.
+
 ```sh
-pnpm add -D prisma-enlite @electric-sql/pglite @prisma/adapter-pg pg
+pnpm add -D prisma-pglite-bridge @electric-sql/pglite @prisma/adapter-pg pg
 ```
 
 TypeScript users also need `@types/pg`.
@@ -15,7 +17,7 @@ TypeScript users also need `@types/pg`.
 ## Quickstart
 
 ```typescript
-import { createPgliteAdapter } from 'prisma-enlite';
+import { createPgliteAdapter } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 
 const { adapter, resetDb } = await createPgliteAdapter();
@@ -26,7 +28,9 @@ beforeEach(() => resetDb());
 ```
 
 That's it. Schema is auto-discovered from `prisma.config.ts`
-and migration files.
+and migration files. No Docker, no database server — works
+in GitHub Actions, GitLab CI, and any environment where
+Node.js runs.
 
 ## Schema Resolution
 
@@ -36,7 +40,9 @@ and migration files.
 2. **`migrationsPath` option** — reads migration files from the
    given directory
 3. **Auto-discovered migrations** — uses `@prisma/config` to find
-   migration files (same resolution as `prisma migrate dev`)
+   migration files (same resolution as `prisma migrate dev`).
+   Requires `prisma` to be installed (which provides
+   `@prisma/config` as a transitive dependency).
 
 If no migration files are found, it throws with a message to run
 `prisma migrate dev` first.
@@ -48,22 +54,26 @@ If no migration files are found, it throws with a message to run
 Creates a Prisma adapter backed by an in-process PGlite instance.
 
 ```typescript
-const { adapter, resetDb, close } = await createPgliteAdapter({
+const { adapter, pglite, resetDb, close } = await createPgliteAdapter({
   // All optional — migrations auto-discovered from prisma.config.ts
   migrationsPath: './prisma/migrations',
   sql: 'CREATE TABLE ...',
-  dataDir: './data/pglite',  // omit for in-memory
-  extensions: {},            // PGlite extensions
-  max: 5,                    // pool connections (default: 5)
+  configRoot: '../..',        // monorepo: where to find prisma.config.ts
+  dataDir: './data/pglite',   // omit for in-memory
+  extensions: {},             // PGlite extensions
+  max: 5,                     // pool connections (default: 5)
 });
 ```
 
 Returns:
 
 - `adapter` — pass to `new PrismaClient({ adapter })`
+- `pglite` — the underlying PGlite instance for direct SQL,
+  snapshots, or extension access
 - `resetDb()` — truncates all user tables, resets session state
   (`RESET ALL`, `DEALLOCATE ALL`). Call in `beforeEach` for
-  per-test isolation.
+  per-test isolation. Note: this clears all data including seed
+  data — re-seed after reset if needed.
 - `close()` — shuts down pool and PGlite. Not needed in tests
   (process exit handles it). Use in long-running scripts or dev
   servers.
@@ -74,24 +84,27 @@ Lower-level escape hatch. Creates a `pg.Pool` backed by PGlite
 without Prisma wiring.
 
 ```typescript
-import { createPool } from 'prisma-enlite';
+import { createPool } from 'prisma-pglite-bridge';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 const { pool, pglite, close } = await createPool();
 const adapter = new PrismaPg(pool);
 ```
 
-Accepts `dataDir`, `extensions`, `max`, and `pglite` (bring your
-own pre-configured PGlite instance).
+Returns `pool` (pg.Pool), `pglite` (the underlying PGlite
+instance), and `close()`. Accepts `dataDir`, `extensions`, `max`,
+and `pglite` (bring your own pre-configured PGlite instance).
 
 ### `PGliteBridge`
 
-The Duplex stream that replaces `pg.Client`'s TCP socket. Exported
-for advanced use cases (custom `pg.Client` setup, direct wire
-protocol access).
+The Duplex stream that replaces `pg.Client`'s network socket.
+Exported for advanced use cases (custom `pg.Client` setup, direct
+wire protocol access). When using multiple bridges against the
+same PGlite instance, pass a shared `SessionLock` to prevent
+transaction interleaving.
 
 ```typescript
-import { PGliteBridge } from 'prisma-enlite';
+import { PGliteBridge } from 'prisma-pglite-bridge';
 import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 
@@ -112,10 +125,10 @@ Most Prisma projects use a singleton module:
 // lib/prisma.ts — your production singleton
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
+import pg from 'pg';
 
-const adapter = new PrismaPg({
-  connectionString: process.env.DATABASE_URL,
-});
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const adapter = new PrismaPg(pool);
 export const prisma = new PrismaClient({ adapter });
 ```
 
@@ -124,7 +137,7 @@ the in-memory PGlite version:
 
 ```typescript
 // vitest.setup.ts
-import { createPgliteAdapter } from 'prisma-enlite';
+import { createPgliteAdapter } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 
 const { adapter, resetDb } = await createPgliteAdapter();
@@ -152,16 +165,21 @@ For Jest, the same pattern works with `jest.mock`:
 
 ```typescript
 // jest.setup.ts
-const { createPgliteAdapter } = require('prisma-enlite');
+const { createPgliteAdapter } = require('prisma-pglite-bridge');
 const { PrismaClient } = require('@prisma/client');
 
+let testPrisma;
 let resetDb;
+
+// jest.mock is hoisted — must be at top level, not inside beforeAll
+jest.mock('./lib/prisma', () => ({
+  get prisma() { return testPrisma; },
+}));
 
 beforeAll(async () => {
   const result = await createPgliteAdapter();
-  const prisma = new PrismaClient({ adapter: result.adapter });
+  testPrisma = new PrismaClient({ adapter: result.adapter });
   resetDb = result.resetDb;
-  jest.mock('./lib/prisma', () => ({ prisma }));
 });
 
 beforeEach(() => resetDb());
@@ -172,7 +190,7 @@ beforeEach(() => resetDb());
 If your code accepts `PrismaClient` as a parameter:
 
 ```typescript
-import { createPgliteAdapter } from 'prisma-enlite';
+import { createPgliteAdapter } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, beforeEach, it, expect } from 'vitest';
 
@@ -217,7 +235,12 @@ seed(prisma).then(() => prisma.$disconnect());
 Then reuse it in tests:
 
 ```typescript
+import { createPgliteAdapter } from 'prisma-pglite-bridge';
+import { PrismaClient } from '@prisma/client';
 import { seed } from '../prisma/seed';
+
+let prisma: PrismaClient;
+let resetDb: () => Promise<void>;
 
 beforeAll(async () => {
   const { adapter, resetDb: reset } = await createPgliteAdapter();
@@ -225,7 +248,31 @@ beforeAll(async () => {
   resetDb = reset;
   await seed(prisma);
 });
+
+// resetDb() clears all data — re-seed if needed
+beforeEach(async () => {
+  await resetDb();
+  await seed(prisma);
+});
 ```
+
+### Using PostgreSQL extensions
+
+If your schema uses `uuid-ossp`, `pgcrypto`, or other extensions,
+pass them via the `extensions` option:
+
+```typescript
+import { createPgliteAdapter } from 'prisma-pglite-bridge';
+import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
+import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
+
+const { adapter } = await createPgliteAdapter({
+  extensions: { uuid_ossp, pgcrypto },
+});
+```
+
+See [PGlite extensions](https://pglite.dev/extensions/) for the
+full list of available extensions.
 
 ### Pre-generated SQL (fastest)
 
@@ -244,7 +291,7 @@ const { adapter } = await createPgliteAdapter({
 
 ### Persistent dev database (optional)
 
-By default, prisma-enlite runs entirely in memory — the database
+By default, prisma-pglite-bridge runs entirely in memory — the database
 disappears when the process exits. This is ideal for tests. If you
 want data to survive restarts (local development, prototyping),
 pass a `dataDir`:
@@ -279,8 +326,8 @@ try {
 
 ## Limitations
 
-- **Node.js only** — requires `node:stream` and `node:fs`. Does
-  not work in browsers despite PGlite's browser support.
+- **Node.js 20+ only** — requires `node:stream` and `node:fs`.
+  Does not work in browsers despite PGlite's browser support.
 - **WASM cold start** — first `createPgliteAdapter()` call takes
   ~2s for PGlite WASM compilation. Subsequent calls in the same
   process reuse the compiled module.

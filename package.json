@@ -1,5 +1,5 @@
 {
-  "name": "prisma-enlite",
+  "name": "prisma-pglite-bridge",
   "version": "0.1.0",
   "description": "In-process PGlite bridge for Prisma — zero-TCP, zero-Docker PostgreSQL",
   "keywords": [
@@ -14,7 +14,7 @@
     "jest",
     "driver-adapter"
   ],
-  "repository": "drudolf/prisma-enlite",
+  "repository": "drudolf/prisma-pglite-bridge",
   "author": "drudolf",
   "type": "module",
   "license": "MIT",

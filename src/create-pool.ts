@@ -43,7 +43,7 @@ export interface PoolResult {
  * Creates a pg.Pool where every connection is an in-process PGlite bridge.
  *
  * ```typescript
- * import { createPool } from 'prisma-enlite';
+ * import { createPool } from 'prisma-pglite-bridge';
  * import { PrismaPg } from '@prisma/adapter-pg';
  * import { PrismaClient } from '@prisma/client';
  *

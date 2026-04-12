@@ -1,9 +1,9 @@
 /**
- * prisma-enlite — in-process PGlite bridge for Prisma.
+ * prisma-pglite-bridge — in-process PGlite bridge for Prisma.
  *
  * @example
  * ```typescript
- * import { createPgliteAdapter } from 'prisma-enlite';
+ * import { createPgliteAdapter } from 'prisma-pglite-bridge';
  * import { PrismaClient } from '@prisma/client';
  *
  * const { adapter, resetDb } = await createPgliteAdapter();
