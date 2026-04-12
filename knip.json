@@ -1,0 +1,3 @@
+{
+  "ignoreDependencies": ["pglite-prisma-adapter", "prisma-pglite"]
+}
