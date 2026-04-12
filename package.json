@@ -47,7 +47,8 @@
     "format": "biome format --write .",
     "check:exports": "attw --pack --profile node16",
     "bench": "tsx benchmark/run.ts",
-    "prepublishOnly": "pnpm build && pnpm check:exports"
+    "prepublishOnly": "pnpm build && pnpm check:exports",
+    "prepare": "husky"
   },
   "peerDependencies": {
     "@electric-sql/pglite": "^0.4.0",
@@ -60,12 +61,16 @@
     "@augment-vir/common": "^31.68.4",
     "@augment-vir/test": "^31.68.4",
     "@biomejs/biome": "^1.9.0",
+    "@commitlint/cli": "^20.5.0",
+    "@commitlint/config-conventional": "^20.5.0",
     "@electric-sql/pglite": "^0.4.4",
     "@prisma/adapter-pg": "^7.7.0",
     "@prisma/client": "^7.7.0",
     "@prisma/config": "^7.7.0",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "markdownlint-cli2": "^0.22.0",
     "pg": "^8.13.0",
     "pglite-prisma-adapter": "^0.7.2",

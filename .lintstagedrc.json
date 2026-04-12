@@ -1,0 +1,5 @@
+{
+  "*.ts": ["biome check --no-errors-on-unmatched", "bash -c 'tsc --noEmit'"],
+  "*.{json,jsonc}": "biome check --no-errors-on-unmatched",
+  "*.md": "markdownlint-cli2 --no-globs"
+}
