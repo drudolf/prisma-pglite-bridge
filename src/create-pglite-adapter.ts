@@ -43,6 +43,9 @@ export interface PgliteAdapter {
   /** Prisma adapter — pass directly to `new PrismaClient({ adapter })` */
   adapter: PrismaPg;
 
+  /** The underlying PGlite instance for direct SQL, snapshots, or extensions. */
+  pglite: import('@electric-sql/pglite').PGlite;
+
   /** Clear all user tables. Call in `beforeEach` for per-test isolation. */
   resetDb: ResetDbFn;
 
@@ -183,5 +186,5 @@ export const createPgliteAdapter = async (
     await pglite.exec('DEALLOCATE ALL');
   };
 
-  return { adapter, resetDb, close: poolClose };
+  return { adapter, pglite, resetDb, close: poolClose };
 };
