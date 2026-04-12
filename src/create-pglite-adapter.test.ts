@@ -6,9 +6,7 @@ let prisma: PrismaClient;
 let resetDb: () => Promise<void>;
 
 beforeAll(async () => {
-  const { adapter, resetDb: reset } = await createPgliteAdapter({
-    schemaPath: './prisma/schema.prisma',
-  });
+  const { adapter, resetDb: reset } = await createPgliteAdapter();
   prisma = new PrismaClient({ adapter });
   resetDb = reset;
 });

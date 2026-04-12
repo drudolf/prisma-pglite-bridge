@@ -14,16 +14,12 @@
  * beforeEach(() => resetDb());
  * ```
  */
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createPool } from './create-pool.ts';
 
 export interface CreatePgliteAdapterOptions {
-  /** Path to schema.prisma (auto-discovered via prisma.config.ts if omitted) */
-  schemaPath?: string;
-
   /** Path to prisma/migrations/ directory (auto-discovered via prisma.config.ts if omitted) */
   migrationsPath?: string;
 
@@ -55,29 +51,26 @@ export interface PgliteAdapter {
 }
 
 /**
- * Load Prisma config to discover schema path and migrations directory.
+ * Discover the migrations directory via Prisma's config API.
  * Uses the same resolution as `prisma migrate dev` — reads prisma.config.ts,
  * resolves paths relative to config file location.
  *
- * Returns null if @prisma/config is not available (older Prisma versions).
+ * Returns null if @prisma/config is not available or config cannot be loaded.
  */
-const loadPrismaConfig = async (): Promise<{
-  schemaPath: string | undefined;
-  migrationsPath: string | undefined;
-} | null> => {
+const discoverMigrationsPath = async (): Promise<string | null> => {
   try {
     const { loadConfigFromFile } = await import('@prisma/config');
     const { config, error } = await loadConfigFromFile({ configRoot: process.cwd() });
     if (error) return null;
 
-    const schemaPath = config.schema ?? undefined;
+    // Explicit migrations path from prisma.config.ts
+    if (config.migrations?.path) return config.migrations.path;
 
-    // config.migrations?.path is set when prisma.config.ts specifies it.
     // Fallback: Prisma convention is {schemaDir}/migrations
-    const migrationsPath =
-      config.migrations?.path ?? (schemaPath ? join(dirname(schemaPath), 'migrations') : undefined);
+    const schemaPath = config.schema;
+    if (schemaPath) return join(dirname(schemaPath), 'migrations');
 
-    return { schemaPath, migrationsPath };
+    return null;
   } catch {
     return null;
   }
@@ -106,36 +99,11 @@ const tryReadMigrationFiles = (migrationsPath: string): string | null => {
 };
 
 /**
- * Generate SQL from schema.prisma using `prisma migrate diff`.
- * Spawns the Prisma CLI — ~1.9s. Used only as fallback when no migration
- * files exist.
- */
-const generateSchemaSQL = (schemaPath: string): string => {
-  try {
-    return execFileSync(
-      'npx',
-      ['prisma', 'migrate', 'diff', '--from-empty', '--to-schema', schemaPath, '--script'],
-      {
-        encoding: 'utf8',
-        timeout: 30_000,
-        env: { ...process.env, DATABASE_URL: 'postgresql://dummy@localhost/dummy' },
-      },
-    );
-  } catch (err) {
-    throw new Error(
-      `Failed to generate schema SQL from ${schemaPath}. Ensure prisma is installed and the schema is valid. Alternatively, pass pre-generated SQL via the \`sql\` option or run \`prisma migrate dev\` to generate migration files (faster path).`,
-      { cause: err },
-    );
-  }
-};
-
-/**
  * Resolve schema SQL. Priority:
  *   1. Explicit `sql` option — use directly
  *   2. Explicit `migrationsPath` — read migration files
  *   3. Auto-discovered migrations (via prisma.config.ts) — read migration files (~0ms)
- *   4. Auto-discovered schema (via prisma.config.ts) — `prisma migrate diff` (~1.9s fallback)
- *   5. Conventional paths (prisma/schema.prisma) — `prisma migrate diff` (~1.9s fallback)
+ *   4. Error — tell the user to generate migration files
  */
 const resolveSQL = async (options: CreatePgliteAdapterOptions): Promise<string> => {
   if (options.sql) return options.sql;
@@ -150,35 +118,17 @@ const resolveSQL = async (options: CreatePgliteAdapterOptions): Promise<string> 
   }
 
   // Auto-discover via Prisma config
-  const prismaConfig = await loadPrismaConfig();
+  const migrationsPath = await discoverMigrationsPath();
 
-  // Try migrations first (instant)
-  if (prismaConfig?.migrationsPath) {
-    const sql = tryReadMigrationFiles(prismaConfig.migrationsPath);
+  if (migrationsPath) {
+    const sql = tryReadMigrationFiles(migrationsPath);
     if (sql) return sql;
   }
 
-  // Fall back to prisma migrate diff (slow but works without migration files)
-  const schemaPath = options.schemaPath ?? prismaConfig?.schemaPath ?? findSchemaPath();
-
-  if (!schemaPath) {
-    throw new Error(
-      'Could not find schema.prisma. Pass schemaPath, migrationsPath, or sql explicitly.',
-    );
-  }
-
-  return generateSchemaSQL(schemaPath);
-};
-
-/**
- * Legacy fallback: find schema.prisma by checking conventional paths from cwd.
- */
-const findSchemaPath = (): string | undefined => {
-  const candidates = ['prisma/schema.prisma', 'schema.prisma'];
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return undefined;
+  throw new Error(
+    'No migration files found. Run `prisma migrate dev` to generate them, ' +
+      'or pass pre-generated SQL via the `sql` option.',
+  );
 };
 
 /**

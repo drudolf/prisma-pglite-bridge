@@ -31,10 +31,9 @@ That's it. Schema is auto-discovered from `prisma.config.ts` and migration files
 
 1. **`sql` option** — pre-generated SQL string, applied directly
 2. **`migrationsPath` option** — reads migration files from the given directory
-3. **Auto-discovered migrations** — uses `@prisma/config` to find migration files (same resolution as `prisma migrate dev`). Instant (~0ms).
-4. **Fallback: `prisma migrate diff`** — generates SQL from `schema.prisma` by spawning the Prisma CLI (~1.9s)
+3. **Auto-discovered migrations** — uses `@prisma/config` to find migration files (same resolution as `prisma migrate dev`)
 
-Projects that have run `prisma migrate dev` get instant setup. The fallback works for projects without migration files but is slower.
+If no migration files are found, it throws with a message to run `prisma migrate dev` first.
 
 ## API
 
@@ -44,8 +43,7 @@ Creates a Prisma adapter backed by an in-process PGlite instance.
 
 ```typescript
 const { adapter, resetDb, close } = await createPgliteAdapter({
-  // All optional — auto-discovered from prisma.config.ts
-  schemaPath: './prisma/schema.prisma',
+  // All optional — migrations auto-discovered from prisma.config.ts
   migrationsPath: './prisma/migrations',
   sql: 'CREATE TABLE ...',
   dataDir: './data/pglite',  // omit for in-memory
@@ -146,7 +144,7 @@ try {
 - **WASM cold start** — first `createPgliteAdapter()` call takes ~2s for PGlite WASM compilation. Subsequent calls in the same process reuse the compiled module.
 - **Single PostgreSQL session** — PGlite runs in single-user mode. All pool connections share one session. A `SessionLock` serializes transactions (one at a time), but `SET` variables leak between connections within a single test. `resetDb()` clears this between tests via `RESET ALL` and `DEALLOCATE ALL`.
 - **PGlite extensions** — if your schema uses `pgcrypto`, `uuid-ossp`, etc., pass them via the `extensions` option. See PGlite docs for available extensions.
-- **`prisma migrate diff` fallback** — without migration files, schema generation spawns `npx prisma migrate diff` (~1.9s). Run `prisma migrate dev` once to generate migration files and avoid this cost.
+- **Migration files required** — run `prisma migrate dev` once to generate migration files, or pass schema SQL directly via the `sql` option.
 
 ## License
 
