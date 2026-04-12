@@ -1,7 +1,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PGliteBridge, stripIntermediateReadyForQuery } from './bridge.ts';
+import { PGliteBridge, stripIntermediateReadyForQuery } from './pglite-bridge.ts';
 
 const { Client, Pool } = pg;
 

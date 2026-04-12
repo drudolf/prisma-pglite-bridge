@@ -13,7 +13,7 @@
  */
 import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
-import { PGliteBridge } from './bridge.ts';
+import { PGliteBridge } from './pglite-bridge.ts';
 
 const { Client, Pool } = pg;
 
