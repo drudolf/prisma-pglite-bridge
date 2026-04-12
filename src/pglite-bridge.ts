@@ -70,8 +70,12 @@ export const stripIntermediateReadyForQuery = (response: Uint8Array): Uint8Array
       offset += 6;
     } else {
       // Skip this backend message: type(1) + length(4, big-endian)
-      const view = new DataView(response.buffer, response.byteOffset + offset + 1, 4);
-      const msgLen = view.getInt32(0);
+      const b1 = response[offset + 1];
+      const b2 = response[offset + 2];
+      const b3 = response[offset + 3];
+      const b4 = response[offset + 4];
+      if (b1 === undefined || b2 === undefined || b3 === undefined || b4 === undefined) break;
+      const msgLen = ((b1 << 24) | (b2 << 16) | (b3 << 8) | b4) >>> 0;
       if (msgLen < 4) break; // malformed — minimum length field is 4 (includes itself)
       offset += 1 + msgLen;
     }
@@ -80,29 +84,24 @@ export const stripIntermediateReadyForQuery = (response: Uint8Array): Uint8Array
   if (rfqPositions.length <= 1) return response;
 
   // Build result: copy everything except intermediate RFQ messages (all but last)
-  const removeSet = new Set(rfqPositions.slice(0, -1));
-  const resultLen = response.length - removeSet.size * 6;
+  const removeCount = rfqPositions.length - 1;
+  const resultLen = response.length - removeCount * 6;
   const result = new Uint8Array(resultLen);
-  // Copy non-RFQ segments in bulk using subarray + set
   let src = 0;
   let dst = 0;
-  const sortedRemove = [...removeSet].sort((a, b) => a - b);
   let removeIdx = 0;
 
   while (src < response.length) {
     const nextRemove =
-      removeIdx < sortedRemove.length
-        ? (sortedRemove[removeIdx] ?? response.length)
-        : response.length;
-    // Copy bytes from src up to the next RFQ to remove
+      removeIdx < removeCount ? (rfqPositions[removeIdx] ?? response.length) : response.length;
     if (src < nextRemove) {
       const copyLen = nextRemove - src;
       result.set(response.subarray(src, src + copyLen), dst);
       dst += copyLen;
       src += copyLen;
     }
-    if (src < response.length && removeSet.has(src)) {
-      src += 6; // skip RFQ
+    if (removeIdx < removeCount && src === rfqPositions[removeIdx]) {
+      src += 6;
       removeIdx++;
     }
   }

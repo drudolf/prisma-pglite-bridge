@@ -5,7 +5,7 @@
  * Works for testing, development, seeding, and scripts.
  *
  * ```typescript
- * import { createPgliteAdapter } from 'prisma-enlite';
+ * import { createPgliteAdapter } from 'prisma-pglite-bridge';
  * import { PrismaClient } from '@prisma/client';
  *
  * const { adapter, resetDb } = await createPgliteAdapter();
@@ -167,24 +167,28 @@ export const createPgliteAdapter = async (
 
   const adapter = new PrismaPg(pool);
 
-  const resetDb = async () => {
-    const { rows } = await pglite.query<{ schemaname: string; tablename: string }>(
-      `SELECT schemaname, tablename FROM pg_tables
-       WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-       AND tablename NOT LIKE '_prisma%'`,
-    );
+  let cachedTables: string | null = null;
 
-    if (rows.length > 0) {
-      const tables = rows.map((r) => `"${r.schemaname}"."${r.tablename}"`).join(', ');
+  const resetDb = async () => {
+    if (cachedTables === null) {
+      const { rows } = await pglite.query<{ schemaname: string; tablename: string }>(
+        `SELECT schemaname, tablename FROM pg_tables
+         WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+         AND tablename NOT LIKE '_prisma%'`,
+      );
+      cachedTables =
+        rows.length > 0 ? rows.map((r) => `"${r.schemaname}"."${r.tablename}"`).join(', ') : '';
+    }
+
+    if (cachedTables) {
       try {
         await pglite.exec('SET session_replication_role = replica');
-        await pglite.exec(`TRUNCATE TABLE ${tables} CASCADE`);
+        await pglite.exec(`TRUNCATE TABLE ${cachedTables} CASCADE`);
       } finally {
         await pglite.exec('SET session_replication_role = DEFAULT');
       }
     }
 
-    // Reset session state (SET variables, prepared statements) to defaults
     await pglite.exec('RESET ALL');
     await pglite.exec('DEALLOCATE ALL');
   };
