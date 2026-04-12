@@ -46,6 +46,9 @@ export interface PgliteAdapter {
 
   /** Clear all user tables. Call in `beforeEach` for per-test isolation. */
   resetDb: ResetDbFn;
+
+  /** Shut down pool and PGlite. Not needed in tests (process exit handles it). */
+  close: () => Promise<void>;
 }
 
 /**
@@ -127,7 +130,11 @@ export const createPgliteAdapter = async (
   options: CreatePgliteAdapterOptions = {},
 ): Promise<PgliteAdapter> => {
   const sql = resolveSQL(options);
-  const { pool, pglite } = await createPool({
+  const {
+    pool,
+    pglite,
+    close: poolClose,
+  } = await createPool({
     dataDir: options.dataDir,
     max: options.max,
   });
@@ -154,5 +161,5 @@ export const createPgliteAdapter = async (
     }
   };
 
-  return { adapter, resetDb };
+  return { adapter, resetDb, close: poolClose };
 };
