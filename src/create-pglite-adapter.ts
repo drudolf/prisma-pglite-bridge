@@ -33,6 +33,9 @@ export interface CreatePgliteAdapterOptions {
   /** PGlite data directory. Omit for in-memory. */
   dataDir?: string;
 
+  /** PGlite extensions (e.g., `{ uuid_ossp: uuidOssp() }`) */
+  extensions?: import('@electric-sql/pglite').Extensions;
+
   /** Maximum pool connections (default: 5) */
   max?: number;
 }
@@ -190,6 +193,7 @@ export const createPgliteAdapter = async (
     close: poolClose,
   } = await createPool({
     dataDir: options.dataDir,
+    extensions: options.extensions,
     max: options.max,
   });
 
@@ -219,6 +223,10 @@ export const createPgliteAdapter = async (
         await pglite.exec('SET session_replication_role = DEFAULT');
       }
     }
+
+    // Reset session state (SET variables, prepared statements) to defaults
+    await pglite.exec('RESET ALL');
+    await pglite.exec('DEALLOCATE ALL');
   };
 
   return { adapter, resetDb, close: poolClose };

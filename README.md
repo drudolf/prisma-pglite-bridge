@@ -49,13 +49,14 @@ const { adapter, resetDb, close } = await createPgliteAdapter({
   migrationsPath: './prisma/migrations',
   sql: 'CREATE TABLE ...',
   dataDir: './data/pglite',  // omit for in-memory
+  extensions: {},            // PGlite extensions (e.g., { uuid_ossp: uuidOssp() })
   max: 5,                    // pool connections (default: 5)
 });
 ```
 
 Returns:
 - `adapter` — pass to `new PrismaClient({ adapter })`
-- `resetDb()` — truncates all user tables. Call in `beforeEach` for per-test isolation.
+- `resetDb()` — truncates all user tables, resets session state (`RESET ALL`, `DEALLOCATE ALL`). Call in `beforeEach` for per-test isolation.
 - `close()` — shuts down pool and PGlite. Not needed in tests (process exit handles it). Use in long-running scripts or dev servers.
 
 ### `createPool(options?)`
@@ -141,8 +142,8 @@ try {
 
 - **Node.js only** — requires `node:stream`, `node:fs`, `node:child_process`. Does not work in browsers despite PGlite's browser support.
 - **WASM cold start** — first `createPgliteAdapter()` call takes ~2s for PGlite WASM compilation. Subsequent calls in the same process reuse the compiled module.
-- **Single PostgreSQL session** — PGlite runs in single-user mode. All pool connections share one session. A `SessionLock` serializes transactions (one at a time), but `SET` variables and prepared statements leak between connections. `resetDb()` truncates tables but does not reset session state.
-- **No PGlite extensions by default** — if your schema uses `pgcrypto`, `uuid-ossp`, etc., configure PGlite extensions separately via `createPool({ pglite: myConfiguredPglite })`.
+- **Single PostgreSQL session** — PGlite runs in single-user mode. All pool connections share one session. A `SessionLock` serializes transactions (one at a time), but `SET` variables leak between connections within a single test. `resetDb()` clears this between tests via `RESET ALL` and `DEALLOCATE ALL`.
+- **PGlite extensions** — if your schema uses `pgcrypto`, `uuid-ossp`, etc., pass them via the `extensions` option. See PGlite docs for available extensions.
 - **`prisma migrate diff` fallback** — without migration files, schema generation spawns `npx prisma migrate diff` (~1.9s). Run `prisma migrate dev` once to generate migration files and avoid this cost.
 
 ## License

@@ -7,7 +7,7 @@
  * it gets exclusive PGlite access until COMMIT/ROLLBACK. Non-transactional
  * operations from any bridge serialize through PGlite's runExclusive mutex.
  */
-import { PGlite } from '@electric-sql/pglite';
+import { type Extensions, PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { PGliteBridge } from './pglite-bridge.ts';
 import { SessionLock } from './session-lock.ts';
@@ -17,6 +17,9 @@ const { Client, Pool } = pg;
 export interface CreatePoolOptions {
   /** PGlite data directory. Omit for in-memory. */
   dataDir?: string;
+
+  /** PGlite extensions (e.g., `{ uuid_ossp: uuidOssp() }`) */
+  extensions?: Extensions;
 
   /** Maximum pool connections (default: 5) */
   max?: number;
@@ -50,10 +53,10 @@ export interface PoolResult {
  * ```
  */
 export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolResult> => {
-  const { dataDir, max = 5 } = options;
+  const { dataDir, extensions, max = 5 } = options;
   const ownsInstance = !options.pglite;
 
-  const pglite = options.pglite ?? new PGlite(dataDir);
+  const pglite = options.pglite ?? new PGlite(dataDir, extensions ? { extensions } : undefined);
   await pglite.waitReady;
 
   const sessionLock = new SessionLock();
