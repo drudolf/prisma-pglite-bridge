@@ -195,6 +195,38 @@ it('creates a user', async () => {
 });
 ```
 
+### Sharing seed logic between `prisma db seed` and tests
+
+Extract your seed logic into a function that accepts a
+PrismaClient:
+
+```typescript
+// prisma/seed.ts
+import { PrismaClient } from '@prisma/client';
+
+export const seed = async (prisma: PrismaClient) => {
+  await prisma.user.create({ data: { name: 'Alice', role: 'ADMIN' } });
+  await prisma.user.create({ data: { name: 'Bob', role: 'MEMBER' } });
+};
+
+// Still works as a script for `prisma db seed`
+const prisma = new PrismaClient();
+seed(prisma).then(() => prisma.$disconnect());
+```
+
+Then reuse it in tests:
+
+```typescript
+import { seed } from '../prisma/seed';
+
+beforeAll(async () => {
+  const { adapter, resetDb: reset } = await createPgliteAdapter();
+  prisma = new PrismaClient({ adapter });
+  resetDb = reset;
+  await seed(prisma);
+});
+```
+
 ### Pre-generated SQL (fastest)
 
 ```typescript
