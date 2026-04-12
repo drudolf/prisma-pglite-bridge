@@ -1,3 +1,17 @@
+/**
+ * prisma-enlite — in-process PGlite bridge for Prisma.
+ *
+ * @example
+ * ```typescript
+ * import { createPgliteAdapter } from 'prisma-enlite';
+ * import { PrismaClient } from '@prisma/client';
+ *
+ * const { adapter, resetDb } = await createPgliteAdapter();
+ * const prisma = new PrismaClient({ adapter });
+ * ```
+ *
+ * @packageDocumentation
+ */
 export { PGliteBridge } from './pglite-bridge.ts';
 export { createPool } from './create-pool.ts';
 export type { CreatePoolOptions, PoolResult } from './create-pool.ts';

@@ -123,6 +123,21 @@ const concat = (parts: Uint8Array[]): Uint8Array => {
   return result;
 };
 
+/**
+ * Duplex stream that bridges `pg.Client` to an in-process PGlite instance.
+ *
+ * Replaces the TCP socket in `pg.Client` via the `stream` option. Speaks
+ * PostgreSQL wire protocol directly to PGlite — no TCP, no serialization
+ * overhead beyond what the wire protocol requires.
+ *
+ * Pass to `pg.Client` or use via `createPool()` / `createPgliteAdapter()`:
+ *
+ * ```typescript
+ * const client = new pg.Client({
+ *   stream: () => new PGliteBridge(pglite),
+ * });
+ * ```
+ */
 export class PGliteBridge extends Duplex {
   private readonly pglite: PGlite;
   private readonly sessionLock: SessionLock | null;

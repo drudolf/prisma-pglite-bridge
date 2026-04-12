@@ -2,6 +2,20 @@
   "name": "prisma-enlite",
   "version": "0.1.0",
   "description": "In-process PGlite bridge for Prisma — zero-TCP, zero-Docker PostgreSQL",
+  "keywords": [
+    "prisma",
+    "pglite",
+    "postgresql",
+    "testing",
+    "in-memory",
+    "database",
+    "adapter",
+    "vitest",
+    "jest",
+    "driver-adapter"
+  ],
+  "repository": "drudolf/prisma-enlite",
+  "author": "drudolf",
   "type": "module",
   "license": "MIT",
   "main": "./dist/index.cjs",
@@ -19,7 +33,7 @@
       }
     }
   },
-  "files": ["dist"],
+  "files": ["dist", "README.md"],
   "sideEffects": false,
   "engines": {
     "node": ">=20"

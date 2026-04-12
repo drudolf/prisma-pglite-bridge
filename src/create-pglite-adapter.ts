@@ -107,12 +107,20 @@ const tryReadMigrationFiles = (migrationsPath: string): string | null => {
  * Spawns the Prisma CLI — ~1.9s. Used only as fallback when no migration
  * files exist.
  */
-const generateSchemaSQL = (schemaPath: string): string =>
-  execSync(`npx prisma migrate diff --from-empty --to-schema ${schemaPath} --script`, {
-    encoding: 'utf8',
-    timeout: 30_000,
-    env: { ...process.env, DATABASE_URL: 'postgresql://dummy@localhost/dummy' },
-  });
+const generateSchemaSQL = (schemaPath: string): string => {
+  try {
+    return execSync(`npx prisma migrate diff --from-empty --to-schema ${schemaPath} --script`, {
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: { ...process.env, DATABASE_URL: 'postgresql://dummy@localhost/dummy' },
+    });
+  } catch (err) {
+    throw new Error(
+      `Failed to generate schema SQL from ${schemaPath}. Ensure prisma is installed and the schema is valid. Alternatively, pass pre-generated SQL via the \`sql\` option or run \`prisma migrate dev\` to generate migration files (faster path).`,
+      { cause: err },
+    );
+  }
+};
 
 /**
  * Resolve schema SQL. Priority:
@@ -129,7 +137,9 @@ const resolveSQL = async (options: CreatePgliteAdapterOptions): Promise<string> 
   if (options.migrationsPath) {
     const sql = tryReadMigrationFiles(options.migrationsPath);
     if (sql) return sql;
-    throw new Error(`No migration.sql files found in ${options.migrationsPath}`);
+    throw new Error(
+      `No migration.sql files found in ${options.migrationsPath}. Run \`prisma migrate dev\` to generate migration files.`,
+    );
   }
 
   // Auto-discover via Prisma config
@@ -183,7 +193,13 @@ export const createPgliteAdapter = async (
     max: options.max,
   });
 
-  await pglite.exec(sql);
+  try {
+    await pglite.exec(sql);
+  } catch (err) {
+    throw new Error('Failed to apply schema SQL to PGlite. Check your schema or migration files.', {
+      cause: err,
+    });
+  }
 
   const adapter = new PrismaPg(pool);
 
