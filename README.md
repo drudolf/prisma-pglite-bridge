@@ -104,12 +104,58 @@ const client = new pg.Client({
 
 ## Examples
 
-### Vitest with per-test isolation
+### Replacing your production database in tests
+
+Most Prisma projects use a singleton module:
+
+```typescript
+// lib/prisma.ts — your production singleton
+import { PrismaPg } from '@prisma/adapter-pg';
+import { PrismaClient } from '@prisma/client';
+
+const adapter = new PrismaPg({
+  connectionString: process.env.DATABASE_URL,
+});
+export const prisma = new PrismaClient({ adapter });
+```
+
+In tests, swap the singleton via `vi.mock` so every import gets
+the in-memory PGlite version:
+
+```typescript
+// vitest.setup.ts
+import { createPgliteAdapter } from 'prisma-enlite';
+import { PrismaClient } from '@prisma/client';
+
+const { adapter, resetDb } = await createPgliteAdapter();
+export const testPrisma = new PrismaClient({ adapter });
+
+vi.mock('./lib/prisma', () => ({ prisma: testPrisma }));
+
+beforeEach(() => resetDb());
+```
+
+```typescript
+// vitest.config.ts
+export default defineConfig({
+  test: {
+    setupFiles: ['./vitest.setup.ts'],
+  },
+});
+```
+
+Now every test file that imports `prisma` from `lib/prisma`
+gets the PGlite-backed instance. No Docker, no test database,
+no cleanup scripts.
+
+### Vitest with per-test isolation (no singleton)
+
+If your code accepts `PrismaClient` as a parameter:
 
 ```typescript
 import { createPgliteAdapter } from 'prisma-enlite';
 import { PrismaClient } from '@prisma/client';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, it, expect } from 'vitest';
 
 let prisma: PrismaClient;
 let resetDb: () => Promise<void>;
@@ -123,7 +169,9 @@ beforeAll(async () => {
 beforeEach(() => resetDb());
 
 it('creates a user', async () => {
-  const user = await prisma.user.create({ data: { name: 'Test' } });
+  const user = await prisma.user.create({
+    data: { name: 'Test' },
+  });
   expect(user.id).toBeDefined();
 });
 ```
