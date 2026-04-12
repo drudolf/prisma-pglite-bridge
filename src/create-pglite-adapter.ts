@@ -26,6 +26,9 @@ export interface CreatePgliteAdapterOptions {
   /** Pre-generated SQL to apply instead of auto-generating from schema */
   sql?: string;
 
+  /** Root directory for prisma.config.ts discovery (default: process.cwd()). Set this in monorepos where tests run from the workspace root. */
+  configRoot?: string;
+
   /** PGlite data directory. Omit for in-memory. */
   dataDir?: string;
 
@@ -60,10 +63,10 @@ export interface PgliteAdapter {
  *
  * Returns null if @prisma/config is not available or config cannot be loaded.
  */
-const discoverMigrationsPath = async (): Promise<string | null> => {
+const discoverMigrationsPath = async (configRoot?: string): Promise<string | null> => {
   try {
     const { loadConfigFromFile } = await import('@prisma/config');
-    const { config, error } = await loadConfigFromFile({ configRoot: process.cwd() });
+    const { config, error } = await loadConfigFromFile({ configRoot: configRoot ?? process.cwd() });
     if (error) return null;
 
     // Explicit migrations path from prisma.config.ts
@@ -121,7 +124,7 @@ const resolveSQL = async (options: CreatePgliteAdapterOptions): Promise<string> 
   }
 
   // Auto-discover via Prisma config
-  const migrationsPath = await discoverMigrationsPath();
+  const migrationsPath = await discoverMigrationsPath(options.configRoot);
 
   if (migrationsPath) {
     const sql = tryReadMigrationFiles(migrationsPath);
