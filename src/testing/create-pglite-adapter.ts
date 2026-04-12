@@ -37,12 +37,15 @@ export interface CreatePgliteAdapterOptions {
   max?: number;
 }
 
+/** Clear all user tables. Call in `beforeEach` for per-test isolation. */
+export type ResetDbFn = () => Promise<void>;
+
 export interface PgliteAdapter {
   /** Prisma adapter — pass directly to `new PrismaClient({ adapter })` */
   adapter: PrismaPg;
 
   /** Clear all user tables. Call in `beforeEach` for per-test isolation. */
-  resetDb: () => Promise<void>;
+  resetDb: ResetDbFn;
 }
 
 /**
