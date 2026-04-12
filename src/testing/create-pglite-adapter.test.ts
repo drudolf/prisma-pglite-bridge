@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { createPgliteAdapter } from './create-test-db.ts';
+import { createPgliteAdapter } from './create-pglite-adapter.ts';
 
 describe('createPgliteAdapter', () => {
   let adapter: Awaited<ReturnType<typeof createPgliteAdapter>>['adapter'];

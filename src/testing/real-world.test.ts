@@ -19,7 +19,7 @@
  */
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createPgliteAdapter } from './create-test-db.ts';
+import { createPgliteAdapter } from './create-pglite-adapter.ts';
 
 let prisma: PrismaClient;
 let resetDb: () => Promise<void>;

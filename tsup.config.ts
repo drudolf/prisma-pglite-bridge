@@ -3,7 +3,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: {
     index: 'src/index.ts',
-    testing: 'src/testing/create-test-db.ts',
+    testing: 'src/testing/create-pglite-adapter.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,
