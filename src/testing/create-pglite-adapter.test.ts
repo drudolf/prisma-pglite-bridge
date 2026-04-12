@@ -1,15 +1,17 @@
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { type PgliteAdapter, createPgliteAdapter } from './create-pglite-adapter.ts';
+import { createPgliteAdapter } from './create-pglite-adapter.ts';
 
 describe('createPgliteAdapter', () => {
-  let adapter: PgliteAdapter['adapter'];
-  let resetDb: PgliteAdapter['resetDb'];
   let prisma: PrismaClient;
+  let resetDb: () => Promise<void>;
 
   beforeAll(async () => {
-    ({ adapter, resetDb } = await createPgliteAdapter({ schemaPath: './prisma/schema.prisma' }));
+    const { adapter, resetDb: reset } = await createPgliteAdapter({
+      schemaPath: './prisma/schema.prisma',
+    });
     prisma = new PrismaClient({ adapter });
+    resetDb = reset;
   });
 
   it('adapter works with PrismaClient', async () => {
