@@ -148,6 +148,25 @@ Now every test file that imports `prisma` from `lib/prisma`
 gets the PGlite-backed instance. No Docker, no test database,
 no cleanup scripts.
 
+For Jest, the same pattern works with `jest.mock`:
+
+```typescript
+// jest.setup.ts
+const { createPgliteAdapter } = require('prisma-enlite');
+const { PrismaClient } = require('@prisma/client');
+
+let resetDb;
+
+beforeAll(async () => {
+  const result = await createPgliteAdapter();
+  const prisma = new PrismaClient({ adapter: result.adapter });
+  resetDb = result.resetDb;
+  jest.mock('./lib/prisma', () => ({ prisma }));
+});
+
+beforeEach(() => resetDb());
+```
+
 ### Vitest with per-test isolation (no singleton)
 
 If your code accepts `PrismaClient` as a parameter:
