@@ -191,6 +191,27 @@ const { adapter } = await createPgliteAdapter({
 });
 ```
 
+### Persistent dev database (optional)
+
+By default, prisma-enlite runs entirely in memory — the database
+disappears when the process exits. This is ideal for tests. If you
+want data to survive restarts (local development, prototyping),
+pass a `dataDir`:
+
+```typescript
+const { adapter, close } = await createPgliteAdapter({
+  dataDir: './data/pglite',
+});
+const prisma = new PrismaClient({ adapter });
+
+// Data persists across restarts. Schema is only applied
+// on first run (PGlite detects an existing PGDATA directory).
+```
+
+Add `data/pglite/` to `.gitignore`. This gives you a local
+PostgreSQL without Docker — useful for offline development or
+environments where installing PostgreSQL is impractical.
+
 ### Long-running script with clean shutdown
 
 ```typescript
