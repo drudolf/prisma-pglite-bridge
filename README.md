@@ -336,9 +336,6 @@ try {
   transactions (one at a time), but `SET` variables leak between
   connections within a single test. `resetDb()` clears this between
   tests via `RESET ALL` and `DEALLOCATE ALL`.
-- **PGlite extensions** — if your schema uses `pgcrypto`,
-  `uuid-ossp`, etc., pass them via the `extensions` option. See
-  PGlite docs for available extensions.
 - **Migration files required** — run `prisma migrate dev` once to
   generate migration files, or pass schema SQL directly via the
   `sql` option.
