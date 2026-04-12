@@ -1,11 +1,11 @@
 /**
- * Test helper — creates a Prisma adapter backed by in-process PGlite.
+ * Creates a Prisma adapter backed by in-process PGlite.
  *
  * No TCP, no Docker, no worker threads — everything runs in the same process.
- * Process isolation (vitest `pool: 'forks'`) handles cleanup on exit.
+ * Works for testing, development, seeding, and scripts.
  *
  * ```typescript
- * import { createPgliteAdapter } from 'prisma-enlite/testing';
+ * import { createPgliteAdapter } from 'prisma-enlite';
  * import { PrismaClient } from '@prisma/client';
  *
  * const { adapter, resetDb } = await createPgliteAdapter();
@@ -18,7 +18,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { createPool } from '../create-pool.ts';
+import { createPool } from './create-pool.ts';
 
 export interface CreatePgliteAdapterOptions {
   /** Path to schema.prisma (auto-discovered if omitted) */
