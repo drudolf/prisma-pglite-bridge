@@ -600,6 +600,8 @@ describe('many-to-many implicit relations', () => {
 });
 
 // ─── Snapshot / Restore ───
+// Tests run sequentially: seed → snapshot → reset → verify → re-snapshot → etc.
+// Each test builds on state from the previous one to exercise the full lifecycle.
 
 describe('snapshotDb', () => {
   let prisma: PrismaClient;
