@@ -1,5 +1,21 @@
 # prisma-pglite-bridge
 
+## 0.3.0
+
+### Minor Changes
+
+- [`53e5465`](https://github.com/drudolf/prisma-pglite-bridge/commit/53e54654ec77bfb2d7aaaa2a649cef7487533fa0) Thanks [@drudolf](https://github.com/drudolf)! - # Add snapshotDb/resetSnapshot for fast test isolation
+
+  `snapshotDb()` captures the current database state into a shadow schema.
+  Subsequent `resetDb()` calls restore from the snapshot instead of
+  truncating to empty, avoiding expensive re-seeding through the Prisma
+  wire protocol.
+
+  Also fixes sequence save/restore: `quote_ident` was producing bare
+  identifiers that PostgreSQL interpreted as column references; switched
+  to `quote_literal` and added a `last_value IS NOT NULL` filter for
+  never-called sequences.
+
 ## 0.2.0
 
 ### Minor Changes
