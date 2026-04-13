@@ -27,11 +27,19 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - uses: changesets/action@v1
+        id: changesets
         with:
           publish: pnpm changeset publish
-          title: "release: version packages"
           commit: "release: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
           HUSKY: "0"
+      - name: Update PR title with version
+        if: steps.changesets.outputs.pullRequestNumber
+        run: |
+          git fetch origin changeset-release/main
+          VERSION=$(git show origin/changeset-release/main:package.json | jq -r .version)
+          gh pr edit ${{ steps.changesets.outputs.pullRequestNumber }} --title "release: $VERSION"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
