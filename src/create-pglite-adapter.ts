@@ -171,13 +171,13 @@ export const createPgliteAdapter = async (
 
   const resetDb = async () => {
     if (cachedTables === null) {
-      const { rows } = await pglite.query<{ schemaname: string; tablename: string }>(
-        `SELECT schemaname, tablename FROM pg_tables
+      const { rows } = await pglite.query<{ qualified: string }>(
+        `SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
+         FROM pg_tables
          WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
          AND tablename NOT LIKE '_prisma%'`,
       );
-      cachedTables =
-        rows.length > 0 ? rows.map((r) => `"${r.schemaname}"."${r.tablename}"`).join(', ') : '';
+      cachedTables = rows.length > 0 ? rows.map((r) => r.qualified).join(', ') : '';
     }
 
     if (cachedTables) {
