@@ -18,6 +18,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - run: pnpm dlx prisma generate
       - run: pnpm typecheck
       - run: pnpm check
       - run: pnpm test
