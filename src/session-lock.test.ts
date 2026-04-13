@@ -2,7 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PGliteBridge } from './pglite-bridge.ts';
-import { SessionLock, createBridgeId, extractRfqStatus } from './session-lock.ts';
+import { createBridgeId, extractRfqStatus, SessionLock } from './session-lock.ts';
 
 const { Client, Pool } = pg;
 

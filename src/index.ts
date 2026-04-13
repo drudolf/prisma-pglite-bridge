@@ -12,14 +12,15 @@
  *
  * @packageDocumentation
  */
-export { PGliteBridge } from './pglite-bridge.ts';
-export { createPool } from './create-pool.ts';
-export type { CreatePoolOptions, PoolResult } from './create-pool.ts';
-export { createPgliteAdapter } from './create-pglite-adapter.ts';
+
 export type {
   CreatePgliteAdapterOptions,
   PgliteAdapter,
   ResetDbFn,
-  SnapshotDbFn,
   ResetSnapshotFn,
+  SnapshotDbFn,
 } from './create-pglite-adapter.ts';
+export { createPgliteAdapter } from './create-pglite-adapter.ts';
+export type { CreatePoolOptions, PoolResult } from './create-pool.ts';
+export { createPool } from './create-pool.ts';
+export { PGliteBridge } from './pglite-bridge.ts';

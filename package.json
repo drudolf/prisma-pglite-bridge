@@ -34,7 +34,10 @@
       }
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
   "engines": {
     "node": ">=20"
@@ -60,7 +63,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.2",
-    "@biomejs/biome": "^1.9.0",
+    "@biomejs/biome": "^2.4.11",
     "@changesets/changelog-github": "^0.6.0",
     "@changesets/cli": "^2.30.0",
     "@commitlint/cli": "^20.5.0",
@@ -69,22 +72,26 @@
     "@prisma/adapter-pg": "^7.7.0",
     "@prisma/client": "^7.7.0",
     "@prisma/config": "^7.7.0",
-    "@types/node": "^22.0.0",
-    "@types/pg": "^8.11.0",
+    "@types/node": "^25.6.0",
+    "@types/pg": "^8.20.0",
     "husky": "^9.1.7",
     "knip": "^6.4.1",
     "lint-staged": "^16.4.0",
     "markdownlint-cli2": "^0.22.0",
-    "pg": "^8.13.0",
+    "pg": "^8.20.0",
     "pglite-prisma-adapter": "^0.7.2",
     "prisma": "^7.7.0",
     "prisma-pglite": "^2.0.2",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",
-    "typescript": "^5.7.0",
+    "typescript": "^5.9.3",
     "vitest": "^4.1.4"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["@prisma/engines", "esbuild", "prisma"]
+    "onlyBuiltDependencies": [
+      "@prisma/engines",
+      "esbuild",
+      "prisma"
+    ]
   }
 }
