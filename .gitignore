@@ -1,6 +1,5 @@
 node_modules/
 dist/
-prisma/migrations/
 *.tsbuildinfo
 .claude/
 CLAUDE.md
