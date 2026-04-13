@@ -20,9 +20,9 @@ import { Duplex } from 'node:stream';
 import type { PGlite } from '@electric-sql/pglite';
 import {
   type BridgeId,
-  type SessionLock,
   createBridgeId,
   extractRfqStatus,
+  type SessionLock,
 } from './session-lock.ts';
 
 // Frontend message types
@@ -145,6 +145,7 @@ export class PGliteBridge extends Duplex {
   private readonly bridgeId: BridgeId;
   /** Incoming bytes not yet compacted into buf */
   private pending: Buffer[] = [];
+  // biome-ignore lint/correctness/noUnusedPrivateClassMembers: used via this.pendingLen
   private pendingLen = 0;
   /** Compacted input buffer for message framing */
   private buf: Buffer = Buffer.alloc(0);
