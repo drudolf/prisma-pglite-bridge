@@ -1,14 +1,20 @@
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type {
+  PgliteAdapter,
+  ResetDbFn,
+  ResetSnapshotFn,
+  SnapshotDbFn,
+} from './create-pglite-adapter.ts';
 import { createPgliteAdapter } from './create-pglite-adapter.ts';
 
 let prisma: PrismaClient;
-let resetDb: () => Promise<void>;
+let resetDb: ResetDbFn;
 
 beforeAll(async () => {
-  const { adapter, resetDb: reset } = await createPgliteAdapter();
+  let adapter: PgliteAdapter['adapter'];
+  ({ adapter, resetDb } = await createPgliteAdapter());
   prisma = new PrismaClient({ adapter });
-  resetDb = reset;
 });
 
 beforeEach(() => resetDb());
@@ -590,5 +596,157 @@ describe('many-to-many implicit relations', () => {
       include: { items: true },
     });
     expect(found?.items).toHaveLength(2);
+  });
+});
+
+// ─── Snapshot / Restore ───
+
+describe('snapshotDb', () => {
+  let prisma: PrismaClient;
+  let resetDb: ResetDbFn;
+  let snapshotDb: SnapshotDbFn;
+  let resetSnapshot: ResetSnapshotFn;
+
+  beforeAll(async () => {
+    let adapter: PgliteAdapter['adapter'];
+    ({ adapter, resetDb, snapshotDb, resetSnapshot } = await createPgliteAdapter());
+    prisma = new PrismaClient({ adapter });
+  });
+
+  it('restores seeded data after resetDb', async () => {
+    const tenant = await prisma.tenant.create({
+      data: { name: 'Snap Tenant', slug: 'snap', labels: ['test'] },
+    });
+    await prisma.workspace.create({
+      data: { name: 'Snap WS', slug: 'snap-ws', tenantId: tenant.id, apiKey: 'key_snap' },
+    });
+
+    await snapshotDb();
+    await resetDb();
+
+    expect(await prisma.tenant.count()).toBe(1);
+    expect(await prisma.workspace.count()).toBe(1);
+
+    const restored = await prisma.tenant.findFirst();
+    expect(restored?.slug).toBe('snap');
+    expect(restored?.labels).toEqual(['test']);
+  });
+
+  it('allows new writes after restore without ID collision', async () => {
+    await resetDb();
+
+    const newTenant = await prisma.tenant.create({
+      data: { name: 'New Tenant', slug: 'new-tenant' },
+    });
+    expect(newTenant.id).toBeDefined();
+    expect(await prisma.tenant.count()).toBe(2);
+  });
+
+  it('overwrites previous snapshot', async () => {
+    await resetDb();
+
+    await prisma.tenant.create({
+      data: { name: 'Extra Tenant', slug: 'extra' },
+    });
+
+    await snapshotDb();
+    await resetDb();
+
+    expect(await prisma.tenant.count()).toBe(2);
+    const extra = await prisma.tenant.findFirst({ where: { slug: 'extra' } });
+    expect(extra).not.toBeNull();
+  });
+
+  it('preserves all column types through snapshot cycle', async () => {
+    await resetDb();
+
+    const ws = await prisma.workspace.findFirstOrThrow();
+
+    const job = await prisma.job.create({
+      data: {
+        friendlyId: 'j_snap',
+        workspaceId: ws.id,
+        payload: { model: 'gpt-4', temperature: 0.7 },
+        tags: ['snapshot', 'test'],
+      },
+    });
+
+    const entry = await prisma.catalogEntry.create({
+      data: { friendlyId: 'ce_snap', name: 'snap-model', pattern: '.*', provider: 'test' },
+    });
+    const tier = await prisma.catalogTier.create({
+      data: { name: 'Snap Tier', isDefault: true, entryId: entry.id },
+    });
+    await prisma.catalogPrice.create({
+      data: { kind: 'input', amount: '0.000025000000', tierId: tier.id },
+    });
+
+    const blobContent = Buffer.from('snapshot-binary-data');
+    await prisma.blob.create({
+      data: { name: 'snap.bin', data: blobContent, size: blobContent.length },
+    });
+
+    await snapshotDb();
+    await resetDb();
+
+    const restoredJob = await prisma.job.findUnique({ where: { id: job.id } });
+    expect((restoredJob?.payload as Record<string, unknown>).model).toBe('gpt-4');
+    expect(restoredJob?.tags).toEqual(['snapshot', 'test']);
+
+    const restoredPrice = await prisma.catalogPrice.findFirst();
+    expect(Number(restoredPrice?.amount)).toBeCloseTo(0.000025, 12);
+
+    const restoredBlob = await prisma.blob.findFirst();
+    expect(Buffer.from(restoredBlob?.data as Buffer).toString()).toBe('snapshot-binary-data');
+  });
+
+  it('resetSnapshot clears snapshot, resetDb truncates to empty', async () => {
+    await resetSnapshot();
+    await resetDb();
+
+    expect(await prisma.tenant.count()).toBe(0);
+  });
+});
+
+describe('snapshot with auto-increment sequences', () => {
+  it('preserves and restores sequence positions', async () => {
+    const {
+      adapter: seqAdapter,
+      resetDb: seqResetDb,
+      snapshotDb: seqSnapshotDb,
+    } = await createPgliteAdapter({
+      sql: 'CREATE TABLE counter (id serial PRIMARY KEY, label text NOT NULL)',
+    });
+    const seqPrisma = new PrismaClient({ adapter: seqAdapter });
+
+    await seqPrisma.$queryRawUnsafe("INSERT INTO counter (label) VALUES ('a'), ('b'), ('c')");
+
+    await seqSnapshotDb();
+    await seqResetDb();
+
+    const rows = await seqPrisma.$queryRawUnsafe<{ id: number; label: string }[]>(
+      'SELECT * FROM counter ORDER BY id',
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows.map((r) => r.label)).toEqual(['a', 'b', 'c']);
+
+    await seqPrisma.$queryRawUnsafe("INSERT INTO counter (label) VALUES ('d')");
+    const next = await seqPrisma.$queryRawUnsafe<{ id: number }[]>(
+      "SELECT id FROM counter WHERE label = 'd'",
+    );
+    expect(next[0]?.id).toBe(4);
+  });
+});
+
+describe('backwards compat: resetDb without snapshot still truncates', () => {
+  it('truncates to empty when no snapshot exists', async () => {
+    await prisma.tenant.create({
+      data: { name: 'Compat Tenant', slug: 'compat' },
+    });
+    expect(await prisma.tenant.count()).toBe(1);
+
+    await resetDb();
+
+    expect(await prisma.tenant.count()).toBe(0);
   });
 });

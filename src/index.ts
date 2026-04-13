@@ -20,4 +20,6 @@ export type {
   CreatePgliteAdapterOptions,
   PgliteAdapter,
   ResetDbFn,
+  SnapshotDbFn,
+  ResetSnapshotFn,
 } from './create-pglite-adapter.ts';
