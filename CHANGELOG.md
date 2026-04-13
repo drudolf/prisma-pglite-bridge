@@ -1,5 +1,15 @@
 # prisma-pglite-bridge
 
+## 0.3.1
+
+### Patch Changes
+
+- [`6422d64`](https://github.com/drudolf/prisma-pglite-bridge/commit/6422d64b368d9807a5a6ecce9d7ddb1aa4142e7a) Thanks [@drudolf](https://github.com/drudolf)! - # Migrate build toolchain to tsdown and TypeScript 6
+
+  Switch from tsup (esbuild) to tsdown (Rolldown) for bundling, and
+  upgrade TypeScript from 5.9 to 6.0. Also updates Biome from 1.9 to
+  2.4 and @types/node from 22 to 25.
+
 ## 0.3.0
 
 ### Minor Changes
