@@ -8,6 +8,7 @@
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
+    "isolatedDeclarations": true,
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "noEmit": true,
