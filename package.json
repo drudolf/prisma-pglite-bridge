@@ -1,7 +1,7 @@
 {
   "name": "prisma-pglite-bridge",
   "packageManager": "pnpm@10.33.0",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "In-process PGlite bridge for Prisma — zero-TCP, zero-Docker PostgreSQL",
   "keywords": [
     "prisma",
@@ -34,7 +34,10 @@
       }
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
   "engines": {
     "node": ">=20"
@@ -85,6 +88,10 @@
     "vitest": "^4.1.4"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["@prisma/engines", "esbuild", "prisma"]
+    "onlyBuiltDependencies": [
+      "@prisma/engines",
+      "esbuild",
+      "prisma"
+    ]
   }
 }
