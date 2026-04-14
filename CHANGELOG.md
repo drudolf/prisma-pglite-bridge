@@ -1,5 +1,11 @@
 # prisma-pglite-bridge
 
+## 0.3.2
+
+### Patch Changes
+
+- [`c4c5a3e`](https://github.com/drudolf/prisma-pglite-bridge/commit/c4c5a3e869394d987f86cfda07d9f09966399fed) Thanks [@drudolf](https://github.com/drudolf)! - Export `SessionLock` from the public API for advanced multi-bridge use cases.
+
 ## 0.3.1
 
 ### Patch Changes
