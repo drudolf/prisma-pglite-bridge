@@ -12,6 +12,7 @@ Requires **Prisma 7+** and **Node.js 20+**.
 pnpm add -D prisma-pglite-bridge @electric-sql/pglite @prisma/adapter-pg pg
 ```
 
+The last three are peer dependencies you may already have.
 TypeScript users also need `@types/pg`.
 
 ## Quickstart
@@ -28,7 +29,8 @@ beforeEach(() => resetDb());
 ```
 
 That's it. Schema is auto-discovered from `prisma.config.ts`
-and migration files. No Docker, no database server — works
+and migration files (run `prisma migrate dev` first if you
+haven't already). No Docker, no database server — works
 in GitHub Actions, GitLab CI, and any environment where
 Node.js runs.
 
@@ -56,8 +58,8 @@ Creates a Prisma adapter backed by an in-process PGlite instance.
 ```typescript
 const { adapter, pglite, resetDb, close } = await createPgliteAdapter({
   // All optional — migrations auto-discovered from prisma.config.ts
-  migrationsPath: './prisma/migrations',
-  sql: 'CREATE TABLE ...',
+  migrationsPath: './prisma/migrations', // or:
+  sql: 'CREATE TABLE ...',              // (first match wins, see Schema Resolution)
   configRoot: '../..',        // monorepo: where to find prisma.config.ts
   dataDir: './data/pglite',   // omit for in-memory
   extensions: {},             // PGlite extensions
@@ -81,7 +83,8 @@ Returns:
 ### `createPool(options?)`
 
 Lower-level escape hatch. Creates a `pg.Pool` backed by PGlite
-without Prisma wiring.
+without automatic schema resolution — useful for custom Prisma
+setups, other ORMs, or raw SQL.
 
 ```typescript
 import { createPool } from 'prisma-pglite-bridge';
@@ -104,14 +107,16 @@ same PGlite instance, pass a shared `SessionLock` to prevent
 transaction interleaving.
 
 ```typescript
-import { PGliteBridge } from 'prisma-pglite-bridge';
+import { PGliteBridge, SessionLock } from 'prisma-pglite-bridge';
 import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 
 const pglite = new PGlite();
 await pglite.waitReady;
+
+const lock = new SessionLock();
 const client = new pg.Client({
-  stream: () => new PGliteBridge(pglite),
+  stream: () => new PGliteBridge(pglite, lock),
 });
 ```
 
@@ -161,7 +166,9 @@ Now every test file that imports `prisma` from `lib/prisma`
 gets the PGlite-backed instance. No Docker, no test database,
 no cleanup scripts.
 
-For Jest, the same pattern works with `jest.mock`:
+For Jest, the same pattern works with `jest.mock`. Note that
+`jest.mock` is hoisted to the top of the file — place it at
+the top level, not inside `beforeAll`:
 
 ```typescript
 // jest.setup.ts
@@ -171,7 +178,6 @@ const { PrismaClient } = require('@prisma/client');
 let testPrisma;
 let resetDb;
 
-// jest.mock is hoisted — must be at top level, not inside beforeAll
 jest.mock('./lib/prisma', () => ({
   get prisma() { return testPrisma; },
 }));
@@ -190,17 +196,17 @@ beforeEach(() => resetDb());
 If your code accepts `PrismaClient` as a parameter:
 
 ```typescript
-import { createPgliteAdapter } from 'prisma-pglite-bridge';
+import { createPgliteAdapter, type ResetDbFn } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, beforeEach, it, expect } from 'vitest';
 
 let prisma: PrismaClient;
-let resetDb: () => Promise<void>;
+let resetDb: ResetDbFn;
 
 beforeAll(async () => {
-  const { adapter, resetDb: reset } = await createPgliteAdapter();
-  prisma = new PrismaClient({ adapter });
-  resetDb = reset;
+  const result = await createPgliteAdapter();
+  prisma = new PrismaClient({ adapter: result.adapter });
+  resetDb = result.resetDb;
 });
 
 beforeEach(() => resetDb());
@@ -227,25 +233,27 @@ export const seed = async (prisma: PrismaClient) => {
   await prisma.user.create({ data: { name: 'Bob', role: 'MEMBER' } });
 };
 
-// Still works as a script for `prisma db seed`
-const prisma = new PrismaClient();
-seed(prisma).then(() => prisma.$disconnect());
+// Script entry point for `prisma db seed`
+if (import.meta.url === new URL(process.argv[1]!, 'file:').href) {
+  const prisma = new PrismaClient();
+  seed(prisma).then(() => prisma.$disconnect());
+}
 ```
 
 Then reuse it in tests:
 
 ```typescript
-import { createPgliteAdapter } from 'prisma-pglite-bridge';
+import { createPgliteAdapter, type ResetDbFn } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { seed } from '../prisma/seed';
 
 let prisma: PrismaClient;
-let resetDb: () => Promise<void>;
+let resetDb: ResetDbFn;
 
 beforeAll(async () => {
-  const { adapter, resetDb: reset } = await createPgliteAdapter();
-  prisma = new PrismaClient({ adapter });
-  resetDb = reset;
+  const result = await createPgliteAdapter();
+  prisma = new PrismaClient({ adapter: result.adapter });
+  resetDb = result.resetDb;
   await seed(prisma);
 });
 
@@ -271,8 +279,9 @@ const { adapter } = await createPgliteAdapter({
 });
 ```
 
-See [PGlite extensions](https://pglite.dev/extensions/) for the
-full list of available extensions.
+Extensions are included in the `@electric-sql/pglite` package —
+no extra install needed. See [PGlite extensions](https://pglite.dev/extensions/)
+for the full list.
 
 ### Pre-generated SQL (fastest)
 
@@ -302,11 +311,12 @@ const { adapter, close } = await createPgliteAdapter({
 });
 const prisma = new PrismaClient({ adapter });
 
-// Data persists across restarts. Schema is only applied
-// on first run (PGlite detects an existing PGDATA directory).
+// Data persists across restarts. Schema is only applied on first run
+// (PGlite detects an existing PGDATA directory). Delete the data
+// directory after schema changes to pick up new migrations.
 ```
 
-Add `data/pglite/` to `.gitignore`. This gives you a local
+**Add `data/pglite/` to `.gitignore`.** This gives you a local
 PostgreSQL without Docker — useful for offline development or
 environments where installing PostgreSQL is impractical.
 
