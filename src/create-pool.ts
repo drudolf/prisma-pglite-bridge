@@ -42,6 +42,9 @@ export interface PoolResult {
 /**
  * Creates a pg.Pool where every connection is an in-process PGlite bridge.
  *
+ * Most users should prefer {@link createPgliteAdapter}, which wraps this
+ * function and also handles schema application and reset/snapshot lifecycle.
+ *
  * ```typescript
  * import { createPool } from 'prisma-pglite-bridge';
  * import { PrismaPg } from '@prisma/adapter-pg';
@@ -51,6 +54,8 @@ export interface PoolResult {
  * const adapter = new PrismaPg(pool);
  * const prisma = new PrismaClient({ adapter });
  * ```
+ *
+ * @see {@link createPgliteAdapter} for the higher-level API with schema management.
  */
 export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolResult> => {
   const { dataDir, extensions, max = 5 } = options;

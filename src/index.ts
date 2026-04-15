@@ -13,6 +13,7 @@
  * @packageDocumentation
  */
 
+// ── High-level API (most users only need this) ──
 export type {
   CreatePgliteAdapterOptions,
   PgliteAdapter,
@@ -21,6 +22,8 @@ export type {
   SnapshotDbFn,
 } from './create-pglite-adapter.ts';
 export { createPgliteAdapter } from './create-pglite-adapter.ts';
+
+// ── Low-level building blocks ──
 export type { CreatePoolOptions, PoolResult } from './create-pool.ts';
 export { createPool } from './create-pool.ts';
 export { PGliteBridge } from './pglite-bridge.ts';

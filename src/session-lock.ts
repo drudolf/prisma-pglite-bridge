@@ -46,6 +46,16 @@ export const extractRfqStatus = (response: Uint8Array): number | null => {
   return null;
 };
 
+/**
+ * Coordinates PGlite access across concurrent pool connections.
+ *
+ * @remarks
+ * PGlite runs PostgreSQL in single-user mode — one session shared by all
+ * bridges. The session lock tracks which bridge owns the session during
+ * transactions, preventing interleaving. Used internally by {@link PGliteBridge}
+ * and created automatically by {@link createPool}. Only instantiate directly
+ * if building a custom pool setup.
+ */
 export class SessionLock {
   private owner: BridgeId | null = null;
   private waitQueue: Array<{ id: BridgeId; resolve: () => void }> = [];
