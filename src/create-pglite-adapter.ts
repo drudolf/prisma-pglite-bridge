@@ -24,6 +24,16 @@ const SENTINEL_SCHEMA = '_pglite_bridge';
 const SENTINEL_TABLE = '__initialized';
 const SENTINEL_MARKER = 'prisma-pglite-bridge:init:v1';
 
+const USER_TABLES_WHERE = `schemaname NOT IN ('pg_catalog', 'information_schema')
+       AND schemaname != '${SNAPSHOT_SCHEMA}'
+       AND schemaname != '${SENTINEL_SCHEMA}'
+       AND tablename NOT LIKE '_prisma%'`;
+
+const escapeLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;
+
+const isValidSentinelRow = (rows: Array<{ marker: string; version: number }>) =>
+  rows.length === 1 && rows[0]?.marker === SENTINEL_MARKER && rows[0]?.version === 1;
+
 export interface CreatePgliteAdapterOptions {
   /** Path to prisma/migrations/ directory (auto-discovered via prisma.config.ts if omitted) */
   migrationsPath?: string;
@@ -174,7 +184,7 @@ export const createPgliteAdapter = async (
   const sentinelStatements = [
     `CREATE SCHEMA IF NOT EXISTS "${SENTINEL_SCHEMA}"`,
     `CREATE TABLE IF NOT EXISTS "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
-    `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES ('${SENTINEL_MARKER}', 1) ON CONFLICT (marker) DO NOTHING`,
+    `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES (${escapeLiteral(SENTINEL_MARKER)}, 1) ON CONFLICT (marker) DO NOTHING`,
   ];
 
   const collisionError = () =>
@@ -189,9 +199,7 @@ export const createPgliteAdapter = async (
       const { rows } = await pglite.query<{ marker: string; version: number }>(
         `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
       );
-      if (rows.length !== 1 || rows[0]?.marker !== SENTINEL_MARKER || rows[0]?.version !== 1) {
-        throw new Error(collisionError());
-      }
+      if (!isValidSentinelRow(rows)) throw new Error(collisionError());
       await pglite.exec('COMMIT');
       committed = true;
     } catch (err) {
@@ -215,12 +223,7 @@ export const createPgliteAdapter = async (
         const { rows: allRows } = await pglite.query<{ marker: string; version: number }>(
           `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
         );
-        if (
-          allRows.length === 1 &&
-          allRows[0]?.marker === SENTINEL_MARKER &&
-          allRows[0]?.version === 1
-        )
-          return true;
+        if (isValidSentinelRow(allRows)) return true;
       } catch {
         // Table has incompatible columns — fall through to collision error
       }
@@ -275,13 +278,7 @@ export const createPgliteAdapter = async (
         const { rows: verify } = await pglite.query<{ marker: string; version: number }>(
           `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
         );
-        if (
-          verify.length !== 1 ||
-          verify[0]?.marker !== SENTINEL_MARKER ||
-          verify[0]?.version !== 1
-        ) {
-          throw new Error(collisionError());
-        }
+        if (!isValidSentinelRow(verify)) throw new Error(collisionError());
         await pglite.exec('COMMIT');
         committed = true;
       } catch (err) {
@@ -307,8 +304,6 @@ export const createPgliteAdapter = async (
 
   const adapter = new PrismaPg(pool);
 
-  const escapeLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;
-
   let cachedTables: string | null = null;
   let hasSnapshot = false;
 
@@ -317,10 +312,7 @@ export const createPgliteAdapter = async (
     const { rows } = await pglite.query<{ qualified: string }>(
       `SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
        FROM pg_tables
-       WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-       AND schemaname != '${SNAPSHOT_SCHEMA}'
-       AND schemaname != '${SENTINEL_SCHEMA}'
-       AND tablename NOT LIKE '_prisma%'`,
+       WHERE ${USER_TABLES_WHERE}`,
     );
     cachedTables = rows.length > 0 ? rows.map((r) => r.qualified).join(', ') : '';
     return cachedTables;
@@ -328,47 +320,56 @@ export const createPgliteAdapter = async (
 
   const snapshotDb: SnapshotDbFn = async () => {
     await pglite.exec(`DROP SCHEMA IF EXISTS "${SNAPSHOT_SCHEMA}" CASCADE`);
-    await pglite.exec(`CREATE SCHEMA "${SNAPSHOT_SCHEMA}"`);
 
-    const { rows: tables } = await pglite.query<{
-      schemaname: string;
-      tablename: string;
-      qualified: string;
-    }>(
-      `SELECT schemaname, tablename,
-              quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
-       FROM pg_tables
-       WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-       AND schemaname != '${SNAPSHOT_SCHEMA}'
-       AND schemaname != '${SENTINEL_SCHEMA}'
-       AND tablename NOT LIKE '_prisma%'`,
-    );
+    try {
+      await pglite.exec('BEGIN');
+      await pglite.exec(`CREATE SCHEMA "${SNAPSHOT_SCHEMA}"`);
 
-    await pglite.exec(
-      `CREATE TABLE "${SNAPSHOT_SCHEMA}".__tables (snap_name text, source_schema text, source_table text)`,
-    );
-
-    for (const [i, { schemaname, tablename, qualified }] of tables.entries()) {
-      const snapName = `_snap_${i}`;
-      await pglite.exec(
-        `CREATE TABLE "${SNAPSHOT_SCHEMA}"."${snapName}" AS SELECT * FROM ${qualified}`,
+      const { rows: tables } = await pglite.query<{
+        schemaname: string;
+        tablename: string;
+        qualified: string;
+      }>(
+        `SELECT schemaname, tablename,
+                quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
+         FROM pg_tables
+         WHERE ${USER_TABLES_WHERE}`,
       );
+
       await pglite.exec(
-        `INSERT INTO "${SNAPSHOT_SCHEMA}".__tables VALUES (${escapeLiteral(snapName)}, ${escapeLiteral(schemaname)}, ${escapeLiteral(tablename)})`,
+        `CREATE TABLE "${SNAPSHOT_SCHEMA}".__tables (snap_name text, source_schema text, source_table text)`,
       );
-    }
 
-    const { rows: seqs } = await pglite.query<{ name: string; value: string }>(
-      `SELECT quote_literal(schemaname || '.' || sequencename) AS name, last_value::text AS value
-       FROM pg_sequences
-       WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-       AND schemaname != '${SNAPSHOT_SCHEMA}'
-       AND last_value IS NOT NULL`,
-    );
+      for (const [i, { schemaname, tablename, qualified }] of tables.entries()) {
+        const snapName = `_snap_${i}`;
+        await pglite.exec(
+          `CREATE TABLE "${SNAPSHOT_SCHEMA}"."${snapName}" AS SELECT * FROM ${qualified}`,
+        );
+        await pglite.exec(
+          `INSERT INTO "${SNAPSHOT_SCHEMA}".__tables VALUES (${escapeLiteral(snapName)}, ${escapeLiteral(schemaname)}, ${escapeLiteral(tablename)})`,
+        );
+      }
 
-    await pglite.exec(`CREATE TABLE "${SNAPSHOT_SCHEMA}".__sequences (name text, value bigint)`);
-    for (const { name, value } of seqs) {
-      await pglite.exec(`INSERT INTO "${SNAPSHOT_SCHEMA}".__sequences VALUES (${name}, ${value})`);
+      const { rows: seqs } = await pglite.query<{ name: string; value: string }>(
+        `SELECT quote_literal(schemaname || '.' || sequencename) AS name, last_value::text AS value
+         FROM pg_sequences
+         WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+         AND schemaname != '${SNAPSHOT_SCHEMA}'
+         AND last_value IS NOT NULL`,
+      );
+
+      await pglite.exec(`CREATE TABLE "${SNAPSHOT_SCHEMA}".__sequences (name text, value bigint)`);
+      for (const { name, value } of seqs) {
+        await pglite.exec(
+          `INSERT INTO "${SNAPSHOT_SCHEMA}".__sequences VALUES (${name}, ${value})`,
+        );
+      }
+
+      await pglite.exec('COMMIT');
+    } catch (err) {
+      await pglite.exec('ROLLBACK');
+      await pglite.exec(`DROP SCHEMA IF EXISTS "${SNAPSHOT_SCHEMA}" CASCADE`);
+      throw err;
     }
 
     hasSnapshot = true;

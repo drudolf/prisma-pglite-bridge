@@ -145,8 +145,6 @@ export class PGliteBridge extends Duplex {
   private readonly bridgeId: BridgeId;
   /** Incoming bytes not yet compacted into buf */
   private pending: Buffer[] = [];
-  // biome-ignore lint/correctness/noUnusedPrivateClassMembers: used via this.pendingLen
-  private pendingLen = 0;
   /** Compacted input buffer for message framing */
   private buf: Buffer = Buffer.alloc(0);
   private phase: 'pre_startup' | 'ready' = 'pre_startup';
@@ -156,7 +154,6 @@ export class PGliteBridge extends Duplex {
   private drainQueue: Array<(error?: Error | null) => void> = [];
   /** Buffered EQP messages awaiting Sync */
   private pipeline: Uint8Array[] = [];
-  private pipelineLen = 0;
 
   constructor(pglite: PGlite, sessionLock?: SessionLock) {
     super();
@@ -204,7 +201,6 @@ export class PGliteBridge extends Duplex {
     callback: (error?: Error | null) => void,
   ): void {
     this.pending.push(chunk);
-    this.pendingLen += chunk.length;
     this.enqueue(callback);
   }
 
@@ -215,7 +211,6 @@ export class PGliteBridge extends Duplex {
   ): void {
     for (const { chunk } of chunks) {
       this.pending.push(chunk);
-      this.pendingLen += chunk.length;
     }
     this.enqueue(callback);
   }
@@ -229,9 +224,7 @@ export class PGliteBridge extends Duplex {
   override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
     this.tornDown = true;
     this.pipeline.length = 0;
-    this.pipelineLen = 0;
     this.pending.length = 0;
-    this.pendingLen = 0;
     this.sessionLock?.release(this.bridgeId);
 
     // Flush pending write callbacks so pg.Client doesn't hang
@@ -255,7 +248,6 @@ export class PGliteBridge extends Duplex {
       this.buf = Buffer.concat([this.buf, ...this.pending]);
     }
     this.pending.length = 0;
-    this.pendingLen = 0;
   }
 
   /**
@@ -364,13 +356,11 @@ export class PGliteBridge extends Duplex {
 
       if (EQP_MESSAGES.has(msgType)) {
         this.pipeline.push(message);
-        this.pipelineLen += message.length;
         continue;
       }
 
       if (msgType === SYNC) {
         this.pipeline.push(message);
-        this.pipelineLen += message.length;
         await this.flushPipeline();
         continue;
       }
@@ -394,22 +384,8 @@ export class PGliteBridge extends Duplex {
    */
   private async flushPipeline(): Promise<void> {
     const messages = this.pipeline;
-    const totalLen = this.pipelineLen;
     this.pipeline = [];
-    this.pipelineLen = 0;
-
-    // Concatenate pipeline into one buffer
-    let batch: Uint8Array;
-    if (messages.length === 1) {
-      batch = messages[0] ?? new Uint8Array(0);
-    } else {
-      batch = new Uint8Array(totalLen);
-      let offset = 0;
-      for (const msg of messages) {
-        batch.set(msg, offset);
-        offset += msg.length;
-      }
-    }
+    const batch = concat(messages);
 
     await this.acquireSession();
     await this.pglite.runExclusive(async () => {
