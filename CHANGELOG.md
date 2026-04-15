@@ -1,5 +1,11 @@
 # prisma-pglite-bridge
 
+## 0.4.0
+
+### Minor Changes
+
+- [`1006069`](https://github.com/drudolf/prisma-pglite-bridge/commit/10060690546e5b6b8b808f1819717ae384a84cb3) Thanks [@drudolf](https://github.com/drudolf)! - Replace catalog-guessing `isInitialized` with sentinel-based detection for persistent `dataDir` reopens. Uses a `_pglite_bridge.__initialized` marker table with transactional writes, pre-commit verification, and a legacy fallback for pre-sentinel databases. Fixes sequence-only and function-only schemas not being detected on reopen.
+
 ## 0.3.2
 
 ### Patch Changes
