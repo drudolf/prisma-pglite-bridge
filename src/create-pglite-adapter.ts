@@ -20,6 +20,9 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { createPool } from './create-pool.ts';
 
 const SNAPSHOT_SCHEMA = '_pglite_snapshot';
+const SENTINEL_SCHEMA = '_pglite_bridge';
+const SENTINEL_TABLE = '__initialized';
+const SENTINEL_MARKER = 'prisma-pglite-bridge:init:v1';
 
 export interface CreatePgliteAdapterOptions {
   /** Path to prisma/migrations/ directory (auto-discovered via prisma.config.ts if omitted) */
@@ -168,32 +171,131 @@ export const createPgliteAdapter = async (
     max: options.max,
   });
 
+  const sentinelStatements = [
+    `CREATE SCHEMA IF NOT EXISTS "${SENTINEL_SCHEMA}"`,
+    `CREATE TABLE IF NOT EXISTS "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
+    `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES ('${SENTINEL_MARKER}', 1) ON CONFLICT (marker) DO NOTHING`,
+  ];
+
+  const collisionError = () =>
+    `"${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" exists but is not owned by prisma-pglite-bridge. ` +
+    `The "${SENTINEL_SCHEMA}" schema is reserved for library metadata.`;
+
+  const writeSentinel = async () => {
+    try {
+      await pglite.exec(`BEGIN;\n${sentinelStatements.join(';\n')}`);
+    } catch (err) {
+      await pglite.exec('ROLLBACK');
+      throw new Error(collisionError(), { cause: err });
+    }
+
+    const { rows } = await pglite.query<{ marker: string; version: number }>(
+      `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
+    );
+    if (rows.length !== 1 || rows[0]?.marker !== SENTINEL_MARKER || rows[0]?.version !== 1) {
+      await pglite.exec('ROLLBACK');
+      throw new Error(collisionError());
+    }
+    await pglite.exec('COMMIT');
+  };
+
   const isInitialized = async () => {
-    const { rows } = await pglite.query<{ n: number }>(
-      `SELECT count(*)::int AS n FROM (
-         SELECT 1 FROM pg_tables WHERE schemaname = 'public'
+    const { rows: tableExists } = await pglite.query<{ found: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_tables
+           WHERE schemaname = '${SENTINEL_SCHEMA}' AND tablename = '${SENTINEL_TABLE}'
+       ) AS found`,
+    );
+
+    if (tableExists[0]?.found) {
+      try {
+        const { rows: allRows } = await pglite.query<{ marker: string; version: number }>(
+          `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
+        );
+        if (
+          allRows.length === 1 &&
+          allRows[0]?.marker === SENTINEL_MARKER &&
+          allRows[0]?.version === 1
+        )
+          return true;
+      } catch {
+        // Table has incompatible columns — fall through to collision error
+      }
+
+      throw new Error(collisionError());
+    }
+
+    const { rows: schemaExists } = await pglite.query<{ found: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_namespace WHERE nspname = '${SENTINEL_SCHEMA}'
+       ) AS found`,
+    );
+    if (schemaExists[0]?.found) {
+      throw new Error(
+        `Schema "${SENTINEL_SCHEMA}" exists but is not owned by prisma-pglite-bridge. ` +
+          `The "${SENTINEL_SCHEMA}" schema is reserved for library metadata.`,
+      );
+    }
+
+    const { rows: legacy } = await pglite.query<{ initialized: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
+           WHERE n.nspname = 'public'
          UNION ALL
          SELECT 1 FROM pg_type t JOIN pg_namespace n ON t.typnamespace = n.oid
-           WHERE n.nspname = 'public' AND t.typtype = 'e'
+           WHERE n.nspname = 'public' AND t.typtype NOT IN ('b', 'p')
+         UNION ALL
+         SELECT 1 FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid
+           WHERE n.nspname = 'public'
          UNION ALL
          SELECT 1 FROM pg_namespace
            WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'public')
-       ) AS objects`,
+       ) AS initialized`,
     );
-    return (rows[0]?.n ?? 0) > 0;
+    if (legacy[0]?.initialized) {
+      await writeSentinel();
+      return true;
+    }
+
+    return false;
   };
 
   if (!options.dataDir || !(await isInitialized())) {
     const sql = await resolveSQL(options);
-    try {
-      await pglite.exec(sql);
-    } catch (err) {
-      throw new Error(
-        'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
-        {
-          cause: err,
-        },
+    const isMigrationSQL = !options.sql;
+
+    if (isMigrationSQL) {
+      try {
+        await pglite.exec(`BEGIN;\n${sql};\n${sentinelStatements.join(';\n')}`);
+      } catch (err) {
+        await pglite.exec('ROLLBACK');
+        throw new Error(
+          'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
+          { cause: err },
+        );
+      }
+      const { rows: verify } = await pglite.query<{ marker: string; version: number }>(
+        `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
       );
+      if (
+        verify.length !== 1 ||
+        verify[0]?.marker !== SENTINEL_MARKER ||
+        verify[0]?.version !== 1
+      ) {
+        await pglite.exec('ROLLBACK');
+        throw new Error(collisionError());
+      }
+      await pglite.exec('COMMIT');
+    } else {
+      try {
+        await pglite.exec(sql);
+      } catch (err) {
+        throw new Error(
+          'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
+          { cause: err },
+        );
+      }
+      await writeSentinel();
     }
   }
 
@@ -211,6 +313,7 @@ export const createPgliteAdapter = async (
        FROM pg_tables
        WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
        AND schemaname != '${SNAPSHOT_SCHEMA}'
+       AND schemaname != '${SENTINEL_SCHEMA}'
        AND tablename NOT LIKE '_prisma%'`,
     );
     cachedTables = rows.length > 0 ? rows.map((r) => r.qualified).join(', ') : '';
@@ -229,6 +332,7 @@ export const createPgliteAdapter = async (
        FROM pg_tables
        WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
        AND schemaname != '${SNAPSHOT_SCHEMA}'
+       AND schemaname != '${SENTINEL_SCHEMA}'
        AND tablename NOT LIKE '_prisma%'`,
     );
 
@@ -236,8 +340,7 @@ export const createPgliteAdapter = async (
       `CREATE TABLE "${SNAPSHOT_SCHEMA}".__tables (snap_name text, source_schema text, source_table text)`,
     );
 
-    for (let i = 0; i < tables.length; i++) {
-      const { schemaname, tablename } = tables[i]!;
+    for (const [i, { schemaname, tablename }] of tables.entries()) {
       const snapName = `_snap_${i}`;
       await pglite.exec(
         `CREATE TABLE "${SNAPSHOT_SCHEMA}"."${snapName}" AS SELECT * FROM ${schemaname}.${tablename}`,
