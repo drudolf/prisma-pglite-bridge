@@ -1,5 +1,13 @@
 # prisma-pglite-bridge
 
+## 0.4.1
+
+### Patch Changes
+
+- [`38116f9`](https://github.com/drudolf/prisma-pglite-bridge/commit/38116f93ab77b47fb192d50c971c2e476845b6ce) Thanks [@drudolf](https://github.com/drudolf)! - Fix `SessionLock` wait queue to drain one bridge at a time instead of all at once. Prevents a race where multiple waiters bypass the lock simultaneously after a transaction completes.
+
+- [`38116f9`](https://github.com/drudolf/prisma-pglite-bridge/commit/38116f93ab77b47fb192d50c971c2e476845b6ce) Thanks [@drudolf](https://github.com/drudolf)! - Harden transaction safety in `writeSentinel` and migration application with proper ROLLBACK on failure. Fix snapshot identifier quoting — store raw schema/table names and apply `quote_ident` only on retrieval, preventing double-quoting. Move sequence restore inside the `session_replication_role` try block.
+
 ## 0.4.0
 
 ### Minor Changes
