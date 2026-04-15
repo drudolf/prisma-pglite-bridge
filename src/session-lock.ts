@@ -55,9 +55,12 @@ export class SessionLock {
    * active or if this bridge owns the current transaction. Queues otherwise.
    */
   async acquire(id: BridgeId): Promise<void> {
-    if (this.owner === null || this.owner === id) return;
+    // No owner — session is free
+    if (this.owner === null) return;
+    // Re-entrant — same bridge already owns the session
+    if (this.owner === id) return;
 
-    // Another bridge owns the session (in a transaction) — wait
+    // Another bridge owns the session — wait
     return new Promise<void>((resolve) => {
       this.waitQueue.push({ id, resolve });
     });
@@ -91,11 +94,14 @@ export class SessionLock {
   }
 
   private drainWaitQueue(): void {
-    // Wake all waiting bridges — they'll serialize through runExclusive
-    const waiters = this.waitQueue;
-    this.waitQueue = [];
-    for (const waiter of waiters) {
-      waiter.resolve();
-    }
+    // Release one waiter at a time and grant ownership before resolving.
+    // The waiter's operation will call updateStatus when it completes —
+    // if IDLE, ownership is cleared and the next waiter is released.
+    // This prevents interleaving where multiple waiters race past acquire
+    // and one starts a transaction while others proceed unserialized.
+    if (this.waitQueue.length === 0) return;
+    const next = this.waitQueue.shift()!;
+    this.owner = next.id;
+    next.resolve();
   }
 }
