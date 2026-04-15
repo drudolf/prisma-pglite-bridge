@@ -6,6 +6,11 @@ import { createBridgeId, extractRfqStatus, SessionLock } from './session-lock.ts
 
 const { Client, Pool } = pg;
 
+const flushMicrotasks = () =>
+  Promise.resolve()
+    .then(() => Promise.resolve())
+    .then(() => Promise.resolve());
+
 // ─── Unit tests for SessionLock ───
 
 describe('SessionLock', () => {
@@ -32,8 +37,7 @@ describe('SessionLock', () => {
       bResolved = true;
     });
 
-    // Give the microtask queue a chance to run
-    await new Promise((r) => setTimeout(r, 10));
+    await flushMicrotasks();
     expect(bResolved).toBe(false);
 
     // Bridge A commits — status back to idle
@@ -65,12 +69,12 @@ describe('SessionLock', () => {
       bResolved = true;
     });
 
-    await new Promise((r) => setTimeout(r, 10));
+    await flushMicrotasks();
     expect(bResolved).toBe(false);
 
     // Rollback brings status back to idle
     lock.updateStatus(a, 0x49);
-    await new Promise((r) => setTimeout(r, 10));
+    await flushMicrotasks();
     expect(bResolved).toBe(true);
   });
 
@@ -86,12 +90,36 @@ describe('SessionLock', () => {
       bResolved = true;
     });
 
-    await new Promise((r) => setTimeout(r, 10));
+    await flushMicrotasks();
     expect(bResolved).toBe(false);
 
     // Force release (e.g., bridge destroyed mid-transaction)
     lock.release(a);
-    await new Promise((r) => setTimeout(r, 10));
+    await flushMicrotasks();
+    expect(bResolved).toBe(true);
+  });
+
+  it('release() unblocks waiting bridges on crash (no COMMIT)', async () => {
+    const lock = new SessionLock();
+    const bridgeA = createBridgeId();
+    const bridgeB = createBridgeId();
+
+    // Bridge A starts a transaction
+    lock.updateStatus(bridgeA, 0x54); // 'T'
+
+    // Bridge B is blocked
+    let bResolved = false;
+    const bPromise = lock.acquire(bridgeB).then(() => {
+      bResolved = true;
+    });
+
+    await flushMicrotasks();
+    expect(bResolved).toBe(false);
+
+    // Bridge A is destroyed (crash) — release without COMMIT
+    lock.release(bridgeA);
+
+    await bPromise;
     expect(bResolved).toBe(true);
   });
 });
@@ -265,32 +293,5 @@ describe('session lock integration', () => {
     // Another query should work and see no data
     const { rows } = await pool.query('SELECT count(*)::int AS n FROM session_test');
     expect(rows[0]?.n).toBe(0);
-  });
-
-  it('release() frees session lock even without COMMIT (crash recovery)', async () => {
-    // Simulates a bridge being cleaned up mid-transaction. The SessionLock.release()
-    // method is called by _destroy and _final — this tests that it correctly
-    // unblocks waiting bridges.
-    const lock = new SessionLock();
-    const bridgeA = createBridgeId();
-    const bridgeB = createBridgeId();
-
-    // Bridge A starts a transaction
-    lock.updateStatus(bridgeA, 0x54); // 'T'
-
-    // Bridge B is blocked
-    let bResolved = false;
-    const bPromise = lock.acquire(bridgeB).then(() => {
-      bResolved = true;
-    });
-
-    await new Promise((r) => setTimeout(r, 10));
-    expect(bResolved).toBe(false);
-
-    // Bridge A is destroyed (crash) — release without COMMIT
-    lock.release(bridgeA);
-
-    await bPromise;
-    expect(bResolved).toBe(true);
   });
 });
