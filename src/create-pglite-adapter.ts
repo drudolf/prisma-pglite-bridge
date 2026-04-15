@@ -65,7 +65,15 @@ export interface PgliteAdapter {
   /** Prisma adapter — pass directly to `new PrismaClient({ adapter })` */
   adapter: PrismaPg;
 
-  /** The underlying PGlite instance for direct SQL, snapshots, or extensions. */
+  /**
+   * The underlying PGlite instance for direct SQL, snapshots, or extensions.
+   *
+   * @remarks
+   * Direct `pglite.exec()` / `pglite.query()` calls bypass the pool's
+   * {@link SessionLock}. Avoid mixing direct calls with Prisma operations
+   * inside a transaction — use them only for setup, teardown, or utilities
+   * that run outside active Prisma transactions.
+   */
   pglite: import('@electric-sql/pglite').PGlite;
 
   /** Clear all user tables. Call in `beforeEach` for per-test isolation. */
@@ -154,10 +162,25 @@ const resolveSQL = async (options: CreatePgliteAdapterOptions): Promise<string> 
   if (migrationsPath) {
     const sql = tryReadMigrationFiles(migrationsPath);
     if (sql) return sql;
+
+    throw new Error(
+      `No migration.sql files found in auto-discovered path ${migrationsPath}. ` +
+        'Run `prisma migrate dev` to generate migration files, ' +
+        'or pass pre-generated SQL via the `sql` option.',
+    );
+  }
+
+  if (options.configRoot) {
+    throw new Error(
+      `prisma.config.ts loaded from configRoot (${options.configRoot}) but no schema ` +
+        'or migrations path could be resolved. Ensure your config specifies a schema path, ' +
+        'or pass pre-generated SQL via the `sql` option.',
+    );
   }
 
   throw new Error(
-    'No migration files found. Run `prisma migrate dev` to generate them, ' +
+    'No migration files found and no prisma.config.ts could be loaded. ' +
+      'Run `prisma migrate dev` to generate them, ' +
       'or pass pre-generated SQL via the `sql` option.',
   );
 };
