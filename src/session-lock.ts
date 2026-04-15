@@ -109,8 +109,8 @@ export class SessionLock {
     // if IDLE, ownership is cleared and the next waiter is released.
     // This prevents interleaving where multiple waiters race past acquire
     // and one starts a transaction while others proceed unserialized.
-    if (this.waitQueue.length === 0) return;
-    const next = this.waitQueue.shift()!;
+    const next = this.waitQueue.shift();
+    if (!next) return;
     this.owner = next.id;
     next.resolve();
   }
