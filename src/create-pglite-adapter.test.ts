@@ -35,6 +35,27 @@ const createWorkspace = (tenantId: string, slug = 'test-ws') =>
 
 const createTempDataDir = () => mkdtempSync(join(tmpdir(), 'prisma-pglite-bridge-'));
 
+const withTempDataDir = async (fn: (dataDir: string) => Promise<void>) => {
+  const dataDir = createTempDataDir();
+  try {
+    await fn(dataDir);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+};
+
+const withAdapter = async (
+  opts: Parameters<typeof createPgliteAdapter>[0],
+  fn: (result: Awaited<ReturnType<typeof createPgliteAdapter>>) => Promise<void>,
+) => {
+  const result = await createPgliteAdapter(opts);
+  try {
+    await fn(result);
+  } finally {
+    await result.close();
+  }
+};
+
 // ─── Adapter lifecycle ───
 
 describe('createPgliteAdapter', () => {
@@ -71,140 +92,76 @@ describe('createPgliteAdapter', () => {
   });
 
   it('reopens an existing dataDir without replaying schema SQL', async () => {
-    const dataDir = createTempDataDir();
-    let first: Awaited<ReturnType<typeof createPgliteAdapter>> | null = await createPgliteAdapter({
-      dataDir,
-      sql: 'CREATE TABLE persisted (id serial PRIMARY KEY, name text NOT NULL)',
-    });
-    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-
-    try {
-      await first.pglite.exec("INSERT INTO persisted (name) VALUES ('first-run')");
-      await first.close();
-      first = null;
-
-      second = await createPgliteAdapter({
-        dataDir,
-        sql: 'CREATE TABLE persisted (id serial PRIMARY KEY, name text NOT NULL)',
+    const sql = 'CREATE TABLE persisted (id serial PRIMARY KEY, name text NOT NULL)';
+    await withTempDataDir(async (dataDir) => {
+      await withAdapter({ dataDir, sql }, async (first) => {
+        await first.pglite.exec("INSERT INTO persisted (name) VALUES ('first-run')");
       });
-
-      const { rows } = await second.pglite.query<{ n: number }>(
-        'SELECT count(*)::int AS n FROM persisted',
-      );
-      expect(rows[0]?.n).toBe(1);
-    } finally {
-      await second?.close();
-      await first?.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+      await withAdapter({ dataDir, sql }, async (second) => {
+        const { rows } = await second.pglite.query<{ n: number }>(
+          'SELECT count(*)::int AS n FROM persisted',
+        );
+        expect(rows[0]?.n).toBe(1);
+      });
+    });
   });
 
   it('reopens an existing dataDir when the schema SQL created only non-table objects', async () => {
-    const dataDir = createTempDataDir();
     const sql = "CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy')";
-    let first: Awaited<ReturnType<typeof createPgliteAdapter>> | null = await createPgliteAdapter({
-      dataDir,
-      sql,
+    await withTempDataDir(async (dataDir) => {
+      await withAdapter({ dataDir, sql }, async () => {});
+      await withAdapter({ dataDir, sql }, async (second) => {
+        const { rows } = await second.pglite.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM pg_type WHERE typname = 'mood'",
+        );
+        expect(rows[0]?.n).toBe(1);
+      });
     });
-    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-
-    try {
-      await first.close();
-      first = null;
-
-      second = await createPgliteAdapter({ dataDir, sql });
-
-      const { rows } = await second.pglite.query<{ n: number }>(
-        "SELECT count(*)::int AS n FROM pg_type WHERE typname = 'mood'",
-      );
-      expect(rows[0]?.n).toBe(1);
-    } finally {
-      await second?.close();
-      await first?.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
   });
 
   it('reopens an existing dataDir when the schema SQL created only sequences', async () => {
-    const dataDir = createTempDataDir();
     const sql = 'CREATE SEQUENCE custom_seq START 5';
-    let first: Awaited<ReturnType<typeof createPgliteAdapter>> | null = await createPgliteAdapter({
-      dataDir,
-      sql,
+    await withTempDataDir(async (dataDir) => {
+      await withAdapter({ dataDir, sql }, async () => {});
+      await withAdapter({ dataDir, sql }, async (second) => {
+        const { rows } = await second.pglite.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM pg_class WHERE relkind = 'S' AND relname = 'custom_seq'",
+        );
+        expect(rows[0]?.n).toBe(1);
+      });
     });
-    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-
-    try {
-      await first.close();
-      first = null;
-
-      second = await createPgliteAdapter({ dataDir, sql });
-
-      const { rows } = await second.pglite.query<{ n: number }>(
-        "SELECT count(*)::int AS n FROM pg_class WHERE relkind = 'S' AND relname = 'custom_seq'",
-      );
-      expect(rows[0]?.n).toBe(1);
-    } finally {
-      await second?.close();
-      await first?.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
   });
 
   it('reopens an existing dataDir without requiring schema SQL resolution', async () => {
-    const dataDir = createTempDataDir();
-    let first: Awaited<ReturnType<typeof createPgliteAdapter>> | null = await createPgliteAdapter({
-      dataDir,
-      sql: 'CREATE TABLE persisted (id int PRIMARY KEY)',
-    });
-    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-
-    try {
-      await first.pglite.exec('INSERT INTO persisted VALUES (1)');
-      await first.close();
-      first = null;
-
-      second = await createPgliteAdapter({
-        dataDir,
-        configRoot: '/definitely/not/here',
-      });
-
-      const { rows } = await second.pglite.query<{ n: number }>(
-        'SELECT count(*)::int AS n FROM persisted',
+    await withTempDataDir(async (dataDir) => {
+      await withAdapter(
+        { dataDir, sql: 'CREATE TABLE persisted (id int PRIMARY KEY)' },
+        async (first) => {
+          await first.pglite.exec('INSERT INTO persisted VALUES (1)');
+        },
       );
-      expect(rows[0]?.n).toBe(1);
-    } finally {
-      await second?.close();
-      await first?.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+      await withAdapter({ dataDir, configRoot: '/definitely/not/here' }, async (second) => {
+        const { rows } = await second.pglite.query<{ n: number }>(
+          'SELECT count(*)::int AS n FROM persisted',
+        );
+        expect(rows[0]?.n).toBe(1);
+      });
+    });
   });
 
   it('reopens an existing dataDir when the schema SQL created only non-public tables', async () => {
-    const dataDir = createTempDataDir();
     const sql = 'CREATE SCHEMA extra; CREATE TABLE extra.persisted (id int PRIMARY KEY)';
-    let first: Awaited<ReturnType<typeof createPgliteAdapter>> | null = await createPgliteAdapter({
-      dataDir,
-      sql,
+    await withTempDataDir(async (dataDir) => {
+      await withAdapter({ dataDir, sql }, async (first) => {
+        await first.pglite.exec('INSERT INTO extra.persisted VALUES (1)');
+      });
+      await withAdapter({ dataDir, sql }, async (second) => {
+        const { rows } = await second.pglite.query<{ n: number }>(
+          'SELECT count(*)::int AS n FROM extra.persisted',
+        );
+        expect(rows[0]?.n).toBe(1);
+      });
     });
-    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-
-    try {
-      await first.pglite.exec('INSERT INTO extra.persisted VALUES (1)');
-      await first.close();
-      first = null;
-
-      second = await createPgliteAdapter({ dataDir, sql });
-
-      const { rows } = await second.pglite.query<{ n: number }>(
-        'SELECT count(*)::int AS n FROM extra.persisted',
-      );
-      expect(rows[0]?.n).toBe(1);
-    } finally {
-      await second?.close();
-      await first?.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
   });
 
   it('resetDb also clears tables created after the first reset', async () => {
@@ -762,10 +719,9 @@ describe('many-to-many implicit relations', () => {
 });
 
 // ─── Snapshot / Restore ───
-// Tests run sequentially: seed → snapshot → reset → verify → re-snapshot → etc.
-// Each test builds on state from the previous one to exercise the full lifecycle.
 
 describe('snapshotDb', () => {
+  // Tests in this block are stateful-sequential — order matters
   let prisma: PrismaClient;
   let resetDb: ResetDbFn;
   let snapshotDb: SnapshotDbFn;
@@ -1026,110 +982,181 @@ describe('sentinel initialization detection', () => {
   };
 
   it('backfills sentinel on pre-sentinel legacy dataDir', async () => {
-    const dataDir = createTempDataDir();
+    await withTempDataDir(async (dataDir) => {
+      // Simulate a pre-sentinel database: create objects directly via PGlite
+      const raw = new PGlite(dataDir);
+      await raw.exec('CREATE TABLE legacy_table (id int PRIMARY KEY)');
+      await raw.exec('INSERT INTO legacy_table VALUES (1)');
+      await raw.close();
 
-    // Simulate a pre-sentinel database: create objects directly via PGlite
-    const raw = new PGlite(dataDir);
-    await raw.exec('CREATE TABLE legacy_table (id int PRIMARY KEY)');
-    await raw.exec('INSERT INTO legacy_table VALUES (1)');
-    await raw.close();
+      // Reopen via adapter — legacy fallback should detect and backfill
+      await withAdapter(
+        {
+          dataDir,
+          sql: 'CREATE TABLE legacy_table (id int PRIMARY KEY)',
+        },
+        async (adapter) => {
+          const { rows } = await adapter.pglite.query<{ n: number }>(
+            'SELECT count(*)::int AS n FROM legacy_table',
+          );
+          expect(rows[0]?.n).toBe(1);
 
-    // Reopen via adapter — legacy fallback should detect and backfill
-    let adapter: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-    try {
-      adapter = await createPgliteAdapter({
-        dataDir,
-        sql: 'CREATE TABLE legacy_table (id int PRIMARY KEY)',
-      });
-
-      const { rows } = await adapter.pglite.query<{ n: number }>(
-        'SELECT count(*)::int AS n FROM legacy_table',
+          const sentinel = await querySentinel(adapter.pglite);
+          expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
+        },
       );
-      expect(rows[0]?.n).toBe(1);
+    });
+  });
 
-      const sentinel = await querySentinel(adapter.pglite);
-      expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
-    } finally {
-      await adapter?.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+  it('backfills sentinel on pre-sentinel legacy dataDir with only enums', async () => {
+    await withTempDataDir(async (dataDir) => {
+      const raw = new PGlite(dataDir);
+      await raw.exec("CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy')");
+      await raw.close();
+
+      await withAdapter(
+        {
+          dataDir,
+          sql: "CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy')",
+        },
+        async (adapter) => {
+          const { rows } = await adapter.pglite.query<{ n: number }>(
+            "SELECT count(*)::int AS n FROM pg_type WHERE typname = 'mood'",
+          );
+          expect(rows[0]?.n).toBe(1);
+
+          const sentinel = await querySentinel(adapter.pglite);
+          expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
+        },
+      );
+    });
+  });
+
+  it('backfills sentinel on pre-sentinel legacy dataDir with only sequences', async () => {
+    await withTempDataDir(async (dataDir) => {
+      const raw = new PGlite(dataDir);
+      await raw.exec('CREATE SEQUENCE custom_seq START 5');
+      await raw.close();
+
+      await withAdapter(
+        {
+          dataDir,
+          sql: 'CREATE SEQUENCE custom_seq START 5',
+        },
+        async (adapter) => {
+          const { rows } = await adapter.pglite.query<{ n: number }>(
+            "SELECT count(*)::int AS n FROM pg_class WHERE relkind = 'S' AND relname = 'custom_seq'",
+          );
+          expect(rows[0]?.n).toBe(1);
+
+          const sentinel = await querySentinel(adapter.pglite);
+          expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
+        },
+      );
+    });
+  });
+
+  it('backfills sentinel on pre-sentinel legacy dataDir with only functions', async () => {
+    await withTempDataDir(async (dataDir) => {
+      const raw = new PGlite(dataDir);
+      await raw.exec(
+        'CREATE FUNCTION add_one(x int) RETURNS int AS $$ SELECT x + 1 $$ LANGUAGE sql',
+      );
+      await raw.close();
+
+      await withAdapter(
+        {
+          dataDir,
+          sql: 'CREATE FUNCTION add_one(x int) RETURNS int AS $$ SELECT x + 1 $$ LANGUAGE sql',
+        },
+        async (adapter) => {
+          const { rows } = await adapter.pglite.query<{ n: number }>(
+            "SELECT count(*)::int AS n FROM pg_proc WHERE proname = 'add_one'",
+          );
+          expect(rows[0]?.n).toBe(1);
+
+          const sentinel = await querySentinel(adapter.pglite);
+          expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
+        },
+      );
+    });
+  });
+
+  it('backfills sentinel on pre-sentinel legacy dataDir with only non-public schema', async () => {
+    await withTempDataDir(async (dataDir) => {
+      const raw = new PGlite(dataDir);
+      await raw.exec('CREATE SCHEMA extra; CREATE TABLE extra.persisted (id int PRIMARY KEY)');
+      await raw.close();
+
+      await withAdapter(
+        {
+          dataDir,
+          sql: 'CREATE SCHEMA extra; CREATE TABLE extra.persisted (id int PRIMARY KEY)',
+        },
+        async (adapter) => {
+          const { rows } = await adapter.pglite.query<{ n: number }>(
+            'SELECT count(*)::int AS n FROM extra.persisted',
+          );
+          expect(rows[0]?.n).toBe(0);
+
+          const sentinel = await querySentinel(adapter.pglite);
+          expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
+        },
+      );
+    });
   });
 
   it('throws collision error on reopen when only reserved schema exists', async () => {
-    const dataDir = createTempDataDir();
+    await withTempDataDir(async (dataDir) => {
+      const raw = new PGlite(dataDir);
+      await raw.exec(`CREATE SCHEMA "${SENTINEL_SCHEMA}"`);
+      await raw.close();
 
-    const raw = new PGlite(dataDir);
-    await raw.exec(`CREATE SCHEMA "${SENTINEL_SCHEMA}"`);
-    await raw.close();
-
-    try {
       await expect(createPgliteAdapter({ dataDir, sql: 'SELECT 1' })).rejects.toThrow(
         `Schema "${SENTINEL_SCHEMA}" exists but is not owned by prisma-pglite-bridge`,
       );
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+    });
   });
 
   it('adopts reserved schema on first-run explicit sql', async () => {
-    const dataDir = createTempDataDir();
     const sql = `CREATE SCHEMA IF NOT EXISTS "${SENTINEL_SCHEMA}"; CREATE TABLE test_adopt (id int PRIMARY KEY)`;
-
-    let adapter: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-    try {
-      adapter = await createPgliteAdapter({ dataDir, sql });
-
-      const sentinel = await querySentinel(adapter.pglite);
-      expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
-
-      await adapter.close();
-      adapter = null;
+    await withTempDataDir(async (dataDir) => {
+      await withAdapter({ dataDir, sql }, async (adapter) => {
+        const sentinel = await querySentinel(adapter.pglite);
+        expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
+      });
 
       // Reopen should work via sentinel
-      second = await createPgliteAdapter({ dataDir, sql });
-      const { rows } = await second.pglite.query<{ n: number }>(
-        'SELECT count(*)::int AS n FROM test_adopt',
-      );
-      expect(rows[0]?.n).toBe(0);
-    } finally {
-      await adapter?.close();
-      await second?.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+      await withAdapter({ dataDir, sql }, async (second) => {
+        const { rows } = await second.pglite.query<{ n: number }>(
+          'SELECT count(*)::int AS n FROM test_adopt',
+        );
+        expect(rows[0]?.n).toBe(0);
+      });
+    });
   });
 
   it('restores absent sentinel via legacy fallback', async () => {
-    const dataDir = createTempDataDir();
     const sql = 'CREATE TABLE recovery_test (id int PRIMARY KEY)';
+    await withTempDataDir(async (dataDir) => {
+      await withAdapter({ dataDir, sql }, async (first) => {
+        // Sentinel should exist after first run
+        const sentinel = await querySentinel(first.pglite);
+        expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
 
-    let first: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-    try {
-      first = await createPgliteAdapter({ dataDir, sql });
-
-      // Sentinel should exist after first run
-      const sentinel = await querySentinel(first.pglite);
-      expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
-
-      // Simulate crash between user SQL and sentinel write: drop sentinel schema
-      await first.pglite.exec(`DROP SCHEMA "${SENTINEL_SCHEMA}" CASCADE`);
-      await first.close();
-      first = null;
+        // Simulate crash between user SQL and sentinel write: drop sentinel schema
+        await first.pglite.exec(`DROP SCHEMA "${SENTINEL_SCHEMA}" CASCADE`);
+      });
 
       // Reopen — legacy fallback should restore sentinel
-      second = await createPgliteAdapter({ dataDir, sql });
-      const restored = await querySentinel(second.pglite);
-      expect(restored).toEqual({ marker: SENTINEL_MARKER, version: 1 });
-    } finally {
-      await first?.close();
-      await second?.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+      await withAdapter({ dataDir, sql }, async (second) => {
+        const restored = await querySentinel(second.pglite);
+        expect(restored).toEqual({ marker: SENTINEL_MARKER, version: 1 });
+      });
+    });
   });
 
   it('succeeds when user SQL creates exact sentinel (idempotent writeSentinel)', async () => {
-    const dataDir = createTempDataDir();
     const sql = [
       `CREATE SCHEMA IF NOT EXISTS "${SENTINEL_SCHEMA}"`,
       `CREATE TABLE "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
@@ -1137,53 +1164,40 @@ describe('sentinel initialization detection', () => {
       'CREATE TABLE user_data (id int PRIMARY KEY)',
     ].join(';\n');
 
-    let first: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
-    try {
-      first = await createPgliteAdapter({ dataDir, sql });
+    await withTempDataDir(async (dataDir) => {
+      await withAdapter({ dataDir, sql }, async (first) => {
+        const sentinel = await querySentinel(first.pglite);
+        expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
+      });
 
-      const sentinel = await querySentinel(first.pglite);
-      expect(sentinel).toEqual({ marker: SENTINEL_MARKER, version: 1 });
-
-      await first.close();
-      first = null;
-
-      second = await createPgliteAdapter({ dataDir, sql });
-      const { rows } = await second.pglite.query<{ n: number }>(
-        'SELECT count(*)::int AS n FROM user_data',
-      );
-      expect(rows[0]?.n).toBe(0);
-    } finally {
-      await first?.close();
-      await second?.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+      await withAdapter({ dataDir, sql }, async (second) => {
+        const { rows } = await second.pglite.query<{ n: number }>(
+          'SELECT count(*)::int AS n FROM user_data',
+        );
+        expect(rows[0]?.n).toBe(0);
+      });
+    });
   });
 
   it('throws collision error on reopen when sentinel has wrong version', async () => {
-    const dataDir = createTempDataDir();
+    await withTempDataDir(async (dataDir) => {
+      const raw = new PGlite(dataDir);
+      await raw.exec(`CREATE SCHEMA "${SENTINEL_SCHEMA}"`);
+      await raw.exec(
+        `CREATE TABLE "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
+      );
+      await raw.exec(
+        `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES ('${SENTINEL_MARKER}', 99)`,
+      );
+      await raw.close();
 
-    const raw = new PGlite(dataDir);
-    await raw.exec(`CREATE SCHEMA "${SENTINEL_SCHEMA}"`);
-    await raw.exec(
-      `CREATE TABLE "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
-    );
-    await raw.exec(
-      `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES ('${SENTINEL_MARKER}', 99)`,
-    );
-    await raw.close();
-
-    try {
       await expect(createPgliteAdapter({ dataDir, sql: 'SELECT 1' })).rejects.toThrow(
         'exists but is not owned by prisma-pglite-bridge',
       );
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+    });
   });
 
   it('throws collision error on first-run explicit sql when sentinel has wrong version', async () => {
-    const dataDir = createTempDataDir();
     const sql = [
       `CREATE SCHEMA IF NOT EXISTS "${SENTINEL_SCHEMA}"`,
       `CREATE TABLE "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
@@ -1191,84 +1205,74 @@ describe('sentinel initialization detection', () => {
       'CREATE TABLE user_data (id int PRIMARY KEY)',
     ].join(';\n');
 
-    try {
+    await withTempDataDir(async (dataDir) => {
       await expect(createPgliteAdapter({ dataDir, sql })).rejects.toThrow(
         'exists but is not owned by prisma-pglite-bridge',
       );
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+    });
   });
 
   it('throws collision error on reopen when sentinel table has wrong columns', async () => {
-    const dataDir = createTempDataDir();
+    await withTempDataDir(async (dataDir) => {
+      const raw = new PGlite(dataDir);
+      await raw.exec(`CREATE SCHEMA "${SENTINEL_SCHEMA}"`);
+      await raw.exec(`CREATE TABLE "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (id int PRIMARY KEY)`);
+      await raw.close();
 
-    const raw = new PGlite(dataDir);
-    await raw.exec(`CREATE SCHEMA "${SENTINEL_SCHEMA}"`);
-    await raw.exec(`CREATE TABLE "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (id int PRIMARY KEY)`);
-    await raw.close();
-
-    try {
       await expect(createPgliteAdapter({ dataDir, sql: 'SELECT 1' })).rejects.toThrow(
         'exists but is not owned by prisma-pglite-bridge',
       );
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+    });
   });
 
   it('throws collision error on first-run explicit sql when sentinel table has wrong columns', async () => {
-    const dataDir = createTempDataDir();
     const sql = [
       `CREATE SCHEMA IF NOT EXISTS "${SENTINEL_SCHEMA}"`,
       `CREATE TABLE "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (id int PRIMARY KEY)`,
       'CREATE TABLE user_data (id int PRIMARY KEY)',
     ].join(';\n');
 
-    try {
+    await withTempDataDir(async (dataDir) => {
       await expect(createPgliteAdapter({ dataDir, sql })).rejects.toThrow(
         'exists but is not owned by prisma-pglite-bridge',
       );
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+    });
   });
 
   it('throws collision error on first-run migration path when sentinel has wrong version', async () => {
-    const dataDir = createTempDataDir();
-    const migrationsPath = mkdtempSync(join(tmpdir(), 'migrations-'));
-    const migrationDir = join(migrationsPath, '0001_init');
-    mkdirSync(migrationDir);
-    writeFileSync(
-      join(migrationDir, 'migration.sql'),
-      [
-        `CREATE SCHEMA IF NOT EXISTS "${SENTINEL_SCHEMA}"`,
-        `CREATE TABLE IF NOT EXISTS "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
-        `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES ('${SENTINEL_MARKER}', 99)`,
-        'CREATE TABLE user_data (id int PRIMARY KEY)',
-      ].join(';\n'),
-    );
-
-    try {
-      await expect(createPgliteAdapter({ dataDir, migrationsPath })).rejects.toThrow(
-        'exists but is not owned by prisma-pglite-bridge',
+    await withTempDataDir(async (dataDir) => {
+      const migrationsPath = mkdtempSync(join(tmpdir(), 'migrations-'));
+      const migrationDir = join(migrationsPath, '0001_init');
+      mkdirSync(migrationDir);
+      writeFileSync(
+        join(migrationDir, 'migration.sql'),
+        [
+          `CREATE SCHEMA IF NOT EXISTS "${SENTINEL_SCHEMA}"`,
+          `CREATE TABLE IF NOT EXISTS "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
+          `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES ('${SENTINEL_MARKER}', 99)`,
+          'CREATE TABLE user_data (id int PRIMARY KEY)',
+        ].join(';\n'),
       );
 
-      // Verify the transaction was rolled back — dataDir should be clean
-      const raw = new PGlite(dataDir);
-      const { rows } = await raw.query<{ found: boolean }>(
-        `SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'user_data') AS found`,
-      );
-      expect(rows[0]?.found).toBe(false);
-      await raw.close();
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-      rmSync(migrationsPath, { recursive: true, force: true });
-    }
+      try {
+        await expect(createPgliteAdapter({ dataDir, migrationsPath })).rejects.toThrow(
+          'exists but is not owned by prisma-pglite-bridge',
+        );
+
+        // Verify the transaction was rolled back — dataDir should be clean
+        const raw = new PGlite(dataDir);
+        const { rows } = await raw.query<{ found: boolean }>(
+          `SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'user_data') AS found`,
+        );
+        expect(rows[0]?.found).toBe(false);
+        await raw.close();
+      } finally {
+        rmSync(migrationsPath, { recursive: true, force: true });
+      }
+    });
   });
 
   it('throws collision error when sentinel table has extra non-library rows', async () => {
-    const dataDir = createTempDataDir();
     const sql = [
       `CREATE SCHEMA IF NOT EXISTS "${SENTINEL_SCHEMA}"`,
       `CREATE TABLE "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
@@ -1276,7 +1280,7 @@ describe('sentinel initialization detection', () => {
       'CREATE TABLE user_data (id int PRIMARY KEY)',
     ].join(';\n');
 
-    try {
+    await withTempDataDir(async (dataDir) => {
       await expect(createPgliteAdapter({ dataDir, sql })).rejects.toThrow(
         'exists but is not owned by prisma-pglite-bridge',
       );
@@ -1288,33 +1292,27 @@ describe('sentinel initialization detection', () => {
       );
       expect(rows[0]?.n).toBe(0);
       await raw.close();
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+    });
   });
 
   it('throws collision error on reopen when sentinel table has extra non-library rows', async () => {
-    const dataDir = createTempDataDir();
+    await withTempDataDir(async (dataDir) => {
+      const raw = new PGlite(dataDir);
+      await raw.exec(`CREATE SCHEMA "${SENTINEL_SCHEMA}"`);
+      await raw.exec(
+        `CREATE TABLE "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
+      );
+      await raw.exec(
+        `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES ('${SENTINEL_MARKER}', 1)`,
+      );
+      await raw.exec(
+        `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES ('user-owned', 99)`,
+      );
+      await raw.close();
 
-    const raw = new PGlite(dataDir);
-    await raw.exec(`CREATE SCHEMA "${SENTINEL_SCHEMA}"`);
-    await raw.exec(
-      `CREATE TABLE "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
-    );
-    await raw.exec(
-      `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES ('${SENTINEL_MARKER}', 1)`,
-    );
-    await raw.exec(
-      `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES ('user-owned', 99)`,
-    );
-    await raw.close();
-
-    try {
       await expect(createPgliteAdapter({ dataDir, sql: 'SELECT 1' })).rejects.toThrow(
         'exists but is not owned by prisma-pglite-bridge',
       );
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+    });
   });
 });
