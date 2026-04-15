@@ -5,3 +5,4 @@ dist/
 CLAUDE.md
 benchmark/
 .bench-tmp/
+coverage/
