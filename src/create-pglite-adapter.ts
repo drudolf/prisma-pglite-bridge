@@ -158,7 +158,6 @@ const resolveSQL = async (options: CreatePgliteAdapterOptions): Promise<string> 
 export const createPgliteAdapter = async (
   options: CreatePgliteAdapterOptions = {},
 ): Promise<PgliteAdapter> => {
-  const sql = await resolveSQL(options);
   const {
     pool,
     pglite,
@@ -169,15 +168,38 @@ export const createPgliteAdapter = async (
     max: options.max,
   });
 
-  try {
-    await pglite.exec(sql);
-  } catch (err) {
-    throw new Error('Failed to apply schema SQL to PGlite. Check your schema or migration files.', {
-      cause: err,
-    });
+  const isInitialized = async () => {
+    const { rows } = await pglite.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM (
+         SELECT 1 FROM pg_tables WHERE schemaname = 'public'
+         UNION ALL
+         SELECT 1 FROM pg_type t JOIN pg_namespace n ON t.typnamespace = n.oid
+           WHERE n.nspname = 'public' AND t.typtype = 'e'
+         UNION ALL
+         SELECT 1 FROM pg_namespace
+           WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'public')
+       ) AS objects`,
+    );
+    return (rows[0]?.n ?? 0) > 0;
+  };
+
+  if (!options.dataDir || !(await isInitialized())) {
+    const sql = await resolveSQL(options);
+    try {
+      await pglite.exec(sql);
+    } catch (err) {
+      throw new Error(
+        'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
+        {
+          cause: err,
+        },
+      );
+    }
   }
 
   const adapter = new PrismaPg(pool);
+
+  const escapeLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
   let cachedTables: string | null = null;
   let hasSnapshot = false;
@@ -199,21 +221,38 @@ export const createPgliteAdapter = async (
     await pglite.exec(`DROP SCHEMA IF EXISTS "${SNAPSHOT_SCHEMA}" CASCADE`);
     await pglite.exec(`CREATE SCHEMA "${SNAPSHOT_SCHEMA}"`);
 
-    const { rows: tables } = await pglite.query<{ tablename: string }>(
-      `SELECT quote_ident(tablename) AS tablename FROM pg_tables
-       WHERE schemaname = 'public'
+    const { rows: tables } = await pglite.query<{
+      schemaname: string;
+      tablename: string;
+    }>(
+      `SELECT quote_ident(schemaname) AS schemaname, quote_ident(tablename) AS tablename
+       FROM pg_tables
+       WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+       AND schemaname != '${SNAPSHOT_SCHEMA}'
        AND tablename NOT LIKE '_prisma%'`,
     );
 
-    for (const { tablename } of tables) {
+    await pglite.exec(
+      `CREATE TABLE "${SNAPSHOT_SCHEMA}".__tables (snap_name text, source_schema text, source_table text)`,
+    );
+
+    for (let i = 0; i < tables.length; i++) {
+      const { schemaname, tablename } = tables[i]!;
+      const snapName = `_snap_${i}`;
       await pglite.exec(
-        `CREATE TABLE "${SNAPSHOT_SCHEMA}".${tablename} AS SELECT * FROM public.${tablename}`,
+        `CREATE TABLE "${SNAPSHOT_SCHEMA}"."${snapName}" AS SELECT * FROM ${schemaname}.${tablename}`,
+      );
+      await pglite.exec(
+        `INSERT INTO "${SNAPSHOT_SCHEMA}".__tables VALUES (${escapeLiteral(snapName)}, ${escapeLiteral(schemaname)}, ${escapeLiteral(tablename)})`,
       );
     }
 
     const { rows: seqs } = await pglite.query<{ name: string; value: string }>(
-      `SELECT quote_literal(sequencename) AS name, last_value::text AS value
-       FROM pg_sequences WHERE schemaname = 'public' AND last_value IS NOT NULL`,
+      `SELECT quote_literal(schemaname || '.' || sequencename) AS name, last_value::text AS value
+       FROM pg_sequences
+       WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+       AND schemaname != '${SNAPSHOT_SCHEMA}'
+       AND last_value IS NOT NULL`,
     );
 
     await pglite.exec(`CREATE TABLE "${SNAPSHOT_SCHEMA}".__sequences (name text, value bigint)`);
@@ -230,22 +269,23 @@ export const createPgliteAdapter = async (
   };
 
   const resetDb = async () => {
+    cachedTables = null;
     const tables = await discoverTables();
 
     if (hasSnapshot && tables) {
       try {
         await pglite.exec('SET session_replication_role = replica');
-        await pglite.exec(`TRUNCATE TABLE ${tables} CASCADE`);
+        await pglite.exec(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
 
-        const { rows: snapshotTables } = await pglite.query<{ tablename: string }>(
-          `SELECT quote_ident(tablename) AS tablename FROM pg_tables
-           WHERE schemaname = '${SNAPSHOT_SCHEMA}'
-           AND tablename != '__sequences'`,
-        );
+        const { rows: snapshotTables } = await pglite.query<{
+          snap_name: string;
+          source_schema: string;
+          source_table: string;
+        }>(`SELECT snap_name, source_schema, source_table FROM "${SNAPSHOT_SCHEMA}".__tables`);
 
-        for (const { tablename } of snapshotTables) {
+        for (const { snap_name, source_schema, source_table } of snapshotTables) {
           await pglite.exec(
-            `INSERT INTO public.${tablename} SELECT * FROM "${SNAPSHOT_SCHEMA}".${tablename}`,
+            `INSERT INTO ${source_schema}.${source_table} SELECT * FROM "${SNAPSHOT_SCHEMA}"."${snap_name}"`,
           );
         }
       } finally {
@@ -262,7 +302,7 @@ export const createPgliteAdapter = async (
     } else if (tables) {
       try {
         await pglite.exec('SET session_replication_role = replica');
-        await pglite.exec(`TRUNCATE TABLE ${tables} CASCADE`);
+        await pglite.exec(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
       } finally {
         await pglite.exec('SET session_replication_role = DEFAULT');
       }

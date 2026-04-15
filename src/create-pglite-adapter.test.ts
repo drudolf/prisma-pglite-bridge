@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type {
@@ -28,6 +31,8 @@ const createWorkspace = (tenantId: string, slug = 'test-ws') =>
   prisma.workspace.create({
     data: { name: 'Test WS', slug, tenantId, apiKey: `key_${slug}_${Date.now()}` },
   });
+
+const createTempDataDir = () => mkdtempSync(join(tmpdir(), 'prisma-pglite-bridge-'));
 
 // ─── Adapter lifecycle ───
 
@@ -62,6 +67,136 @@ describe('createPgliteAdapter', () => {
       'SELECT name FROM test_explicit',
     );
     expect(rows[0]).toHaveProperty('name', 'hello');
+  });
+
+  it('reopens an existing dataDir without replaying schema SQL', async () => {
+    const dataDir = createTempDataDir();
+    let first: Awaited<ReturnType<typeof createPgliteAdapter>> | null = await createPgliteAdapter({
+      dataDir,
+      sql: 'CREATE TABLE persisted (id serial PRIMARY KEY, name text NOT NULL)',
+    });
+    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
+
+    try {
+      await first.pglite.exec("INSERT INTO persisted (name) VALUES ('first-run')");
+      await first.close();
+      first = null;
+
+      second = await createPgliteAdapter({
+        dataDir,
+        sql: 'CREATE TABLE persisted (id serial PRIMARY KEY, name text NOT NULL)',
+      });
+
+      const { rows } = await second.pglite.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM persisted',
+      );
+      expect(rows[0]?.n).toBe(1);
+    } finally {
+      await second?.close();
+      await first?.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reopens an existing dataDir when the schema SQL created only non-table objects', async () => {
+    const dataDir = createTempDataDir();
+    const sql = "CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy')";
+    let first: Awaited<ReturnType<typeof createPgliteAdapter>> | null = await createPgliteAdapter({
+      dataDir,
+      sql,
+    });
+    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
+
+    try {
+      await first.close();
+      first = null;
+
+      second = await createPgliteAdapter({ dataDir, sql });
+
+      const { rows } = await second.pglite.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM pg_type WHERE typname = 'mood'",
+      );
+      expect(rows[0]?.n).toBe(1);
+    } finally {
+      await second?.close();
+      await first?.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reopens an existing dataDir without requiring schema SQL resolution', async () => {
+    const dataDir = createTempDataDir();
+    let first: Awaited<ReturnType<typeof createPgliteAdapter>> | null = await createPgliteAdapter({
+      dataDir,
+      sql: 'CREATE TABLE persisted (id int PRIMARY KEY)',
+    });
+    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
+
+    try {
+      await first.pglite.exec('INSERT INTO persisted VALUES (1)');
+      await first.close();
+      first = null;
+
+      second = await createPgliteAdapter({
+        dataDir,
+        configRoot: '/definitely/not/here',
+      });
+
+      const { rows } = await second.pglite.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM persisted',
+      );
+      expect(rows[0]?.n).toBe(1);
+    } finally {
+      await second?.close();
+      await first?.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reopens an existing dataDir when the schema SQL created only non-public tables', async () => {
+    const dataDir = createTempDataDir();
+    const sql = 'CREATE SCHEMA extra; CREATE TABLE extra.persisted (id int PRIMARY KEY)';
+    let first: Awaited<ReturnType<typeof createPgliteAdapter>> | null = await createPgliteAdapter({
+      dataDir,
+      sql,
+    });
+    let second: Awaited<ReturnType<typeof createPgliteAdapter>> | null = null;
+
+    try {
+      await first.pglite.exec('INSERT INTO extra.persisted VALUES (1)');
+      await first.close();
+      first = null;
+
+      second = await createPgliteAdapter({ dataDir, sql });
+
+      const { rows } = await second.pglite.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM extra.persisted',
+      );
+      expect(rows[0]?.n).toBe(1);
+    } finally {
+      await second?.close();
+      await first?.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resetDb also clears tables created after the first reset', async () => {
+    const { pglite, resetDb, close } = await createPgliteAdapter();
+
+    try {
+      await resetDb();
+      await pglite.exec('CREATE TABLE late_table (id int PRIMARY KEY)');
+      await pglite.exec('INSERT INTO late_table VALUES (1)');
+
+      await resetDb();
+
+      const { rows } = await pglite.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM late_table',
+      );
+      expect(rows[0]?.n).toBe(0);
+    } finally {
+      await close();
+    }
   });
 });
 
@@ -708,6 +843,58 @@ describe('snapshotDb', () => {
 
     expect(await prisma.tenant.count()).toBe(0);
   });
+
+  it('restores rows from non-public schemas', async () => {
+    const { pglite, snapshotDb, resetDb, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE baseline (id int PRIMARY KEY)',
+    });
+
+    try {
+      await pglite.exec('CREATE SCHEMA extra');
+      await pglite.exec(
+        'CREATE TABLE extra.snapshot_test (id int PRIMARY KEY, name text NOT NULL)',
+      );
+      await pglite.exec("INSERT INTO extra.snapshot_test VALUES (1, 'seed')");
+
+      await snapshotDb();
+
+      await pglite.exec(
+        "DELETE FROM extra.snapshot_test; INSERT INTO extra.snapshot_test VALUES (2, 'changed')",
+      );
+      await resetDb();
+
+      const { rows } = await pglite.query<{ id: number; name: string }>(
+        'SELECT id, name FROM extra.snapshot_test ORDER BY id',
+      );
+      expect(rows).toEqual([{ id: 1, name: 'seed' }]);
+    } finally {
+      await close();
+    }
+  });
+
+  it('supports quoted identifiers containing single quotes', async () => {
+    const { pglite, snapshotDb, resetDb, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE baseline (id int PRIMARY KEY)',
+    });
+
+    try {
+      await pglite.exec('CREATE SCHEMA "s\'q"');
+      await pglite.exec('CREATE TABLE "s\'q"."t\'q" (id int PRIMARY KEY, name text NOT NULL)');
+      await pglite.exec('INSERT INTO "s\'q"."t\'q" VALUES (1, \'seed\')');
+
+      await snapshotDb();
+
+      await pglite.exec('DELETE FROM "s\'q"."t\'q"');
+      await resetDb();
+
+      const { rows } = await pglite.query<{ id: number; name: string }>(
+        'SELECT id, name FROM "s\'q"."t\'q" ORDER BY id',
+      );
+      expect(rows).toEqual([{ id: 1, name: 'seed' }]);
+    } finally {
+      await close();
+    }
+  });
 });
 
 describe('snapshot with auto-increment sequences', () => {
@@ -738,6 +925,31 @@ describe('snapshot with auto-increment sequences', () => {
     );
     expect(next[0]?.id).toBe(4);
   });
+
+  it('restores unused sequences to their initial position', async () => {
+    const {
+      pglite,
+      resetDb: seqResetDb,
+      snapshotDb: seqSnapshotDb,
+      close,
+    } = await createPgliteAdapter({
+      sql: 'CREATE TABLE counter_unused (id serial PRIMARY KEY, label text NOT NULL)',
+    });
+
+    try {
+      await seqSnapshotDb();
+      await pglite.exec("INSERT INTO counter_unused (label) VALUES ('after-snapshot')");
+      await seqResetDb();
+      await pglite.exec("INSERT INTO counter_unused (label) VALUES ('after-reset')");
+
+      const { rows } = await pglite.query<{ id: number; label: string }>(
+        'SELECT id, label FROM counter_unused ORDER BY id',
+      );
+      expect(rows).toEqual([{ id: 1, label: 'after-reset' }]);
+    } finally {
+      await close();
+    }
+  });
 });
 
 describe('backwards compat: resetDb without snapshot still truncates', () => {
@@ -750,5 +962,24 @@ describe('backwards compat: resetDb without snapshot still truncates', () => {
     await resetDb();
 
     expect(await prisma.tenant.count()).toBe(0);
+  });
+
+  it('resetDb restarts serial sequences even without a snapshot', async () => {
+    const { pglite, resetDb, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE counter (id serial PRIMARY KEY, label text NOT NULL)',
+    });
+
+    try {
+      await pglite.exec("INSERT INTO counter (label) VALUES ('before-reset')");
+      await resetDb();
+      await pglite.exec("INSERT INTO counter (label) VALUES ('after-reset')");
+
+      const { rows } = await pglite.query<{ id: number }>(
+        "SELECT id FROM counter WHERE label = 'after-reset'",
+      );
+      expect(rows[0]?.id).toBe(1);
+    } finally {
+      await close();
+    }
   });
 });
