@@ -182,21 +182,24 @@ export const createPgliteAdapter = async (
     `The "${SENTINEL_SCHEMA}" schema is reserved for library metadata.`;
 
   const writeSentinel = async () => {
+    let committed = false;
     try {
       await pglite.exec(`BEGIN;\n${sentinelStatements.join(';\n')}`);
-    } catch (err) {
-      await pglite.exec('ROLLBACK');
-      throw new Error(collisionError(), { cause: err });
-    }
 
-    const { rows } = await pglite.query<{ marker: string; version: number }>(
-      `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
-    );
-    if (rows.length !== 1 || rows[0]?.marker !== SENTINEL_MARKER || rows[0]?.version !== 1) {
-      await pglite.exec('ROLLBACK');
-      throw new Error(collisionError());
+      const { rows } = await pglite.query<{ marker: string; version: number }>(
+        `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
+      );
+      if (rows.length !== 1 || rows[0]?.marker !== SENTINEL_MARKER || rows[0]?.version !== 1) {
+        throw new Error(collisionError());
+      }
+      await pglite.exec('COMMIT');
+      committed = true;
+    } catch (err) {
+      if (!committed) await pglite.exec('ROLLBACK');
+      throw err instanceof Error && err.message === collisionError()
+        ? err
+        : new Error(collisionError(), { cause: err });
     }
-    await pglite.exec('COMMIT');
   };
 
   const isInitialized = async () => {
@@ -265,27 +268,30 @@ export const createPgliteAdapter = async (
     const isMigrationSQL = !options.sql;
 
     if (isMigrationSQL) {
+      let committed = false;
       try {
         await pglite.exec(`BEGIN;\n${sql};\n${sentinelStatements.join(';\n')}`);
+
+        const { rows: verify } = await pglite.query<{ marker: string; version: number }>(
+          `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
+        );
+        if (
+          verify.length !== 1 ||
+          verify[0]?.marker !== SENTINEL_MARKER ||
+          verify[0]?.version !== 1
+        ) {
+          throw new Error(collisionError());
+        }
+        await pglite.exec('COMMIT');
+        committed = true;
       } catch (err) {
-        await pglite.exec('ROLLBACK');
+        if (!committed) await pglite.exec('ROLLBACK');
+        if (err instanceof Error && err.message === collisionError()) throw err;
         throw new Error(
           'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
           { cause: err },
         );
       }
-      const { rows: verify } = await pglite.query<{ marker: string; version: number }>(
-        `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
-      );
-      if (
-        verify.length !== 1 ||
-        verify[0]?.marker !== SENTINEL_MARKER ||
-        verify[0]?.version !== 1
-      ) {
-        await pglite.exec('ROLLBACK');
-        throw new Error(collisionError());
-      }
-      await pglite.exec('COMMIT');
     } else {
       try {
         await pglite.exec(sql);
@@ -327,8 +333,10 @@ export const createPgliteAdapter = async (
     const { rows: tables } = await pglite.query<{
       schemaname: string;
       tablename: string;
+      qualified: string;
     }>(
-      `SELECT quote_ident(schemaname) AS schemaname, quote_ident(tablename) AS tablename
+      `SELECT schemaname, tablename,
+              quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
        FROM pg_tables
        WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
        AND schemaname != '${SNAPSHOT_SCHEMA}'
@@ -340,10 +348,10 @@ export const createPgliteAdapter = async (
       `CREATE TABLE "${SNAPSHOT_SCHEMA}".__tables (snap_name text, source_schema text, source_table text)`,
     );
 
-    for (const [i, { schemaname, tablename }] of tables.entries()) {
+    for (const [i, { schemaname, tablename, qualified }] of tables.entries()) {
       const snapName = `_snap_${i}`;
       await pglite.exec(
-        `CREATE TABLE "${SNAPSHOT_SCHEMA}"."${snapName}" AS SELECT * FROM ${schemaname}.${tablename}`,
+        `CREATE TABLE "${SNAPSHOT_SCHEMA}"."${snapName}" AS SELECT * FROM ${qualified}`,
       );
       await pglite.exec(
         `INSERT INTO "${SNAPSHOT_SCHEMA}".__tables VALUES (${escapeLiteral(snapName)}, ${escapeLiteral(schemaname)}, ${escapeLiteral(tablename)})`,
@@ -382,25 +390,27 @@ export const createPgliteAdapter = async (
 
         const { rows: snapshotTables } = await pglite.query<{
           snap_name: string;
-          source_schema: string;
-          source_table: string;
-        }>(`SELECT snap_name, source_schema, source_table FROM "${SNAPSHOT_SCHEMA}".__tables`);
+          qualified: string;
+        }>(
+          `SELECT snap_name, quote_ident(source_schema) || '.' || quote_ident(source_table) AS qualified
+           FROM "${SNAPSHOT_SCHEMA}".__tables`,
+        );
 
-        for (const { snap_name, source_schema, source_table } of snapshotTables) {
+        for (const { snap_name, qualified } of snapshotTables) {
           await pglite.exec(
-            `INSERT INTO ${source_schema}.${source_table} SELECT * FROM "${SNAPSHOT_SCHEMA}"."${snap_name}"`,
+            `INSERT INTO ${qualified} SELECT * FROM "${SNAPSHOT_SCHEMA}"."${snap_name}"`,
           );
+        }
+
+        const { rows: seqs } = await pglite.query<{ name: string; value: string }>(
+          `SELECT quote_literal(name) AS name, value::text AS value FROM "${SNAPSHOT_SCHEMA}".__sequences`,
+        );
+
+        for (const { name, value } of seqs) {
+          await pglite.exec(`SELECT setval(${name}, ${value})`);
         }
       } finally {
         await pglite.exec('SET session_replication_role = DEFAULT');
-      }
-
-      const { rows: seqs } = await pglite.query<{ name: string; value: string }>(
-        `SELECT quote_literal(name) AS name, value::text AS value FROM "${SNAPSHOT_SCHEMA}".__sequences`,
-      );
-
-      for (const { name, value } of seqs) {
-        await pglite.exec(`SELECT setval(${name}, ${value})`);
       }
     } else if (tables) {
       try {
