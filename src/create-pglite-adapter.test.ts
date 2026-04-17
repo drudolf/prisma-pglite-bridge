@@ -1504,6 +1504,18 @@ describe('stats collection', () => {
     }
   });
 
+  it('close() is re-entrant: concurrent calls return the same promise', async () => {
+    const { close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+      statsLevel: 1,
+    });
+
+    const [a, b, c] = await Promise.all([close(), close(), close()]);
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    await expect(close()).resolves.toBeUndefined();
+  });
+
   it('level 1 concurrent stats() during close(): both resolve without throwing', async () => {
     const { adapter, stats, close } = await createPgliteAdapter({
       sql: 'CREATE TABLE s (id int PRIMARY KEY)',

@@ -480,13 +480,18 @@ export const createPgliteAdapter = async (
     await pglite.exec('DEALLOCATE ALL');
   };
 
+  let closingPromise: Promise<void> | null = null;
   const close = async () => {
-    const closeEntry = collector ? process.hrtime.bigint() : null;
-    await pool.end();
-    if (collector && closeEntry !== null) {
-      await collector.freeze(pglite, closeEntry);
-    }
-    await pglite.close();
+    if (closingPromise) return closingPromise;
+    closingPromise = (async () => {
+      const closeEntry = collector ? process.hrtime.bigint() : null;
+      await pool.end();
+      if (collector && closeEntry !== null) {
+        await collector.freeze(pglite, closeEntry);
+      }
+      await pglite.close();
+    })();
+    return closingPromise;
   };
 
   const stats: StatsFn = async () => (collector ? collector.snapshot(pglite) : null);
