@@ -411,6 +411,36 @@ the object still returns.
   generate migration files, or pass schema SQL directly via the
   `sql` option.
 
+## Troubleshooting
+
+### `this.pglite.execProtocolRawStream is not a function`
+
+The bridge uses PGlite 0.4's streaming protocol API. Some packages
+in the Prisma ecosystem (e.g. `@prisma/dev`) still pin
+`@electric-sql/pglite` to 0.3.x, which pnpm will install alongside
+0.4 — and the bridge can end up with the older copy.
+
+Check your tree:
+
+```sh
+pnpm why @electric-sql/pglite
+```
+
+If you see more than one version, force a single 0.4.x via
+`pnpm.overrides` in your project's `package.json`:
+
+```json
+{
+  "pnpm": {
+    "overrides": {
+      "@electric-sql/pglite": "^0.4.4"
+    }
+  }
+}
+```
+
+Then `pnpm install`.
+
 ## License
 
 MIT
