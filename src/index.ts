@@ -28,4 +28,5 @@ export type { CreatePoolOptions, PoolResult } from './create-pool.ts';
 export { createPool } from './create-pool.ts';
 export { PGliteBridge } from './pglite-bridge.ts';
 export { SessionLock } from './session-lock.ts';
-export type { Stats, StatsLevel } from './stats-collector.ts';
+export type { Stats, Stats1, Stats2, StatsLevel } from './stats-collector.ts';
+export { QUERY_DURATION_WINDOW_SIZE } from './stats-collector.ts';

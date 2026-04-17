@@ -4,40 +4,84 @@
  * Instantiated at level 1 or 2. Level 0 is represented by `collector === null`
  * at call sites — the hot path guards on the null rather than paying for a
  * no-op stub. One collector per {@link createPgliteAdapter} call; threaded
- * through the pool into every {@link PGliteBridge}.
+ * through the pool into every `PGliteBridge`.
  *
- * Percentiles use nearest-rank (no interpolation). `durationMs` is frozen at
- * the instant `close()` was invoked, via the `closeEntryHrtime` the adapter
- * records as its very first action and passes to {@link freeze}.
+ * Percentiles use nearest-rank (no interpolation) over a sliding window of
+ * the most recent {@link QUERY_DURATION_WINDOW_SIZE} queries. Lifetime
+ * counters (`queryCount`, `totalQueryMs`, `avgQueryMs`) are not windowed.
+ * `durationMs` is frozen at the instant `close()` was invoked, via the
+ * `closeEntryHrtime` the adapter records as its very first action and
+ * passes to {@link freeze}.
  */
 import type { PGlite } from '@electric-sql/pglite';
 
+/**
+ * Stats collection level.
+ *
+ * - `0` — off. `stats()` returns `null`. Zero hot-path overhead.
+ * - `1` — timing (`durationMs`, `wasmInitMs`, `schemaSetupMs`), query
+ *   percentiles, counters, and `dbSizeBytes`.
+ * - `2` — level 1 plus `processRssPeakBytes` and session-lock waits.
+ */
 export type StatsLevel = 0 | 1 | 2;
 
-export interface Stats {
-  /** Capability marker — which level produced this object */
-  statsLevel: 1 | 2;
+/**
+ * Maximum number of recent query durations retained for percentile
+ * computation. Beyond this window, `recentP50QueryMs`, `recentP95QueryMs`,
+ * and `recentMaxQueryMs` reflect only the most recent N queries — lifetime
+ * counters (`queryCount`, `totalQueryMs`, `avgQueryMs`) remain complete.
+ */
+export const QUERY_DURATION_WINDOW_SIZE = 10_000;
+
+const QUERY_DURATION_TRIM_THRESHOLD = QUERY_DURATION_WINDOW_SIZE * 2;
+
+interface StatsBase {
   durationMs: number;
   wasmInitMs: number;
   schemaSetupMs: number;
+  /** Lifetime count of recorded queries. Not windowed. */
   queryCount: number;
   failedQueryCount: number;
+  /** Lifetime sum of query durations. Not windowed. */
   totalQueryMs: number;
+  /** Lifetime mean query duration. Not windowed. */
   avgQueryMs: number;
-  p50QueryMs: number;
-  p95QueryMs: number;
-  maxQueryMs: number;
+  /**
+   * Nearest-rank 50th percentile over the most recent
+   * {@link QUERY_DURATION_WINDOW_SIZE} queries. Compare to `avgQueryMs`
+   * with care: the two fields describe different populations on long-lived
+   * adapters.
+   */
+  recentP50QueryMs: number;
+  /** Nearest-rank 95th percentile over the recent-query window. */
+  recentP95QueryMs: number;
+  /** Maximum query duration within the recent-query window. */
+  recentMaxQueryMs: number;
   resetDbCalls: number;
-  /** Undefined only when the `pg_database_size` query rejected */
+  /** Undefined only when the `pg_database_size` query rejected. */
   dbSizeBytes?: number;
-  /** Level 2: process-wide RSS peak (sampled, lower bound) */
-  processPeakRssBytes?: number;
-  /** Level 2: sum of session-lock wait durations */
-  totalSessionLockWaitMs?: number;
-  sessionLockAcquisitionCount?: number;
-  avgSessionLockWaitMs?: number;
-  maxSessionLockWaitMs?: number;
 }
+
+export interface Stats1 extends StatsBase {
+  statsLevel: 1;
+}
+
+export interface Stats2 extends StatsBase {
+  statsLevel: 2;
+  /**
+   * Process-wide RSS peak (sampled, lower bound). This value reflects the
+   * entire Node process, not just this adapter — parallel test runners or
+   * other work in the same process will inflate it. Use only as an
+   * ordering signal, not an absolute measurement.
+   */
+  processRssPeakBytes: number;
+  totalSessionLockWaitMs: number;
+  sessionLockAcquisitionCount: number;
+  avgSessionLockWaitMs: number;
+  maxSessionLockWaitMs: number;
+}
+
+export type Stats = Stats1 | Stats2;
 
 const RSS_SAMPLE_INTERVAL_MS = 500;
 
@@ -93,6 +137,9 @@ export class StatsCollector {
     this.queryCount += 1;
     this.totalQueryMs += durationMs;
     this.queryDurations.push(durationMs);
+    if (this.queryDurations.length > QUERY_DURATION_TRIM_THRESHOLD) {
+      this.queryDurations = this.queryDurations.slice(-QUERY_DURATION_WINDOW_SIZE);
+    }
     if (!succeeded) this.failedQueryCount += 1;
   }
 
@@ -129,8 +176,7 @@ export class StatsCollector {
     const sorted = [...this.queryDurations].sort((a, b) => a - b);
     const avgQueryMs = this.queryCount === 0 ? 0 : this.totalQueryMs / this.queryCount;
 
-    const base: Stats = {
-      statsLevel: this.level,
+    const base: StatsBase = {
       durationMs,
       wasmInitMs: this.wasmInitMs,
       schemaSetupMs: this.schemaSetupMs,
@@ -138,23 +184,27 @@ export class StatsCollector {
       failedQueryCount: this.failedQueryCount,
       totalQueryMs: this.totalQueryMs,
       avgQueryMs,
-      p50QueryMs: percentile(sorted, 50),
-      p95QueryMs: percentile(sorted, 95),
-      maxQueryMs: percentile(sorted, 100),
+      recentP50QueryMs: percentile(sorted, 50),
+      recentP95QueryMs: percentile(sorted, 95),
+      recentMaxQueryMs: percentile(sorted, 100),
       resetDbCalls: this.resetDbCalls,
       dbSizeBytes,
     };
 
-    if (this.level === 2) {
-      const count = this.sessionLockAcquisitionCount;
-      base.processPeakRssBytes = this.peakRssBytes;
-      base.totalSessionLockWaitMs = this.totalSessionLockWaitMs;
-      base.sessionLockAcquisitionCount = count;
-      base.avgSessionLockWaitMs = count === 0 ? 0 : this.totalSessionLockWaitMs / count;
-      base.maxSessionLockWaitMs = this.maxSessionLockWaitMs;
+    if (this.level === 1) {
+      return { ...base, statsLevel: 1 };
     }
 
-    return base;
+    const count = this.sessionLockAcquisitionCount;
+    return {
+      ...base,
+      statsLevel: 2,
+      processRssPeakBytes: this.peakRssBytes,
+      totalSessionLockWaitMs: this.totalSessionLockWaitMs,
+      sessionLockAcquisitionCount: count,
+      avgSessionLockWaitMs: count === 0 ? 0 : this.totalSessionLockWaitMs / count,
+      maxSessionLockWaitMs: this.maxSessionLockWaitMs,
+    };
   }
 
   async freeze(pglite: PGlite, closeEntryHrtime: bigint): Promise<void> {
