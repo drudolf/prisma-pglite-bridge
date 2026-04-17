@@ -292,6 +292,61 @@ describe('StatsCollector — level 2 RSS sampler', () => {
       c.stop();
     }
   });
+
+  it('interval sampler fires on schedule (fake timers)', async () => {
+    vi.useFakeTimers();
+    try {
+      memSpy = vi.spyOn(process, 'memoryUsage');
+      const c = new StatsCollector(2);
+      try {
+        const afterCtor = memSpy.mock.calls.length;
+        vi.advanceTimersByTime(500);
+        expect(memSpy.mock.calls.length).toBe(afterCtor + 1);
+        vi.advanceTimersByTime(2_000);
+        expect(memSpy.mock.calls.length).toBe(afterCtor + 5);
+      } finally {
+        c.stop();
+        vi.advanceTimersByTime(10_000);
+        const afterStop = memSpy.mock.calls.length;
+        vi.advanceTimersByTime(10_000);
+        expect(memSpy.mock.calls.length).toBe(afterStop);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('StatsCollector — queryDbSize robustness', () => {
+  it('returns undefined when pg_database_size yields a non-numeric value', async () => {
+    await withCollector(1, async (c) => {
+      const pglite = {
+        query: vi.fn().mockResolvedValue({ rows: [{ size: 'not-a-number' }] }),
+      } as unknown as PGliteLike;
+      const s = await c.snapshot(pglite);
+      expect(s.dbSizeBytes).toBeUndefined();
+    });
+  });
+
+  it('returns undefined when the single column is null', async () => {
+    await withCollector(1, async (c) => {
+      const pglite = {
+        query: vi.fn().mockResolvedValue({ rows: [{ size: null }] }),
+      } as unknown as PGliteLike;
+      const s = await c.snapshot(pglite);
+      expect(s.dbSizeBytes).toBeUndefined();
+    });
+  });
+
+  it('returns undefined when rows is empty', async () => {
+    await withCollector(1, async (c) => {
+      const pglite = {
+        query: vi.fn().mockResolvedValue({ rows: [] }),
+      } as unknown as PGliteLike;
+      const s = await c.snapshot(pglite);
+      expect(s.dbSizeBytes).toBeUndefined();
+    });
+  });
 });
 
 describe('StatsCollector — level 2 session-lock accumulation', () => {
