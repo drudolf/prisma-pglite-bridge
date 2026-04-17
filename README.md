@@ -56,7 +56,7 @@ If no migration files are found, it throws with a message to run
 Creates a Prisma adapter backed by an in-process PGlite instance.
 
 ```typescript
-const { adapter, pglite, resetDb, close } = await createPgliteAdapter({
+const { adapter, pglite, resetDb, close, stats } = await createPgliteAdapter({
   // All optional — migrations auto-discovered from prisma.config.ts
   migrationsPath: './prisma/migrations', // or:
   sql: 'CREATE TABLE ...',              // (first match wins, see Schema Resolution)
@@ -64,6 +64,7 @@ const { adapter, pglite, resetDb, close } = await createPgliteAdapter({
   dataDir: './data/pglite',   // omit for in-memory
   extensions: {},             // PGlite extensions
   max: 5,                     // pool connections (default: 5)
+  statsLevel: 0,              // telemetry level (default: 0 = off)
 });
 ```
 
@@ -79,6 +80,8 @@ Returns:
 - `close()` — shuts down pool and PGlite. Not needed in tests
   (process exit handles it). Use in long-running scripts or dev
   servers.
+- `stats()` — returns telemetry when `statsLevel > 0`, else `null`.
+  See [Stats collection](#stats-collection).
 
 ### `createPool(options?)`
 
@@ -333,6 +336,64 @@ try {
   await close();
 }
 ```
+
+## Stats collection
+
+Opt-in telemetry about what happened during a test run — query counts,
+timing percentiles, database size, and (at level 2) process RSS and
+session-lock wait times. Useful for CI cost insight, perf tuning, and
+understanding test-suite behavior. **Off by default** (zero overhead
+on the hot path).
+
+```typescript
+const { adapter, stats, close } = await createPgliteAdapter({
+  statsLevel: 1, // or 2
+});
+const prisma = new PrismaClient({ adapter });
+
+afterAll(async () => {
+  await prisma.$disconnect();
+  await close();
+  const s = await stats();
+  if (s) console.log(s);
+});
+```
+
+`stats()` returns `Promise<Stats | null>` — `null` when
+`statsLevel` is `0` (or omitted). Safe to call before or after
+`close()`; post-close reads return frozen values from the moment
+`close()` was invoked.
+
+### Levels
+
+**Level 1** — timing and counters:
+
+- `durationMs` — adapter lifetime (frozen at `close()`, drain
+  excluded)
+- `wasmInitMs`, `schemaSetupMs` — one-time startup costs
+- `queryCount`, `failedQueryCount` — WASM round-trips (a Prisma
+  extended-query pipeline is one round-trip, not five)
+- `totalQueryMs`, `avgQueryMs`, `p50QueryMs`, `p95QueryMs`,
+  `maxQueryMs` — nearest-rank percentiles, no interpolation
+- `resetDbCalls` — counts `resetDb()` attempts
+- `dbSizeBytes` — `pg_database_size(current_database())`, cached
+  at close
+
+**Level 2** — adds:
+
+- `processPeakRssBytes` — process-wide RSS peak (sampled at 500ms,
+  a lower bound on true peak — short-lived allocations between
+  samples are missed; contaminated if unrelated work shares the
+  process)
+- `totalSessionLockWaitMs`, `sessionLockAcquisitionCount`,
+  `avgSessionLockWaitMs`, `maxSessionLockWaitMs` — session-lock
+  contention across pool connections
+
+`statsLevel` is echoed on the returned object. When
+`statsLevel === 2`, all level-2 fields are guaranteed defined.
+`dbSizeBytes` is the only field that can be `undefined` — if the
+`pg_database_size` query rejects (broken pglite state), the rest of
+the object still returns.
 
 ## Limitations
 

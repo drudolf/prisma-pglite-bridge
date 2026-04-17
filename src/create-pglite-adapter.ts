@@ -18,6 +18,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createPool } from './create-pool.ts';
+import { type Stats, StatsCollector, type StatsLevel } from './stats-collector.ts';
+
+const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
 
 const SNAPSHOT_SCHEMA = '_pglite_snapshot';
 const SENTINEL_SCHEMA = '_pglite_bridge';
@@ -52,7 +55,23 @@ export interface CreatePgliteAdapterOptions {
 
   /** Maximum pool connections (default: 5) */
   max?: number;
+
+  /**
+   * Collect adapter/query telemetry. Default `0` (off, zero overhead).
+   *
+   * - `1` — timing (`durationMs`, `wasmInitMs`, `schemaSetupMs`, query
+   *   percentiles) and counters (`queryCount`, `failedQueryCount`,
+   *   `resetDbCalls`), plus `dbSizeBytes`.
+   * - `2` — everything in level 1, plus `processPeakRssBytes` (process-wide,
+   *   sampled) and session-lock wait statistics.
+   *
+   * Retrieve via `await adapter.stats()` — returns `null` at level 0.
+   */
+  statsLevel?: StatsLevel;
 }
+
+/** Snapshot of adapter/query telemetry. See {@link CreatePgliteAdapterOptions.statsLevel}. */
+export type StatsFn = () => Promise<Stats | null>;
 
 /** Clear all user tables. Call in `beforeEach` for per-test isolation. */
 export type ResetDbFn = () => Promise<void>;
@@ -87,6 +106,13 @@ export interface PgliteAdapter {
 
   /** Shut down pool and PGlite. Not needed in tests (process exit handles it). */
   close: () => Promise<void>;
+
+  /**
+   * Retrieve collected telemetry. Returns `null` when `statsLevel` was `0`
+   * (or omitted). Never throws — field-level failures surface as
+   * `undefined` values (see {@link Stats}).
+   */
+  stats: StatsFn;
 }
 
 /**
@@ -194,14 +220,14 @@ const resolveSQL = async (options: CreatePgliteAdapterOptions): Promise<string> 
 export const createPgliteAdapter = async (
   options: CreatePgliteAdapterOptions = {},
 ): Promise<PgliteAdapter> => {
-  const {
-    pool,
-    pglite,
-    close: poolClose,
-  } = await createPool({
+  const statsLevel = options.statsLevel ?? 0;
+  const collector = statsLevel === 0 ? null : new StatsCollector(statsLevel);
+
+  const { pool, pglite } = await createPool({
     dataDir: options.dataDir,
     extensions: options.extensions,
     max: options.max,
+    collector,
   });
 
   const sentinelStatements = [
@@ -289,6 +315,7 @@ export const createPgliteAdapter = async (
     return false;
   };
 
+  const schemaStart = collector ? process.hrtime.bigint() : null;
   if (!options.dataDir || !(await isInitialized())) {
     const sql = await resolveSQL(options);
     const isMigrationSQL = !options.sql;
@@ -323,6 +350,9 @@ export const createPgliteAdapter = async (
       }
       await writeSentinel();
     }
+  }
+  if (collector && schemaStart !== null) {
+    collector.markSchemaSetup(nsToMs(process.hrtime.bigint() - schemaStart));
   }
 
   const adapter = new PrismaPg(pool);
@@ -404,6 +434,7 @@ export const createPgliteAdapter = async (
   };
 
   const resetDb = async () => {
+    collector?.incrementResetDb();
     cachedTables = null;
     const tables = await discoverTables();
 
@@ -449,5 +480,16 @@ export const createPgliteAdapter = async (
     await pglite.exec('DEALLOCATE ALL');
   };
 
-  return { adapter, pglite, resetDb, snapshotDb, resetSnapshot, close: poolClose };
+  const close = async () => {
+    const closeEntry = collector ? process.hrtime.bigint() : null;
+    await pool.end();
+    if (collector && closeEntry !== null) {
+      await collector.freeze(pglite, closeEntry);
+    }
+    await pglite.close();
+  };
+
+  const stats: StatsFn = async () => (collector ? collector.snapshot(pglite) : null);
+
+  return { adapter, pglite, resetDb, snapshotDb, resetSnapshot, close, stats };
 };

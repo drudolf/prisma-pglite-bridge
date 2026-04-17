@@ -2,5 +2,5 @@
   "config": {
     "line-length": { "line_length": 120, "code_blocks": false, "tables": false }
   },
-  "ignores": ["CHANGELOG.md"]
+  "ignores": ["CHANGELOG.md", ".changeset/*.md"]
 }
