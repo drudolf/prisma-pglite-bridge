@@ -208,6 +208,48 @@ describe('StatsCollector — freeze()', () => {
       c.stop();
     }
   });
+
+  it('seals dbSizeFrozen even when queryDbSize rejects', async () => {
+    const c = new StatsCollector(1);
+    try {
+      const throwing = {
+        query: vi.fn().mockRejectedValue(new Error('boom')),
+      } as unknown as PGliteLike;
+
+      await c.freeze(throwing, process.hrtime.bigint());
+      const callsAfterFreeze = (throwing.query as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      await c.snapshot(throwing);
+      await c.snapshot(throwing);
+
+      expect((throwing.query as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterFreeze);
+    } finally {
+      c.stop();
+    }
+  });
+
+  it('ignores recordQuery / recordLockWait / incrementResetDb after freeze', async () => {
+    const c = new StatsCollector(2);
+    try {
+      c.recordQuery(10, true);
+      c.recordLockWait(5);
+      c.incrementResetDb();
+      await c.freeze(makePglite(), process.hrtime.bigint());
+      const before = await c.snapshot(makePglite());
+
+      c.recordQuery(999, false);
+      c.recordLockWait(999);
+      c.incrementResetDb();
+      const after = await c.snapshot(makePglite());
+
+      expect(after.queryCount).toBe(before.queryCount);
+      expect(after.failedQueryCount).toBe(before.failedQueryCount);
+      expect(after.resetDbCalls).toBe(before.resetDbCalls);
+      expect(after.sessionLockAcquisitionCount).toBe(before.sessionLockAcquisitionCount);
+    } finally {
+      c.stop();
+    }
+  });
 });
 
 describe('StatsCollector — level 2 RSS sampler', () => {

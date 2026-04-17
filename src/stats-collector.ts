@@ -89,6 +89,7 @@ export class StatsCollector {
   }
 
   recordQuery(durationMs: number, succeeded: boolean): void {
+    if (this.frozen) return;
     this.queryCount += 1;
     this.totalQueryMs += durationMs;
     this.queryDurations.push(durationMs);
@@ -96,6 +97,7 @@ export class StatsCollector {
   }
 
   recordLockWait(durationMs: number): void {
+    if (this.frozen) return;
     if (this.level !== 2) return;
     this.totalSessionLockWaitMs += durationMs;
     this.sessionLockAcquisitionCount += 1;
@@ -103,6 +105,7 @@ export class StatsCollector {
   }
 
   incrementResetDb(): void {
+    if (this.frozen) return;
     this.resetDbCalls += 1;
   }
 
@@ -159,11 +162,13 @@ export class StatsCollector {
     this.frozen = true;
 
     this.cachedDurationMs = nsToMs(closeEntryHrtime - this.createdAtHrtime);
-    this.cachedDbSizeBytes = await this.queryDbSize(pglite);
-    this.dbSizeFrozen = true;
-
-    if (this.level === 2) this.sampleRss();
-    this.stop();
+    try {
+      this.cachedDbSizeBytes = await this.queryDbSize(pglite);
+    } finally {
+      this.dbSizeFrozen = true;
+      if (this.level === 2) this.sampleRss();
+      this.stop();
+    }
   }
 
   stop(): void {
