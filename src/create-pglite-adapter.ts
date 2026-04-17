@@ -104,7 +104,13 @@ export interface PgliteAdapter {
   /** Discard the current snapshot. Subsequent `resetDb` calls truncate to empty. */
   resetSnapshot: ResetSnapshotFn;
 
-  /** Shut down pool and PGlite. Not needed in tests (process exit handles it). */
+  /**
+   * Shut down pool and PGlite. Not needed in tests (process exit handles it).
+   *
+   * When `statsLevel > 0`, call `stats()` *after* `close()` to collect the
+   * frozen snapshot — `durationMs` and `dbSizeBytes` are cached at the
+   * moment `close()` is invoked, and subsequent `stats()` calls are safe.
+   */
   close: () => Promise<void>;
 
   /**
@@ -221,6 +227,9 @@ export const createPgliteAdapter = async (
   options: CreatePgliteAdapterOptions = {},
 ): Promise<PgliteAdapter> => {
   const statsLevel = options.statsLevel ?? 0;
+  if (statsLevel < 0 || statsLevel > 2) {
+    throw new Error(`statsLevel must be 0, 1, or 2; got ${statsLevel}`);
+  }
   const collector = statsLevel === 0 ? null : new StatsCollector(statsLevel);
 
   const { pool, pglite } = await createPool({

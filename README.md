@@ -372,16 +372,21 @@ afterAll(async () => {
   excluded)
 - `wasmInitMs`, `schemaSetupMs` — one-time startup costs
 - `queryCount`, `failedQueryCount` — WASM round-trips (a Prisma
-  extended-query pipeline is one round-trip, not five)
-- `totalQueryMs`, `avgQueryMs`, `p50QueryMs`, `p95QueryMs`,
-  `maxQueryMs` — nearest-rank percentiles, no interpolation
+  extended-query pipeline is one round-trip, not five). Lifetime
+  counters.
+- `totalQueryMs`, `avgQueryMs` — lifetime sum and mean of query
+  durations
+- `recentP50QueryMs`, `recentP95QueryMs`, `recentMaxQueryMs` —
+  nearest-rank percentiles (no interpolation) over the most recent
+  `QUERY_DURATION_WINDOW_SIZE` (10,000) queries. On long-lived
+  adapters these describe a different population than `avgQueryMs`.
 - `resetDbCalls` — counts `resetDb()` attempts
 - `dbSizeBytes` — `pg_database_size(current_database())`, cached
   at close
 
 **Level 2** — adds:
 
-- `processPeakRssBytes` — process-wide RSS peak (sampled at 500ms,
+- `processRssPeakBytes` — process-wide RSS peak (sampled at 500ms,
   a lower bound on true peak — short-lived allocations between
   samples are missed; contaminated if unrelated work shares the
   process)

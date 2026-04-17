@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { StatsCollector } from './stats-collector.ts';
+import { QUERY_DURATION_WINDOW_SIZE, StatsCollector } from './stats-collector.ts';
 
 type PGliteLike = import('@electric-sql/pglite').PGlite;
 
@@ -23,9 +23,9 @@ describe('StatsCollector — percentile math', () => {
     await withCollector(1, async (c) => {
       for (const d of [10, 20, 30, 40, 50]) c.recordQuery(d, true);
       const s = await c.snapshot(makePglite());
-      expect(s.p50QueryMs).toBe(30);
-      expect(s.p95QueryMs).toBe(50);
-      expect(s.maxQueryMs).toBe(50);
+      expect(s.recentP50QueryMs).toBe(30);
+      expect(s.recentP95QueryMs).toBe(50);
+      expect(s.recentMaxQueryMs).toBe(50);
     });
   });
 
@@ -33,9 +33,9 @@ describe('StatsCollector — percentile math', () => {
     await withCollector(1, async (c) => {
       for (let i = 1; i <= 100; i++) c.recordQuery(i, true);
       const s = await c.snapshot(makePglite());
-      expect(s.p50QueryMs).toBe(50);
-      expect(s.p95QueryMs).toBe(95);
-      expect(s.maxQueryMs).toBe(100);
+      expect(s.recentP50QueryMs).toBe(50);
+      expect(s.recentP95QueryMs).toBe(95);
+      expect(s.recentMaxQueryMs).toBe(100);
     });
   });
 
@@ -43,9 +43,9 @@ describe('StatsCollector — percentile math', () => {
     await withCollector(1, async (c) => {
       for (const d of [50, 10, 40, 20, 30]) c.recordQuery(d, true);
       const s = await c.snapshot(makePglite());
-      expect(s.p50QueryMs).toBe(30);
-      expect(s.p95QueryMs).toBe(50);
-      expect(s.maxQueryMs).toBe(50);
+      expect(s.recentP50QueryMs).toBe(30);
+      expect(s.recentP95QueryMs).toBe(50);
+      expect(s.recentMaxQueryMs).toBe(50);
     });
   });
 
@@ -55,9 +55,9 @@ describe('StatsCollector — percentile math', () => {
       const s = await c.snapshot(makePglite());
       expect(s.queryCount).toBe(0);
       expect(s.avgQueryMs).toBe(0);
-      expect(s.p50QueryMs).toBe(0);
-      expect(s.p95QueryMs).toBe(0);
-      expect(s.maxQueryMs).toBe(0);
+      expect(s.recentP50QueryMs).toBe(0);
+      expect(s.recentP95QueryMs).toBe(0);
+      expect(s.recentMaxQueryMs).toBe(0);
       expect(s.durationMs).toBeGreaterThan(0);
     });
   });
@@ -66,9 +66,22 @@ describe('StatsCollector — percentile math', () => {
     await withCollector(1, async (c) => {
       c.recordQuery(42, true);
       const s = await c.snapshot(makePglite());
-      expect(s.p50QueryMs).toBe(42);
-      expect(s.p95QueryMs).toBe(42);
-      expect(s.maxQueryMs).toBe(42);
+      expect(s.recentP50QueryMs).toBe(42);
+      expect(s.recentP95QueryMs).toBe(42);
+      expect(s.recentMaxQueryMs).toBe(42);
+    });
+  });
+
+  it('ring buffer: recent window reflects only last QUERY_DURATION_WINDOW_SIZE entries; lifetime counters stay complete', async () => {
+    await withCollector(1, async (c) => {
+      const trimThreshold = QUERY_DURATION_WINDOW_SIZE * 2;
+      for (let i = 0; i < trimThreshold; i++) c.recordQuery(1, true);
+      for (let i = 0; i < trimThreshold; i++) c.recordQuery(999, true);
+      const s = await c.snapshot(makePglite());
+      expect(s.queryCount).toBe(trimThreshold * 2);
+      expect(s.recentP50QueryMs).toBe(999);
+      expect(s.recentP95QueryMs).toBe(999);
+      expect(s.recentMaxQueryMs).toBe(999);
     });
   });
 });
@@ -132,19 +145,20 @@ describe('StatsCollector — snapshot level gating', () => {
     await withCollector(1, async (c) => {
       const s = await c.snapshot(makePglite());
       expect(s.statsLevel).toBe(1);
-      expect(s.processPeakRssBytes).toBeUndefined();
-      expect(s.totalSessionLockWaitMs).toBeUndefined();
-      expect(s.sessionLockAcquisitionCount).toBeUndefined();
-      expect(s.avgSessionLockWaitMs).toBeUndefined();
-      expect(s.maxSessionLockWaitMs).toBeUndefined();
+      const bag = s as unknown as Record<string, unknown>;
+      expect(bag.processRssPeakBytes).toBeUndefined();
+      expect(bag.totalSessionLockWaitMs).toBeUndefined();
+      expect(bag.sessionLockAcquisitionCount).toBeUndefined();
+      expect(bag.avgSessionLockWaitMs).toBeUndefined();
+      expect(bag.maxSessionLockWaitMs).toBeUndefined();
     });
   });
 
   it('level 2: statsLevel === 2 and level-2 fields are defined with session-lock defaults', async () => {
     await withCollector(2, async (c) => {
       const s = await c.snapshot(makePglite());
-      expect(s.statsLevel).toBe(2);
-      expect(s.processPeakRssBytes).toBeGreaterThan(0);
+      if (s.statsLevel !== 2) throw new Error('expected level 2');
+      expect(s.processRssPeakBytes).toBeGreaterThan(0);
       expect(s.totalSessionLockWaitMs).toBe(0);
       expect(s.sessionLockAcquisitionCount).toBe(0);
       expect(s.avgSessionLockWaitMs).toBe(0);
@@ -236,11 +250,13 @@ describe('StatsCollector — freeze()', () => {
       c.incrementResetDb();
       await c.freeze(makePglite(), process.hrtime.bigint());
       const before = await c.snapshot(makePglite());
+      if (before.statsLevel !== 2) throw new Error('expected level 2');
 
       c.recordQuery(999, false);
       c.recordLockWait(999);
       c.incrementResetDb();
       const after = await c.snapshot(makePglite());
+      if (after.statsLevel !== 2) throw new Error('expected level 2');
 
       expect(after.queryCount).toBe(before.queryCount);
       expect(after.failedQueryCount).toBe(before.failedQueryCount);
@@ -270,7 +286,8 @@ describe('StatsCollector — level 2 RSS sampler', () => {
       await c.freeze(makePglite(), process.hrtime.bigint());
       expect(memSpy.mock.calls.length).toBe(2);
       const s = await c.snapshot(makePglite());
-      expect(s.processPeakRssBytes).toBeGreaterThan(0);
+      if (s.statsLevel !== 2) throw new Error('expected level 2');
+      expect(s.processRssPeakBytes).toBeGreaterThan(0);
     } finally {
       c.stop();
     }
@@ -284,6 +301,7 @@ describe('StatsCollector — level 2 session-lock accumulation', () => {
       c.recordLockWait(15);
       c.recordLockWait(10);
       const s = await c.snapshot(makePglite());
+      if (s.statsLevel !== 2) throw new Error('expected level 2');
       expect(s.totalSessionLockWaitMs).toBe(30);
       expect(s.maxSessionLockWaitMs).toBe(15);
       expect(s.sessionLockAcquisitionCount).toBe(3);
@@ -296,10 +314,11 @@ describe('StatsCollector — level 2 session-lock accumulation', () => {
       c.recordLockWait(100);
       c.recordLockWait(200);
       const s = await c.snapshot(makePglite());
-      expect(s.totalSessionLockWaitMs).toBeUndefined();
-      expect(s.maxSessionLockWaitMs).toBeUndefined();
-      expect(s.sessionLockAcquisitionCount).toBeUndefined();
-      expect(s.avgSessionLockWaitMs).toBeUndefined();
+      const bag = s as unknown as Record<string, unknown>;
+      expect(bag.totalSessionLockWaitMs).toBeUndefined();
+      expect(bag.maxSessionLockWaitMs).toBeUndefined();
+      expect(bag.sessionLockAcquisitionCount).toBeUndefined();
+      expect(bag.avgSessionLockWaitMs).toBeUndefined();
     });
   });
 });

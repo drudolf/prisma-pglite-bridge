@@ -11,6 +11,7 @@ import type {
   SnapshotDbFn,
 } from './create-pglite-adapter.ts';
 import { createPgliteAdapter } from './create-pglite-adapter.ts';
+import type { StatsLevel } from './stats-collector.ts';
 
 let prisma: PrismaClient;
 let resetDb: ResetDbFn;
@@ -1342,6 +1343,21 @@ describe('stats collection', () => {
     }
   });
 
+  it('rejects out-of-range statsLevel at runtime', async () => {
+    await expect(
+      createPgliteAdapter({
+        sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+        statsLevel: -1 as unknown as StatsLevel,
+      }),
+    ).rejects.toThrow(/statsLevel must be 0, 1, or 2/);
+    await expect(
+      createPgliteAdapter({
+        sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+        statsLevel: 3 as unknown as StatsLevel,
+      }),
+    ).rejects.toThrow(/statsLevel must be 0, 1, or 2/);
+  });
+
   it('level 1: counters reflect Prisma round-trips', async () => {
     const { adapter, stats, resetDb, close } = await createPgliteAdapter({
       sql: 'CREATE TABLE stat_tbl (id serial PRIMARY KEY, name text NOT NULL)',
@@ -1384,9 +1400,9 @@ describe('stats collection', () => {
       expect(s.failedQueryCount).toBe(0);
       expect(s.totalQueryMs).toBe(0);
       expect(s.avgQueryMs).toBe(0);
-      expect(s.p50QueryMs).toBe(0);
-      expect(s.p95QueryMs).toBe(0);
-      expect(s.maxQueryMs).toBe(0);
+      expect(s.recentP50QueryMs).toBe(0);
+      expect(s.recentP95QueryMs).toBe(0);
+      expect(s.recentMaxQueryMs).toBe(0);
       expect(s.resetDbCalls).toBe(0);
       expect(s.durationMs).toBeGreaterThan(0);
       expect(s.dbSizeBytes).toBeGreaterThan(0);
@@ -1428,9 +1444,9 @@ describe('stats collection', () => {
 
       const s = await stats();
       if (s === null) throw new Error('stats() returned null');
-      expect(s.statsLevel).toBe(2);
-      expect(typeof s.processPeakRssBytes).toBe('number');
-      expect(s.processPeakRssBytes).toBeGreaterThan(0);
+      if (s.statsLevel !== 2) throw new Error('expected level 2');
+      expect(typeof s.processRssPeakBytes).toBe('number');
+      expect(s.processRssPeakBytes).toBeGreaterThan(0);
       expect(typeof s.totalSessionLockWaitMs).toBe('number');
       expect(typeof s.sessionLockAcquisitionCount).toBe('number');
       expect(typeof s.avgSessionLockWaitMs).toBe('number');
@@ -1495,10 +1511,11 @@ describe('stats collection', () => {
       await close();
       const s = await stats();
       if (s === null) throw new Error('stats() returned null');
+      if (s.statsLevel !== 2) throw new Error('expected level 2');
 
       expect(memSpy.mock.calls.length - baseline).toBe(1);
-      expect(typeof s.processPeakRssBytes).toBe('number');
-      expect(s.processPeakRssBytes).toBeGreaterThan(0);
+      expect(typeof s.processRssPeakBytes).toBe('number');
+      expect(s.processRssPeakBytes).toBeGreaterThan(0);
     } finally {
       memSpy.mockRestore();
     }
