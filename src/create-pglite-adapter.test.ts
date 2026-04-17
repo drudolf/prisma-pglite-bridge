@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   PgliteAdapter,
   ResetDbFn,
@@ -1314,5 +1314,241 @@ describe('sentinel initialization detection', () => {
         'exists but is not owned by prisma-pglite-bridge',
       );
     });
+  });
+});
+
+// ─── Stats collection ───
+
+describe('stats collection', () => {
+  it('level 0: stats() returns null and feature is off', async () => {
+    const { stats, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+    });
+    try {
+      expect(await stats()).toBeNull();
+    } finally {
+      await close();
+    }
+  });
+
+  it('level 0 by default (no statsLevel option)', async () => {
+    const { stats, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+    });
+    try {
+      expect(await stats()).toBeNull();
+    } finally {
+      await close();
+    }
+  });
+
+  it('level 1: counters reflect Prisma round-trips', async () => {
+    const { adapter, stats, resetDb, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE stat_tbl (id serial PRIMARY KEY, name text NOT NULL)',
+      statsLevel: 1,
+    });
+    const prismaClient = new PrismaClient({ adapter });
+    try {
+      await prismaClient.$executeRawUnsafe("INSERT INTO stat_tbl (name) VALUES ('a')");
+      await prismaClient.$executeRawUnsafe("INSERT INTO stat_tbl (name) VALUES ('b')");
+      await prismaClient.$queryRawUnsafe('SELECT * FROM stat_tbl');
+      await resetDb();
+
+      const s = await stats();
+      if (s === null) throw new Error('stats() returned null');
+      expect(s.statsLevel).toBe(1);
+      expect(s.queryCount).toBeGreaterThan(0);
+      expect(s.failedQueryCount).toBe(0);
+      expect(s.resetDbCalls).toBe(1);
+      expect(s.durationMs).toBeGreaterThan(0);
+      expect(s.avgQueryMs).toBeGreaterThan(0);
+      expect(s.dbSizeBytes).toBeGreaterThan(0);
+      expect(s.wasmInitMs).toBeGreaterThan(0);
+      expect(s.schemaSetupMs).toBeGreaterThan(0);
+    } finally {
+      await prismaClient.$disconnect();
+      await close();
+    }
+  });
+
+  it('level 1 N=0 boundary: stats before any query', async () => {
+    const { stats, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+      statsLevel: 1,
+    });
+    try {
+      const s = await stats();
+      if (s === null) throw new Error('stats() returned null');
+      expect(s.statsLevel).toBe(1);
+      expect(s.queryCount).toBe(0);
+      expect(s.failedQueryCount).toBe(0);
+      expect(s.totalQueryMs).toBe(0);
+      expect(s.avgQueryMs).toBe(0);
+      expect(s.p50QueryMs).toBe(0);
+      expect(s.p95QueryMs).toBe(0);
+      expect(s.maxQueryMs).toBe(0);
+      expect(s.resetDbCalls).toBe(0);
+      expect(s.durationMs).toBeGreaterThan(0);
+      expect(s.dbSizeBytes).toBeGreaterThan(0);
+    } finally {
+      await close();
+    }
+  });
+
+  it('level 1 failed-query path: failure appears in stats', async () => {
+    const { adapter, stats, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+      statsLevel: 1,
+    });
+    const prismaClient = new PrismaClient({ adapter });
+    try {
+      await expect(
+        prismaClient.$queryRawUnsafe('SELECT * FROM nonexistent_table_xyz'),
+      ).rejects.toThrow();
+
+      const s = await stats();
+      if (s === null) throw new Error('stats() returned null');
+      expect(s.queryCount).toBeGreaterThan(0);
+      expect(s.failedQueryCount).toBeGreaterThan(0);
+      expect(s.totalQueryMs).toBeGreaterThan(0);
+    } finally {
+      await prismaClient.$disconnect();
+      await close();
+    }
+  });
+
+  it('level 2: processPeakRssBytes and session-lock fields all defined', async () => {
+    const { adapter, stats, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+      statsLevel: 2,
+    });
+    const prismaClient = new PrismaClient({ adapter });
+    try {
+      await prismaClient.$executeRawUnsafe('INSERT INTO s (id) VALUES (1)');
+
+      const s = await stats();
+      if (s === null) throw new Error('stats() returned null');
+      expect(s.statsLevel).toBe(2);
+      expect(typeof s.processPeakRssBytes).toBe('number');
+      expect(s.processPeakRssBytes).toBeGreaterThan(0);
+      expect(typeof s.totalSessionLockWaitMs).toBe('number');
+      expect(typeof s.sessionLockAcquisitionCount).toBe('number');
+      expect(typeof s.avgSessionLockWaitMs).toBe('number');
+      expect(typeof s.maxSessionLockWaitMs).toBe('number');
+      expect(s.sessionLockAcquisitionCount).toBeGreaterThan(0);
+    } finally {
+      await prismaClient.$disconnect();
+      await close();
+    }
+  });
+
+  it('level 1 post-close idempotence: durationMs frozen, counters stable, cached dbSize', async () => {
+    const { adapter, stats, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+      statsLevel: 1,
+    });
+    const prismaClient = new PrismaClient({ adapter });
+
+    await prismaClient.$executeRawUnsafe('INSERT INTO s (id) VALUES (1)');
+    const preClose = await stats();
+    if (preClose === null) throw new Error('pre-close stats null');
+
+    await prismaClient.$disconnect();
+    await close();
+
+    const post1 = await stats();
+    const post2 = await stats();
+    if (post1 === null || post2 === null) throw new Error('post-close stats null');
+
+    expect(post1.durationMs).toBeGreaterThanOrEqual(preClose.durationMs);
+    expect(post2.durationMs).toBe(post1.durationMs);
+    expect(post1.dbSizeBytes).toBe(post2.dbSizeBytes);
+    expect(post1.queryCount).toBe(post2.queryCount);
+    expect(post1.queryCount).toBeGreaterThanOrEqual(preClose.queryCount);
+  });
+
+  it('level 1 close-race cache boundary: post-close stats do not touch pglite', async () => {
+    const { pglite, stats, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+      statsLevel: 1,
+    });
+
+    const querySpy = vi.spyOn(pglite, 'query');
+    await close();
+    const callsAfterClose = querySpy.mock.calls.length;
+
+    await stats();
+    await stats();
+    expect(querySpy.mock.calls.length).toBe(callsAfterClose);
+
+    querySpy.mockRestore();
+  });
+
+  it('level 2 short-run processPeakRssBytes: bookend samples only', async () => {
+    const memSpy = vi.spyOn(process, 'memoryUsage');
+    try {
+      const { stats, close } = await createPgliteAdapter({
+        sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+        statsLevel: 2,
+      });
+      const baseline = memSpy.mock.calls.length;
+      await close();
+      const s = await stats();
+      if (s === null) throw new Error('stats() returned null');
+
+      expect(memSpy.mock.calls.length - baseline).toBe(1);
+      expect(typeof s.processPeakRssBytes).toBe('number');
+      expect(s.processPeakRssBytes).toBeGreaterThan(0);
+    } finally {
+      memSpy.mockRestore();
+    }
+  });
+
+  it('level 1 concurrent stats() during close(): both resolve without throwing', async () => {
+    const { adapter, stats, close } = await createPgliteAdapter({
+      sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+      statsLevel: 1,
+    });
+    const prismaClient = new PrismaClient({ adapter });
+    await prismaClient.$executeRawUnsafe('INSERT INTO s (id) VALUES (1)');
+    await prismaClient.$disconnect();
+
+    const closePromise = close();
+    const statsPromise = stats();
+    const [, snap] = await Promise.all([closePromise, statsPromise]);
+
+    if (snap === null) throw new Error('concurrent stats null');
+    expect(snap.statsLevel).toBe(1);
+    expect(snap.durationMs).toBeGreaterThan(0);
+    expect(snap.queryCount).toBeGreaterThan(0);
+  });
+
+  it('level 1 simple-query path: direct pool query increments queryCount', async () => {
+    const {
+      adapter: _adapter,
+      stats,
+      pglite: _pglite,
+      close,
+    } = await createPgliteAdapter({
+      sql: 'CREATE TABLE s (id int PRIMARY KEY)',
+      statsLevel: 1,
+    });
+    void _adapter;
+    void _pglite;
+    try {
+      const before = await stats();
+      if (before === null) throw new Error('stats null');
+
+      const prismaClient = new PrismaClient({ adapter: _adapter });
+      await prismaClient.$executeRawUnsafe('SELECT 1');
+      await prismaClient.$disconnect();
+
+      const after = await stats();
+      if (after === null) throw new Error('stats null');
+      expect(after.queryCount).toBeGreaterThan(before.queryCount);
+      expect(after.totalQueryMs).toBeGreaterThan(before.totalQueryMs);
+    } finally {
+      await close();
+    }
   });
 });

@@ -24,6 +24,9 @@ import {
   extractRfqStatus,
   type SessionLock,
 } from './session-lock.ts';
+import type { StatsCollector } from './stats-collector.ts';
+
+const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
 
 // Frontend message types
 const PARSE = 0x50; // P
@@ -35,8 +38,9 @@ const FLUSH = 0x48; // H
 const SYNC = 0x53; // S (frontend)
 const TERMINATE = 0x58; // X
 
-// Backend message type
+// Backend message types
 const READY_FOR_QUERY = 0x5a; // Z — 6 bytes: Z + length(5) + status
+const ERROR_RESPONSE = 0x45; // E — signals in-band SQL error (not a JS throw)
 
 // Extended Query Protocol message types — must be batched until Sync
 const EQP_MESSAGES = new Set([PARSE, BIND, DESCRIBE, EXECUTE, CLOSE, FLUSH]);
@@ -110,6 +114,29 @@ export const stripIntermediateReadyForQuery = (response: Uint8Array): Uint8Array
 };
 
 /**
+ * Frames the response and returns true if any message is an ErrorResponse.
+ * PGlite signals SQL errors in-band via ErrorResponse rather than throwing
+ * at the JS level, so the try/catch around `execProtocolRawStream` cannot
+ * detect them on its own.
+ */
+const containsErrorResponse = (response: Uint8Array): boolean => {
+  let offset = 0;
+  while (offset + 5 <= response.length) {
+    const type = response[offset];
+    const b1 = response[offset + 1];
+    const b2 = response[offset + 2];
+    const b3 = response[offset + 3];
+    const b4 = response[offset + 4];
+    if (b1 === undefined || b2 === undefined || b3 === undefined || b4 === undefined) break;
+    if (type === ERROR_RESPONSE) return true;
+    const msgLen = ((b1 << 24) | (b2 << 16) | (b3 << 8) | b4) >>> 0;
+    if (msgLen < 4) break;
+    offset += 1 + msgLen;
+  }
+  return false;
+};
+
+/**
  * Concatenates multiple Uint8Array views into one contiguous buffer.
  */
 const concat = (parts: Uint8Array[]): Uint8Array => {
@@ -142,6 +169,7 @@ const concat = (parts: Uint8Array[]): Uint8Array => {
 export class PGliteBridge extends Duplex {
   private readonly pglite: PGlite;
   private readonly sessionLock: SessionLock | null;
+  private readonly collector: StatsCollector | null;
   private readonly bridgeId: BridgeId;
   /** Incoming bytes not yet compacted into buf */
   private pending: Buffer[] = [];
@@ -155,10 +183,11 @@ export class PGliteBridge extends Duplex {
   /** Buffered EQP messages awaiting Sync */
   private pipeline: Uint8Array[] = [];
 
-  constructor(pglite: PGlite, sessionLock?: SessionLock) {
+  constructor(pglite: PGlite, sessionLock?: SessionLock, collector?: StatsCollector | null) {
     super();
     this.pglite = pglite;
     this.sessionLock = sessionLock ?? null;
+    this.collector = collector ?? null;
     this.bridgeId = createBridgeId();
   }
 
@@ -322,7 +351,7 @@ export class PGliteBridge extends Duplex {
 
     await this.acquireSession();
     await this.pglite.runExclusive(async () => {
-      await this.execAndPush(message);
+      await this.execAndPush(message, false);
     });
 
     this.phase = 'ready';
@@ -366,10 +395,21 @@ export class PGliteBridge extends Duplex {
       }
 
       // SimpleQuery or other standalone message
+      const lockStart = process.hrtime.bigint();
       await this.acquireSession();
-      await this.pglite.runExclusive(async () => {
-        await this.execAndPush(message);
-      });
+      const queryStart = process.hrtime.bigint();
+      this.collector?.recordLockWait(nsToMs(queryStart - lockStart));
+      let succeeded = true;
+      try {
+        await this.pglite.runExclusive(async () => {
+          succeeded = await this.execAndPush(message, this.collector !== null);
+        });
+      } catch (err) {
+        succeeded = false;
+        throw err;
+      } finally {
+        this.collector?.recordQuery(nsToMs(process.hrtime.bigint() - queryStart), succeeded);
+      }
     }
   }
 
@@ -387,31 +427,33 @@ export class PGliteBridge extends Duplex {
     this.pipeline = [];
     const batch = concat(messages);
 
+    const lockStart = process.hrtime.bigint();
     await this.acquireSession();
-    await this.pglite.runExclusive(async () => {
-      const chunks: Uint8Array[] = [];
+    const queryStart = process.hrtime.bigint();
+    this.collector?.recordLockWait(nsToMs(queryStart - lockStart));
+    let succeeded = true;
+    try {
+      await this.pglite.runExclusive(async () => {
+        const chunks: Uint8Array[] = [];
 
-      await this.pglite.execProtocolRawStream(batch, {
-        onRawData: (chunk: Uint8Array) => chunks.push(chunk),
-      });
+        await this.pglite.execProtocolRawStream(batch, {
+          onRawData: (chunk: Uint8Array) => chunks.push(chunk),
+        });
 
-      if (this.tornDown || chunks.length === 0) return;
+        if (this.tornDown || chunks.length === 0) return;
 
-      // Single chunk: strip intermediate RFQ and push
-      if (chunks.length === 1) {
-        const raw = chunks[0] ?? new Uint8Array(0);
-        this.trackSessionStatus(raw);
-        const cleaned = stripIntermediateReadyForQuery(raw);
+        const combined = chunks.length === 1 ? (chunks[0] ?? new Uint8Array(0)) : concat(chunks);
+        this.trackSessionStatus(combined);
+        if (this.collector !== null && containsErrorResponse(combined)) succeeded = false;
+        const cleaned = stripIntermediateReadyForQuery(combined);
         if (cleaned.length > 0) this.push(cleaned);
-        return;
-      }
-
-      // Multiple chunks: concat first, then strip
-      const combined = concat(chunks);
-      this.trackSessionStatus(combined);
-      const cleaned = stripIntermediateReadyForQuery(combined);
-      if (cleaned.length > 0) this.push(cleaned);
-    });
+      });
+    } catch (err) {
+      succeeded = false;
+      throw err;
+    } finally {
+      this.collector?.recordQuery(nsToMs(process.hrtime.bigint() - queryStart), succeeded);
+    }
   }
 
   /**
@@ -421,17 +463,21 @@ export class PGliteBridge extends Duplex {
    *
    * Must be called inside runExclusive.
    */
-  private async execAndPush(message: Uint8Array): Promise<void> {
+  private async execAndPush(message: Uint8Array, detectErrors: boolean): Promise<boolean> {
     let lastChunk: Uint8Array | null = null;
+    const collected: Uint8Array[] = [];
     await this.pglite.execProtocolRawStream(message, {
       onRawData: (chunk: Uint8Array) => {
         if (!this.tornDown && chunk.length > 0) {
           this.push(chunk);
           lastChunk = chunk;
+          if (detectErrors) collected.push(chunk);
         }
       },
     });
     if (lastChunk) this.trackSessionStatus(lastChunk);
+    if (!detectErrors) return true;
+    return !containsErrorResponse(concat(collected));
   }
 
   // ── Session lock helpers ──

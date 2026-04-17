@@ -11,8 +11,11 @@ import { type Extensions, PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { PGliteBridge } from './pglite-bridge.ts';
 import { SessionLock } from './session-lock.ts';
+import type { StatsCollector } from './stats-collector.ts';
 
 const { Client, Pool } = pg;
+
+const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
 
 export interface CreatePoolOptions {
   /** PGlite data directory. Omit for in-memory. */
@@ -26,6 +29,9 @@ export interface CreatePoolOptions {
 
   /** Existing PGlite instance to use instead of creating one */
   pglite?: PGlite;
+
+  /** @internal — stats collector threaded through from createPgliteAdapter */
+  collector?: StatsCollector | null;
 }
 
 export interface PoolResult {
@@ -58,11 +64,19 @@ export interface PoolResult {
  * @see {@link createPgliteAdapter} for the higher-level API with schema management.
  */
 export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolResult> => {
-  const { dataDir, extensions, max = 5 } = options;
+  const { dataDir, extensions, max = 5, collector = null } = options;
   const ownsInstance = !options.pglite;
 
-  const pglite = options.pglite ?? new PGlite(dataDir, extensions ? { extensions } : undefined);
-  await pglite.waitReady;
+  let pglite: PGlite;
+  if (options.pglite) {
+    pglite = options.pglite;
+    await pglite.waitReady;
+  } else {
+    const wasmStart = process.hrtime.bigint();
+    pglite = new PGlite(dataDir, extensions ? { extensions } : undefined);
+    await pglite.waitReady;
+    collector?.markWasmInit(nsToMs(process.hrtime.bigint() - wasmStart));
+  }
 
   const sessionLock = new SessionLock();
 
@@ -74,7 +88,8 @@ export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolR
         ...cfg,
         user: 'postgres',
         database: 'postgres',
-        stream: (() => new PGliteBridge(pglite, sessionLock)) as pg.ClientConfig['stream'],
+        stream: (() =>
+          new PGliteBridge(pglite, sessionLock, collector)) as pg.ClientConfig['stream'],
       });
     }
   };
