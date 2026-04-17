@@ -395,20 +395,29 @@ export class PGliteBridge extends Duplex {
       }
 
       // SimpleQuery or other standalone message
+      const collector = this.collector;
+      if (collector === null) {
+        await this.acquireSession();
+        await this.pglite.runExclusive(async () => {
+          await this.execAndPush(message, false);
+        });
+        continue;
+      }
+
       const lockStart = process.hrtime.bigint();
       await this.acquireSession();
       const queryStart = process.hrtime.bigint();
-      this.collector?.recordLockWait(nsToMs(queryStart - lockStart));
+      collector.recordLockWait(nsToMs(queryStart - lockStart));
       let succeeded = true;
       try {
         await this.pglite.runExclusive(async () => {
-          succeeded = await this.execAndPush(message, this.collector !== null);
+          succeeded = await this.execAndPush(message, true);
         });
       } catch (err) {
         succeeded = false;
         throw err;
       } finally {
-        this.collector?.recordQuery(nsToMs(process.hrtime.bigint() - queryStart), succeeded);
+        collector.recordQuery(nsToMs(process.hrtime.bigint() - queryStart), succeeded);
       }
     }
   }
@@ -426,34 +435,47 @@ export class PGliteBridge extends Duplex {
     const messages = this.pipeline;
     this.pipeline = [];
     const batch = concat(messages);
+    const collector = this.collector;
+
+    if (collector === null) {
+      await this.acquireSession();
+      await this.pglite.runExclusive(async () => {
+        await this.runPipelineBatch(batch, false);
+      });
+      return;
+    }
 
     const lockStart = process.hrtime.bigint();
     await this.acquireSession();
     const queryStart = process.hrtime.bigint();
-    this.collector?.recordLockWait(nsToMs(queryStart - lockStart));
+    collector.recordLockWait(nsToMs(queryStart - lockStart));
     let succeeded = true;
     try {
       await this.pglite.runExclusive(async () => {
-        const chunks: Uint8Array[] = [];
-
-        await this.pglite.execProtocolRawStream(batch, {
-          onRawData: (chunk: Uint8Array) => chunks.push(chunk),
-        });
-
-        if (this.tornDown || chunks.length === 0) return;
-
-        const combined = chunks.length === 1 ? (chunks[0] ?? new Uint8Array(0)) : concat(chunks);
-        this.trackSessionStatus(combined);
-        if (this.collector !== null && containsErrorResponse(combined)) succeeded = false;
-        const cleaned = stripIntermediateReadyForQuery(combined);
-        if (cleaned.length > 0) this.push(cleaned);
+        succeeded = await this.runPipelineBatch(batch, true);
       });
     } catch (err) {
       succeeded = false;
       throw err;
     } finally {
-      this.collector?.recordQuery(nsToMs(process.hrtime.bigint() - queryStart), succeeded);
+      collector.recordQuery(nsToMs(process.hrtime.bigint() - queryStart), succeeded);
     }
+  }
+
+  private async runPipelineBatch(batch: Uint8Array, detectErrors: boolean): Promise<boolean> {
+    const chunks: Uint8Array[] = [];
+    await this.pglite.execProtocolRawStream(batch, {
+      onRawData: (chunk: Uint8Array) => chunks.push(chunk),
+    });
+
+    if (this.tornDown || chunks.length === 0) return true;
+
+    const combined = chunks.length === 1 ? (chunks[0] ?? new Uint8Array(0)) : concat(chunks);
+    this.trackSessionStatus(combined);
+    const cleaned = stripIntermediateReadyForQuery(combined);
+    if (cleaned.length > 0) this.push(cleaned);
+    if (!detectErrors) return true;
+    return !containsErrorResponse(combined);
   }
 
   /**
@@ -465,19 +487,18 @@ export class PGliteBridge extends Duplex {
    */
   private async execAndPush(message: Uint8Array, detectErrors: boolean): Promise<boolean> {
     let lastChunk: Uint8Array | null = null;
-    const collected: Uint8Array[] = [];
+    let errSeen = false;
     await this.pglite.execProtocolRawStream(message, {
       onRawData: (chunk: Uint8Array) => {
         if (!this.tornDown && chunk.length > 0) {
           this.push(chunk);
           lastChunk = chunk;
-          if (detectErrors) collected.push(chunk);
+          if (detectErrors && !errSeen && containsErrorResponse(chunk)) errSeen = true;
         }
       },
     });
     if (lastChunk) this.trackSessionStatus(lastChunk);
-    if (!detectErrors) return true;
-    return !containsErrorResponse(concat(collected));
+    return !errSeen;
   }
 
   // ── Session lock helpers ──
