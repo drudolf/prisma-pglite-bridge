@@ -53,7 +53,12 @@ export interface CreatePgliteAdapterOptions {
   /** PGlite extensions (e.g., `{ uuid_ossp: uuidOssp() }`) */
   extensions?: import('@electric-sql/pglite').Extensions;
 
-  /** Maximum pool connections (default: 5) */
+  /**
+   * Maximum pool connections (default: 1).
+   *
+   * PGlite serialises queries inside its WASM runtime, so extra pool
+   * connections cost memory without adding throughput.
+   */
   max?: number;
 
   /**
