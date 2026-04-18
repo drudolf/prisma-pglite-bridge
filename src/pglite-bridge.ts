@@ -18,12 +18,7 @@
  */
 import { Duplex } from 'node:stream';
 import type { PGlite } from '@electric-sql/pglite';
-import {
-  type BridgeId,
-  createBridgeId,
-  extractRfqStatus,
-  type SessionLock,
-} from './session-lock.ts';
+import { type BridgeId, createBridgeId, type SessionLock } from './session-lock.ts';
 import type { StatsCollector } from './stats-collector.ts';
 
 const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
@@ -114,29 +109,6 @@ export const stripIntermediateReadyForQuery = (response: Uint8Array): Uint8Array
 };
 
 /**
- * Frames the response and returns true if any message is an ErrorResponse.
- * PGlite signals SQL errors in-band via ErrorResponse rather than throwing
- * at the JS level, so the try/catch around `execProtocolRawStream` cannot
- * detect them on its own.
- */
-const containsErrorResponse = (response: Uint8Array): boolean => {
-  let offset = 0;
-  while (offset + 5 <= response.length) {
-    const type = response[offset];
-    const b1 = response[offset + 1];
-    const b2 = response[offset + 2];
-    const b3 = response[offset + 3];
-    const b4 = response[offset + 4];
-    if (b1 === undefined || b2 === undefined || b3 === undefined || b4 === undefined) break;
-    if (type === ERROR_RESPONSE) return true;
-    const msgLen = ((b1 << 24) | (b2 << 16) | (b3 << 8) | b4) >>> 0;
-    if (msgLen < 4) break;
-    offset += 1 + msgLen;
-  }
-  return false;
-};
-
-/**
  * Concatenates multiple Uint8Array views into one contiguous buffer.
  */
 const concat = (parts: Uint8Array[]): Uint8Array => {
@@ -150,6 +122,278 @@ const concat = (parts: Uint8Array[]): Uint8Array => {
   }
   return result;
 };
+
+type BackendMessageFramerOptions = {
+  suppressIntermediateReadyForQuery?: boolean;
+  onChunk: (chunk: Uint8Array) => void;
+  onErrorResponse?: () => void;
+  onReadyForQuery?: (status: number) => void;
+};
+
+/**
+ * Frontend chunk queue that frames messages without repeatedly compacting
+ * the full buffered input.
+ *
+ * @internal — exported for testing only
+ */
+export class FrontendMessageBuffer {
+  private chunks: Uint8Array[] = [];
+  private headOffset = 0;
+  private totalLength = 0;
+
+  get length(): number {
+    return this.totalLength;
+  }
+
+  push(chunk: Uint8Array): void {
+    if (chunk.length === 0) return;
+    this.chunks.push(chunk);
+    this.totalLength += chunk.length;
+  }
+
+  clear(): void {
+    this.chunks = [];
+    this.headOffset = 0;
+    this.totalLength = 0;
+  }
+
+  peekByte(offset: number): number | null {
+    if (offset < 0 || offset >= this.totalLength) return null;
+    let remaining = this.headOffset + offset;
+    for (const chunk of this.chunks) {
+      if (remaining < chunk.length) {
+        return chunk[remaining] ?? null;
+      }
+      remaining -= chunk.length;
+    }
+    return null;
+  }
+
+  readInt32BE(offset: number): number | null {
+    const b1 = this.peekByte(offset);
+    const b2 = this.peekByte(offset + 1);
+    const b3 = this.peekByte(offset + 2);
+    const b4 = this.peekByte(offset + 3);
+    if (b1 === null || b2 === null || b3 === null || b4 === null) return null;
+    return ((b1 << 24) | (b2 << 16) | (b3 << 8) | b4) >>> 0;
+  }
+
+  consume(length: number): Uint8Array {
+    if (length < 0 || length > this.totalLength) {
+      throw new Error(`Cannot consume ${length} bytes from ${this.totalLength}-byte buffer`);
+    }
+    if (length === 0) return new Uint8Array(0);
+
+    const head = this.chunks[0];
+    if (head !== undefined) {
+      const headRemaining = head.length - this.headOffset;
+      if (headRemaining >= length && length === headRemaining) {
+        const slice = head.subarray(this.headOffset, this.headOffset + length);
+        this.headOffset += length;
+        this.totalLength -= length;
+        if (this.headOffset === head.length) {
+          this.chunks.shift();
+          this.headOffset = 0;
+        }
+        return slice;
+      }
+    }
+
+    const result = new Uint8Array(length);
+    let writeOffset = 0;
+    let remaining = length;
+
+    while (remaining > 0) {
+      const chunk = this.chunks[0];
+      if (chunk === undefined) {
+        throw new Error('FrontendMessageBuffer underflow');
+      }
+      const available = chunk.length - this.headOffset;
+      const bytesToCopy = Math.min(remaining, available);
+      result.set(chunk.subarray(this.headOffset, this.headOffset + bytesToCopy), writeOffset);
+      writeOffset += bytesToCopy;
+      remaining -= bytesToCopy;
+      this.headOffset += bytesToCopy;
+      this.totalLength -= bytesToCopy;
+      if (this.headOffset === chunk.length) {
+        this.chunks.shift();
+        this.headOffset = 0;
+      }
+    }
+
+    return result;
+  }
+}
+
+/**
+ * Streams backend protocol messages without materializing whole responses.
+ *
+ * Non-RFQ payload bytes are forwarded as they arrive. ReadyForQuery frames are
+ * tracked only once complete; when suppression is enabled, only the final RFQ
+ * is emitted.
+ *
+ * @internal — exported for testing only
+ */
+export class BackendMessageFramer {
+  private readonly suppressIntermediateReadyForQuery: boolean;
+  private readonly onChunk: (chunk: Uint8Array) => void;
+  private readonly onErrorResponse: (() => void) | null;
+  private readonly onReadyForQuery: ((status: number) => void) | null;
+  private readonly headerScratch = new Uint8Array(4);
+  private readonly heldRfq = new Uint8Array(6);
+  private messageType: number | null = null;
+  private headerBytesRead = 0;
+  private payloadBytesRemaining = 0;
+  private rfqBytesRead = 0;
+
+  constructor(options: BackendMessageFramerOptions) {
+    this.suppressIntermediateReadyForQuery = options.suppressIntermediateReadyForQuery ?? false;
+    this.onChunk = options.onChunk;
+    this.onErrorResponse = options.onErrorResponse ?? null;
+    this.onReadyForQuery = options.onReadyForQuery ?? null;
+  }
+
+  write(chunk: Uint8Array): void {
+    if (chunk.length === 0) return;
+
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (this.messageType === null) {
+        if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
+          this.dropHeldReadyForQuery();
+        }
+        this.messageType = chunk[offset] ?? 0;
+        this.headerBytesRead = 0;
+        this.payloadBytesRemaining = 0;
+        this.rfqBytesRead = this.messageType === READY_FOR_QUERY ? 1 : 0;
+        if (this.rfqBytesRead === 1) {
+          this.heldRfq[0] = this.messageType;
+        }
+        offset++;
+        continue;
+      }
+
+      if (this.headerBytesRead < 4) {
+        const bytesToCopy = Math.min(4 - this.headerBytesRead, chunk.length - offset);
+        const headerChunk = chunk.subarray(offset, offset + bytesToCopy);
+        this.headerScratch.set(headerChunk, this.headerBytesRead);
+        if (this.messageType === READY_FOR_QUERY) {
+          this.heldRfq.set(headerChunk, this.rfqBytesRead);
+          this.rfqBytesRead += bytesToCopy;
+        }
+        this.headerBytesRead += bytesToCopy;
+        offset += bytesToCopy;
+        if (this.headerBytesRead < 4) continue;
+
+        const b1 = this.headerScratch[0] ?? 0;
+        const b2 = this.headerScratch[1] ?? 0;
+        const b3 = this.headerScratch[2] ?? 0;
+        const b4 = this.headerScratch[3] ?? 0;
+        const messageLength = ((b1 << 24) | (b2 << 16) | (b3 << 8) | b4) >>> 0;
+        if (messageLength < 4) {
+          throw new Error(`Malformed backend message length: ${messageLength}`);
+        }
+
+        this.payloadBytesRemaining = messageLength - 4;
+
+        if (this.messageType === ERROR_RESPONSE) {
+          this.onErrorResponse?.();
+        }
+
+        if (this.isReadyForQueryFrame()) {
+          continue;
+        }
+
+        this.dropHeldReadyForQuery();
+        this.emitPrefix();
+        if (this.payloadBytesRemaining === 0) {
+          this.finishMessage();
+        }
+        continue;
+      }
+
+      if (this.isReadyForQueryFrame()) {
+        const bytesToCopy = Math.min(this.payloadBytesRemaining, chunk.length - offset);
+        const payloadChunk = chunk.subarray(offset, offset + bytesToCopy);
+        this.heldRfq.set(payloadChunk, this.rfqBytesRead);
+        this.rfqBytesRead += bytesToCopy;
+        this.payloadBytesRemaining -= bytesToCopy;
+        offset += bytesToCopy;
+        if (this.payloadBytesRemaining === 0) {
+          this.finishReadyForQuery();
+        }
+        continue;
+      }
+
+      const bytesToEmit = Math.min(this.payloadBytesRemaining, chunk.length - offset);
+      if (bytesToEmit > 0) {
+        this.onChunk(chunk.subarray(offset, offset + bytesToEmit));
+        this.payloadBytesRemaining -= bytesToEmit;
+        offset += bytesToEmit;
+      }
+      if (this.payloadBytesRemaining === 0) {
+        this.finishMessage();
+      }
+    }
+  }
+
+  flush(options?: { dropHeldReadyForQuery?: boolean }): void {
+    if (options?.dropHeldReadyForQuery === true) {
+      this.dropHeldReadyForQuery();
+    } else if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
+      this.emitReadyForQuery();
+      this.rfqBytesRead = 0;
+    }
+  }
+
+  reset(): void {
+    this.messageType = null;
+    this.headerBytesRead = 0;
+    this.payloadBytesRemaining = 0;
+    this.rfqBytesRead = 0;
+  }
+
+  private isReadyForQueryFrame(): boolean {
+    return this.messageType === READY_FOR_QUERY && this.payloadBytesRemaining === 1;
+  }
+
+  private finishReadyForQuery(): void {
+    const status = this.heldRfq[5];
+    if (status !== undefined) {
+      this.onReadyForQuery?.(status);
+    }
+
+    if (!this.suppressIntermediateReadyForQuery) {
+      this.emitReadyForQuery();
+    }
+
+    this.finishMessage();
+  }
+
+  private emitReadyForQuery(): void {
+    this.onChunk(this.heldRfq.slice(0, 6));
+  }
+
+  private dropHeldReadyForQuery(): void {
+    this.rfqBytesRead = 0;
+  }
+
+  private emitPrefix(): void {
+    const prefix = new Uint8Array(5);
+    prefix[0] = this.messageType ?? 0;
+    prefix.set(this.headerScratch, 1);
+    this.onChunk(prefix);
+  }
+
+  private finishMessage(): void {
+    this.messageType = null;
+    this.headerBytesRead = 0;
+    this.payloadBytesRemaining = 0;
+    if (!this.suppressIntermediateReadyForQuery) {
+      this.rfqBytesRead = 0;
+    }
+  }
+}
 
 /**
  * Duplex stream that bridges `pg.Client` to an in-process PGlite instance.
@@ -171,10 +415,8 @@ export class PGliteBridge extends Duplex {
   private readonly sessionLock: SessionLock | null;
   private readonly collector: StatsCollector | null;
   private readonly bridgeId: BridgeId;
-  /** Incoming bytes not yet compacted into buf */
-  private pending: Buffer[] = [];
-  /** Compacted input buffer for message framing */
-  private buf: Buffer = Buffer.alloc(0);
+  /** Incoming bytes framed directly from a queued chunk buffer */
+  private readonly input = new FrontendMessageBuffer();
   private phase: 'pre_startup' | 'ready' = 'pre_startup';
   private draining = false;
   private tornDown = false;
@@ -229,7 +471,7 @@ export class PGliteBridge extends Duplex {
     _encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
-    this.pending.push(chunk);
+    this.input.push(chunk);
     this.enqueue(callback);
   }
 
@@ -239,7 +481,7 @@ export class PGliteBridge extends Duplex {
     callback: (error?: Error | null) => void,
   ): void {
     for (const { chunk } of chunks) {
-      this.pending.push(chunk);
+      this.input.push(chunk);
     }
     this.enqueue(callback);
   }
@@ -253,7 +495,7 @@ export class PGliteBridge extends Duplex {
   override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
     this.tornDown = true;
     this.pipeline.length = 0;
-    this.pending.length = 0;
+    this.input.clear();
     this.sessionLock?.release(this.bridgeId);
 
     // Flush pending write callbacks so pg.Client doesn't hang
@@ -267,17 +509,6 @@ export class PGliteBridge extends Duplex {
   }
 
   // ── Message processing ──
-
-  /** Merge pending chunks into buf only when needed for framing */
-  private compact(): void {
-    if (this.pending.length === 0) return;
-    if (this.buf.length === 0 && this.pending.length === 1) {
-      this.buf = this.pending[0] as Buffer;
-    } else {
-      this.buf = Buffer.concat([this.buf, ...this.pending]);
-    }
-    this.pending.length = 0;
-  }
 
   /**
    * Enqueue a write callback and start draining if not already running.
@@ -303,7 +534,7 @@ export class PGliteBridge extends Duplex {
 
     try {
       // Loop until no more pending data to process
-      while (this.pending.length > 0 || this.buf.length > 0) {
+      while (this.input.length > 0) {
         if (this.tornDown) break;
 
         if (this.phase === 'pre_startup') {
@@ -315,7 +546,7 @@ export class PGliteBridge extends Duplex {
 
         // If processMessages couldn't consume anything (incomplete message),
         // stop looping — more data will arrive via _write
-        if (this.pending.length === 0) break;
+        if (this.input.length === 0) break;
       }
     } catch (err) {
       error = err instanceof Error ? err : new Error(String(err));
@@ -341,13 +572,11 @@ export class PGliteBridge extends Duplex {
    * No type byte — length includes itself.
    */
   private async processPreStartup(): Promise<void> {
-    this.compact();
-    if (this.buf.length < 4) return;
-    const len = this.buf.readInt32BE(0);
-    if (this.buf.length < len) return;
+    if (this.input.length < 4) return;
+    const len = this.input.readInt32BE(0);
+    if (len === null || this.input.length < len) return;
 
-    const message = this.buf.subarray(0, len);
-    this.buf = this.buf.subarray(len);
+    const message = this.input.consume(len);
 
     await this.acquireSession();
     await this.pglite.runExclusive(async () => {
@@ -368,13 +597,13 @@ export class PGliteBridge extends Duplex {
    * SimpleQuery messages are sent directly (they're self-contained).
    */
   private async processMessages(): Promise<void> {
-    this.compact();
-    while (this.buf.length >= 5) {
-      const len = 1 + this.buf.readInt32BE(1);
-      if (len < 5 || this.buf.length < len) break;
+    while (this.input.length >= 5) {
+      const msgLen = this.input.readInt32BE(1);
+      if (msgLen === null) break;
+      const len = 1 + msgLen;
+      if (len < 5 || this.input.length < len) break;
 
-      const message = this.buf.subarray(0, len);
-      this.buf = this.buf.subarray(len);
+      const message = this.input.consume(len);
       const msgType = message[0] ?? 0;
 
       if (msgType === TERMINATE) {
@@ -428,8 +657,9 @@ export class PGliteBridge extends Duplex {
    * All buffered messages are concatenated into a single buffer and sent
    * as one execProtocolRawStream call. This is both correct (prevents
    * portal interleaving) and fast (1 WASM call + 1 async boundary instead
-   * of 5). Intermediate ReadyForQuery messages are stripped from the
-   * combined response.
+   * of 5). A streaming framer suppresses intermediate ReadyForQuery
+   * messages while forwarding the rest of the response without
+   * materializing it.
    */
   private async flushPipeline(): Promise<void> {
     const messages = this.pipeline;
@@ -463,19 +693,34 @@ export class PGliteBridge extends Duplex {
   }
 
   private async runPipelineBatch(batch: Uint8Array, detectErrors: boolean): Promise<boolean> {
-    const chunks: Uint8Array[] = [];
-    await this.pglite.execProtocolRawStream(batch, {
-      onRawData: (chunk: Uint8Array) => chunks.push(chunk),
+    let errSeen = false;
+    const framer = new BackendMessageFramer({
+      suppressIntermediateReadyForQuery: true,
+      onChunk: (chunk) => {
+        if (!this.tornDown && chunk.length > 0) {
+          this.push(chunk);
+        }
+      },
+      onErrorResponse: () => {
+        if (detectErrors) errSeen = true;
+      },
+      onReadyForQuery: (status) => {
+        if (this.sessionLock) {
+          this.sessionLock.updateStatus(this.bridgeId, status);
+        }
+      },
     });
 
-    if (this.tornDown || chunks.length === 0) return true;
+    await this.pglite.execProtocolRawStream(batch, {
+      onRawData: (chunk: Uint8Array) => {
+        if (!this.tornDown) {
+          framer.write(chunk);
+        }
+      },
+    });
 
-    const combined = chunks.length === 1 ? (chunks[0] ?? new Uint8Array(0)) : concat(chunks);
-    this.trackSessionStatus(combined);
-    const cleaned = stripIntermediateReadyForQuery(combined);
-    if (cleaned.length > 0) this.push(cleaned);
-    if (!detectErrors) return true;
-    return !containsErrorResponse(combined);
+    framer.flush({ dropHeldReadyForQuery: this.tornDown });
+    return !errSeen;
   }
 
   /**
@@ -486,18 +731,31 @@ export class PGliteBridge extends Duplex {
    * Must be called inside runExclusive.
    */
   private async execAndPush(message: Uint8Array, detectErrors: boolean): Promise<boolean> {
-    let lastChunk: Uint8Array | null = null;
     let errSeen = false;
-    await this.pglite.execProtocolRawStream(message, {
-      onRawData: (chunk: Uint8Array) => {
+    const framer = new BackendMessageFramer({
+      onChunk: (chunk) => {
         if (!this.tornDown && chunk.length > 0) {
           this.push(chunk);
-          lastChunk = chunk;
-          if (detectErrors && !errSeen && containsErrorResponse(chunk)) errSeen = true;
+        }
+      },
+      onErrorResponse: () => {
+        if (detectErrors) errSeen = true;
+      },
+      onReadyForQuery: (status) => {
+        if (this.sessionLock) {
+          this.sessionLock.updateStatus(this.bridgeId, status);
         }
       },
     });
-    if (lastChunk) this.trackSessionStatus(lastChunk);
+
+    await this.pglite.execProtocolRawStream(message, {
+      onRawData: (chunk: Uint8Array) => {
+        if (!this.tornDown) {
+          framer.write(chunk);
+        }
+      },
+    });
+    framer.flush({ dropHeldReadyForQuery: this.tornDown });
     return !errSeen;
   }
 
@@ -505,13 +763,5 @@ export class PGliteBridge extends Duplex {
 
   private async acquireSession(): Promise<void> {
     await this.sessionLock?.acquire(this.bridgeId);
-  }
-
-  private trackSessionStatus(response: Uint8Array): void {
-    if (!this.sessionLock) return;
-    const status = extractRfqStatus(response);
-    if (status !== null) {
-      this.sessionLock.updateStatus(this.bridgeId, status);
-    }
   }
 }
