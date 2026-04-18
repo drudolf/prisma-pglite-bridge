@@ -24,7 +24,13 @@ export interface CreatePoolOptions {
   /** PGlite extensions (e.g., `{ uuid_ossp: uuidOssp() }`) */
   extensions?: Extensions;
 
-  /** Maximum pool connections (default: 5) */
+  /**
+   * Maximum pool connections (default: 1).
+   *
+   * PGlite's WASM runtime executes queries serially, so multiple pool
+   * connections add memory overhead without enabling parallelism. The
+   * default of 1 matches that reality and minimises RSS.
+   */
   max?: number;
 
   /** Existing PGlite instance to use instead of creating one */
@@ -64,7 +70,7 @@ export interface PoolResult {
  * @see {@link createPgliteAdapter} for the higher-level API with schema management.
  */
 export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolResult> => {
-  const { dataDir, extensions, max = 5, collector = null } = options;
+  const { dataDir, extensions, max = 1, collector = null } = options;
   const ownsInstance = !options.pglite;
 
   let pglite: PGlite;

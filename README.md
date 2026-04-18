@@ -63,7 +63,7 @@ const { adapter, pglite, resetDb, close, stats } = await createPgliteAdapter({
   configRoot: '../..',        // monorepo: where to find prisma.config.ts
   dataDir: './data/pglite',   // omit for in-memory
   extensions: {},             // PGlite extensions
-  max: 5,                     // pool connections (default: 5)
+  max: 1,                     // pool connections (default: 1, see "Pool sizing" below)
   statsLevel: 0,              // telemetry level (default: 0 = off)
 });
 ```
