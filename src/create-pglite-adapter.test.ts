@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   PgliteAdapter,
   ResetDbFn,
@@ -15,11 +15,18 @@ import type { StatsLevel } from './stats-collector.ts';
 
 let prisma: PrismaClient;
 let resetDb: ResetDbFn;
+let closeSharedAdapter: (() => Promise<void>) | undefined;
 
 beforeAll(async () => {
   let adapter: PgliteAdapter['adapter'];
-  ({ adapter, resetDb } = await createPgliteAdapter());
+  ({ adapter, resetDb, close: closeSharedAdapter } = await createPgliteAdapter());
   prisma = new PrismaClient({ adapter });
+});
+
+afterAll(async () => {
+  await prisma.$disconnect();
+  await closeSharedAdapter?.();
+  await settleAsync();
 });
 
 beforeEach(() => resetDb());
@@ -35,6 +42,12 @@ const createWorkspace = (tenantId: string, slug = 'test-ws') =>
   });
 
 const createTempDataDir = () => mkdtempSync(join(tmpdir(), 'prisma-pglite-bridge-'));
+
+const settleAsync = async () => {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+};
 
 const withTempDataDir = async (fn: (dataDir: string) => Promise<void>) => {
   const dataDir = createTempDataDir();
@@ -54,6 +67,24 @@ const withAdapter = async (
     await fn(result);
   } finally {
     await result.close();
+  }
+};
+
+const withPrismaAdapter = async (
+  opts: Parameters<typeof createPgliteAdapter>[0],
+  fn: (
+    prismaClient: PrismaClient,
+    result: Awaited<ReturnType<typeof createPgliteAdapter>>,
+  ) => Promise<void>,
+) => {
+  const result = await createPgliteAdapter(opts);
+  const prismaClient = new PrismaClient({ adapter: result.adapter });
+  try {
+    await fn(prismaClient, result);
+  } finally {
+    await prismaClient.$disconnect();
+    await result.close();
+    await settleAsync();
   }
 };
 
@@ -81,15 +112,20 @@ describe('createPgliteAdapter', () => {
   });
 
   it('accepts explicit sql option', async () => {
-    const { adapter: sqlAdapter } = await createPgliteAdapter({
+    const { adapter: sqlAdapter, close } = await createPgliteAdapter({
       sql: 'CREATE TABLE test_explicit (id serial PRIMARY KEY, name text);',
     });
     const sqlPrisma = new PrismaClient({ adapter: sqlAdapter });
-    await sqlPrisma.$queryRawUnsafe('INSERT INTO test_explicit (name) VALUES ($1)', 'hello');
-    const rows = await sqlPrisma.$queryRawUnsafe<{ name: string }[]>(
-      'SELECT name FROM test_explicit',
-    );
-    expect(rows[0]).toHaveProperty('name', 'hello');
+    try {
+      await sqlPrisma.$queryRawUnsafe('INSERT INTO test_explicit (name) VALUES ($1)', 'hello');
+      const rows = await sqlPrisma.$queryRawUnsafe<{ name: string }[]>(
+        'SELECT name FROM test_explicit',
+      );
+      expect(rows[0]).toHaveProperty('name', 'hello');
+    } finally {
+      await sqlPrisma.$disconnect();
+      await close();
+    }
   });
 
   it('reopens an existing dataDir without replaying schema SQL', async () => {
@@ -198,12 +234,14 @@ describe('enum columns', () => {
 
   it('filters by enum value', async () => {
     const tenant = await createTenant();
-    await prisma.tenantUser.createMany({
-      data: [
-        { tenantId: tenant.id, externalId: 'u1', role: 'ADMIN' },
-        { tenantId: tenant.id, externalId: 'u2', role: 'MEMBER' },
-        { tenantId: tenant.id, externalId: 'u3', role: 'MEMBER' },
-      ],
+    await prisma.tenantUser.create({
+      data: { tenantId: tenant.id, externalId: 'u1', role: 'ADMIN' },
+    });
+    await prisma.tenantUser.create({
+      data: { tenantId: tenant.id, externalId: 'u2', role: 'MEMBER' },
+    });
+    await prisma.tenantUser.create({
+      data: { tenantId: tenant.id, externalId: 'u3', role: 'MEMBER' },
     });
     const admins = await prisma.tenantUser.findMany({ where: { role: 'ADMIN' } });
     expect(admins).toHaveLength(1);
@@ -322,20 +360,33 @@ describe('String[] arrays', () => {
   });
 
   it('handles array has filter', async () => {
-    const tenant = await createTenant();
-    const ws = await createWorkspace(tenant.id);
-    await prisma.job.createMany({
-      data: [
-        { friendlyId: 'j1', workspaceId: ws.id, tags: ['urgent', 'api'] },
-        { friendlyId: 'j2', workspaceId: ws.id, tags: ['batch', 'api'] },
-        { friendlyId: 'j3', workspaceId: ws.id, tags: ['batch'] },
-      ],
-    });
-    const urgent = await prisma.job.findMany({ where: { tags: { has: 'urgent' } } });
-    expect(urgent).toHaveLength(1);
+    await withPrismaAdapter({}, async (localPrisma) => {
+      const tenant = await localPrisma.tenant.create({
+        data: { name: 'Test Tenant', slug: 'test-tenant' },
+      });
+      const ws = await localPrisma.workspace.create({
+        data: {
+          name: 'Test WS',
+          slug: 'test-ws',
+          tenantId: tenant.id,
+          apiKey: `key_${Date.now()}`,
+        },
+      });
 
-    const api = await prisma.job.findMany({ where: { tags: { has: 'api' } } });
-    expect(api).toHaveLength(2);
+      await localPrisma.job.createMany({
+        data: [
+          { friendlyId: 'j1', workspaceId: ws.id, tags: ['urgent', 'api'] },
+          { friendlyId: 'j2', workspaceId: ws.id, tags: ['batch', 'api'] },
+          { friendlyId: 'j3', workspaceId: ws.id, tags: ['batch'] },
+        ],
+      });
+
+      const urgent = await localPrisma.job.findMany({ where: { tags: { has: 'urgent' } } });
+      expect(urgent).toHaveLength(1);
+
+      const api = await localPrisma.job.findMany({ where: { tags: { has: 'api' } } });
+      expect(api).toHaveLength(2);
+    });
   });
 });
 
@@ -549,41 +600,63 @@ describe('nullable field semantics', () => {
 
 describe('batch operations', () => {
   it('createMany and count', async () => {
-    const tenant = await createTenant();
-    const ws = await createWorkspace(tenant.id);
+    await withPrismaAdapter({}, async (localPrisma) => {
+      const tenant = await localPrisma.tenant.create({
+        data: { name: 'Test Tenant', slug: 'test-tenant' },
+      });
+      const ws = await localPrisma.workspace.create({
+        data: {
+          name: 'Test WS',
+          slug: 'test-ws',
+          tenantId: tenant.id,
+          apiKey: `key_${Date.now()}`,
+        },
+      });
 
-    const { count } = await prisma.job.createMany({
-      data: Array.from({ length: 50 }, (_, i) => ({
-        friendlyId: `batch_${i}`,
-        workspaceId: ws.id,
-        priority: i % 5,
-      })),
+      const { count } = await localPrisma.job.createMany({
+        data: Array.from({ length: 50 }, (_, i) => ({
+          friendlyId: `batch_${i}`,
+          workspaceId: ws.id,
+          priority: i % 5,
+        })),
+      });
+      expect(count).toBe(50);
+
+      const total = await localPrisma.job.count({ where: { workspaceId: ws.id } });
+      expect(total).toBe(50);
     });
-    expect(count).toBe(50);
-
-    const total = await prisma.job.count({ where: { workspaceId: ws.id } });
-    expect(total).toBe(50);
   });
 
   it('batch relation (jobs in a batch)', async () => {
-    const tenant = await createTenant();
-    const ws = await createWorkspace(tenant.id);
-    const batch = await prisma.batch.create({
-      data: { friendlyId: 'batch_1' },
-    });
+    await withPrismaAdapter({}, async (localPrisma) => {
+      const tenant = await localPrisma.tenant.create({
+        data: { name: 'Test Tenant', slug: 'test-tenant' },
+      });
+      const ws = await localPrisma.workspace.create({
+        data: {
+          name: 'Test WS',
+          slug: 'test-ws',
+          tenantId: tenant.id,
+          apiKey: `key_${Date.now()}`,
+        },
+      });
+      const batch = await localPrisma.batch.create({
+        data: { friendlyId: 'batch_1' },
+      });
 
-    await prisma.job.createMany({
-      data: [
-        { friendlyId: 'bj_1', workspaceId: ws.id, batchId: batch.id },
-        { friendlyId: 'bj_2', workspaceId: ws.id, batchId: batch.id },
-      ],
-    });
+      await localPrisma.job.createMany({
+        data: [
+          { friendlyId: 'bj_1', workspaceId: ws.id, batchId: batch.id },
+          { friendlyId: 'bj_2', workspaceId: ws.id, batchId: batch.id },
+        ],
+      });
 
-    const found = await prisma.batch.findUnique({
-      where: { id: batch.id },
-      include: { jobs: true },
+      const found = await localPrisma.batch.findUnique({
+        where: { id: batch.id },
+        include: { jobs: true },
+      });
+      expect(found?.jobs).toHaveLength(2);
     });
-    expect(found?.jobs).toHaveLength(2);
   });
 });
 
@@ -727,11 +800,23 @@ describe('snapshotDb', () => {
   let resetDb: ResetDbFn;
   let snapshotDb: SnapshotDbFn;
   let resetSnapshot: ResetSnapshotFn;
+  let closeSnapshotAdapter: (() => Promise<void>) | undefined;
 
   beforeAll(async () => {
     let adapter: PgliteAdapter['adapter'];
-    ({ adapter, resetDb, snapshotDb, resetSnapshot } = await createPgliteAdapter());
+    ({
+      adapter,
+      resetDb,
+      snapshotDb,
+      resetSnapshot,
+      close: closeSnapshotAdapter,
+    } = await createPgliteAdapter());
     prisma = new PrismaClient({ adapter });
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+    await closeSnapshotAdapter?.();
   });
 
   it('restores seeded data after resetDb', async () => {
@@ -887,27 +972,32 @@ describe('snapshot with auto-increment sequences', () => {
       adapter: seqAdapter,
       resetDb: seqResetDb,
       snapshotDb: seqSnapshotDb,
+      close,
     } = await createPgliteAdapter({
       sql: 'CREATE TABLE counter (id serial PRIMARY KEY, label text NOT NULL)',
     });
     const seqPrisma = new PrismaClient({ adapter: seqAdapter });
+    try {
+      await seqPrisma.$queryRawUnsafe("INSERT INTO counter (label) VALUES ('a'), ('b'), ('c')");
 
-    await seqPrisma.$queryRawUnsafe("INSERT INTO counter (label) VALUES ('a'), ('b'), ('c')");
+      await seqSnapshotDb();
+      await seqResetDb();
 
-    await seqSnapshotDb();
-    await seqResetDb();
+      const rows = await seqPrisma.$queryRawUnsafe<{ id: number; label: string }[]>(
+        'SELECT * FROM counter ORDER BY id',
+      );
+      expect(rows).toHaveLength(3);
+      expect(rows.map((r) => r.label)).toEqual(['a', 'b', 'c']);
 
-    const rows = await seqPrisma.$queryRawUnsafe<{ id: number; label: string }[]>(
-      'SELECT * FROM counter ORDER BY id',
-    );
-    expect(rows).toHaveLength(3);
-    expect(rows.map((r) => r.label)).toEqual(['a', 'b', 'c']);
-
-    await seqPrisma.$queryRawUnsafe("INSERT INTO counter (label) VALUES ('d')");
-    const next = await seqPrisma.$queryRawUnsafe<{ id: number }[]>(
-      "SELECT id FROM counter WHERE label = 'd'",
-    );
-    expect(next[0]?.id).toBe(4);
+      await seqPrisma.$queryRawUnsafe("INSERT INTO counter (label) VALUES ('d')");
+      const next = await seqPrisma.$queryRawUnsafe<{ id: number }[]>(
+        "SELECT id FROM counter WHERE label = 'd'",
+      );
+      expect(next[0]?.id).toBe(4);
+    } finally {
+      await seqPrisma.$disconnect();
+      await close();
+    }
   });
 
   it('restores unused sequences to their initial position', async () => {
