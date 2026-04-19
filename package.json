@@ -36,6 +36,7 @@
   },
   "files": [
     "dist",
+    "patches",
     "README.md"
   ],
   "sideEffects": false,
@@ -95,6 +96,9 @@
       "@prisma/engines",
       "esbuild",
       "prisma"
-    ]
+    ],
+    "patchedDependencies": {
+      "@electric-sql/pglite@0.4.4": "patches/@electric-sql__pglite@0.4.4.patch"
+    }
   }
 }
