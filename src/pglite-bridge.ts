@@ -536,6 +536,7 @@ export class PGliteBridge extends Duplex {
       // Loop until no more pending data to process
       while (this.input.length > 0) {
         if (this.tornDown) break;
+        const beforeLength = this.input.length;
 
         if (this.phase === 'pre_startup') {
           await this.processPreStartup();
@@ -546,7 +547,7 @@ export class PGliteBridge extends Duplex {
 
         // If processMessages couldn't consume anything (incomplete message),
         // stop looping — more data will arrive via _write
-        if (this.input.length === 0) break;
+        if (this.input.length === 0 || this.input.length === beforeLength) break;
       }
     } catch (err) {
       error = err instanceof Error ? err : new Error(String(err));
