@@ -327,7 +327,7 @@ export class BackendMessageFramer {
 
       const bytesToEmit = Math.min(this.payloadBytesRemaining, chunk.length - offset);
       if (bytesToEmit > 0) {
-        this.onChunk(chunk.subarray(offset, offset + bytesToEmit));
+        this.emitChunkSlice(chunk, offset, offset + bytesToEmit);
         this.payloadBytesRemaining -= bytesToEmit;
         offset += bytesToEmit;
       }
@@ -383,6 +383,24 @@ export class BackendMessageFramer {
     prefix[0] = this.messageType ?? 0;
     prefix.set(this.headerScratch, 1);
     this.onChunk(prefix);
+  }
+
+  private emitChunkSlice(chunk: Uint8Array, start: number, end: number): void {
+    const length = end - start;
+    if (length <= 0) return;
+
+    // PGlite already hands us standalone Uint8Array chunks copied out of the
+    // WASM heap, so when this chunk owns its full backing store we can hand pg
+    // zero-copy Buffer views for arbitrary subranges. We still copy when the
+    // chunk itself is only a view into a larger backing buffer to avoid
+    // pinning unrelated trailing bytes.
+    if (chunk.byteOffset === 0 && chunk.byteLength === chunk.buffer.byteLength) {
+      this.onChunk(Buffer.from(chunk.buffer, start, length));
+      return;
+    }
+
+    const exact = Buffer.from(chunk.subarray(start, end));
+    this.onChunk(exact);
   }
 
   private finishMessage(): void {

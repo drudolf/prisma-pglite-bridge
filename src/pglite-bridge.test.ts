@@ -412,6 +412,24 @@ describe('BackendMessageFramer', () => {
     expect(outputs.length).toBeGreaterThan(4);
   });
 
+  it('reuses owning chunk storage for partial payload slices', () => {
+    const combined = collect([DATA, encodeMessage(0x43, new Uint8Array([0xaa]))]);
+    const outputs: Uint8Array[] = [];
+    const framer = new BackendMessageFramer({
+      onChunk: (chunk) => outputs.push(chunk),
+    });
+
+    framer.write(combined);
+    framer.flush();
+
+    expect(collect(outputs)).toEqual(combined);
+    expect(outputs).toHaveLength(4);
+    expect(outputs[1]).toBeDefined();
+    expect(outputs[1]?.buffer).toBe(combined.buffer);
+    expect(outputs[3]).toBeDefined();
+    expect(outputs[3]?.buffer).toBe(combined.buffer);
+  });
+
   it('can reset between flushPipeline-style boundaries without leaking partial state', () => {
     const { framer, outputs, statuses } = makeHarness(true);
     framer.write(RFQ_IDLE.subarray(0, 3));
