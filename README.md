@@ -15,6 +15,40 @@ pnpm add -D prisma-pglite-bridge @electric-sql/pglite @prisma/adapter-pg pg
 The last three are peer dependencies you may already have.
 TypeScript users also need `@types/pg`.
 
+### Optional PGlite 0.4.4 memory patch
+
+`@electric-sql/pglite@0.4.4` retains parsed raw-protocol messages
+across `execProtocolRaw()` / `execProtocolRawStream()` calls. That
+shows up as large memory growth on the bridge path because this
+package uses PGlite's raw wire-protocol API.
+
+This repo ships a version-pinned patch for `@electric-sql/pglite@0.4.4`
+in [patches/@electric-sql__pglite@0.4.4.patch](patches/@electric-sql__pglite@0.4.4.patch).
+We apply it in development via `pnpm.patchedDependencies`.
+
+If your project also uses `@electric-sql/pglite@0.4.4`, you can opt
+into the same fix:
+
+1. Copy `patches/@electric-sql__pglite@0.4.4.patch` into your own
+   project's `patches/` directory.
+2. Add this to your project's `package.json`:
+
+```json
+{
+  "pnpm": {
+    "patchedDependencies": {
+      "@electric-sql/pglite@0.4.4": "patches/@electric-sql__pglite@0.4.4.patch"
+    }
+  }
+}
+```
+
+3. Run `pnpm install`.
+
+This patch is intentionally version-specific. Do not apply it to
+other PGlite versions unless the patch has been validated for that
+exact release.
+
 ## Quickstart
 
 ```typescript
