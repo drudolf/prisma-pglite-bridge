@@ -3,6 +3,5 @@ dist/
 *.tsbuildinfo
 .claude/
 CLAUDE.md
-benchmark/
 .bench-tmp/
 coverage/
