@@ -18,7 +18,7 @@
  */
 import { Duplex } from 'node:stream';
 import type { PGlite } from '@electric-sql/pglite';
-import { type BridgeId, createBridgeId, type SessionLock } from './session-lock.ts';
+import type { BridgeId, SessionLock } from './session-lock.ts';
 import type { StatsCollector } from './stats-collector.ts';
 
 const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
@@ -89,24 +89,26 @@ export class FrontendMessageBuffer {
     this.totalLength = 0;
   }
 
-  peekByte(offset: number): number | null {
-    if (offset < 0 || offset >= this.totalLength) return null;
+  peekByte(offset: number): number | undefined {
+    if (offset < 0 || offset >= this.totalLength) return undefined;
     let remaining = this.headOffset + offset;
     for (const chunk of this.chunks) {
       if (remaining < chunk.length) {
-        return chunk[remaining] ?? null;
+        return chunk[remaining];
       }
       remaining -= chunk.length;
     }
-    return null;
+    return undefined;
   }
 
-  readInt32BE(offset: number): number | null {
+  readInt32BE(offset: number): number | undefined {
     const b1 = this.peekByte(offset);
     const b2 = this.peekByte(offset + 1);
     const b3 = this.peekByte(offset + 2);
     const b4 = this.peekByte(offset + 3);
-    if (b1 === null || b2 === null || b3 === null || b4 === null) return null;
+    if (b1 === undefined || b2 === undefined || b3 === undefined || b4 === undefined) {
+      return undefined;
+    }
     return ((b1 << 24) | (b2 << 16) | (b3 << 8) | b4) >>> 0;
   }
 
@@ -169,11 +171,11 @@ export class FrontendMessageBuffer {
 export class BackendMessageFramer {
   private readonly suppressIntermediateReadyForQuery: boolean;
   private readonly onChunk: (chunk: Uint8Array) => void;
-  private readonly onErrorResponse: (() => void) | null;
-  private readonly onReadyForQuery: ((status: number) => void) | null;
+  private readonly onErrorResponse?: () => void;
+  private readonly onReadyForQuery?: (status: number) => void;
   private readonly headerScratch = new Uint8Array(4);
   private readonly heldRfq = new Uint8Array(6);
-  private messageType: number | null = null;
+  private messageType?: number;
   private headerBytesRead = 0;
   private payloadBytesRemaining = 0;
   private rfqBytesRead = 0;
@@ -181,8 +183,8 @@ export class BackendMessageFramer {
   constructor(options: BackendMessageFramerOptions) {
     this.suppressIntermediateReadyForQuery = options.suppressIntermediateReadyForQuery ?? false;
     this.onChunk = options.onChunk;
-    this.onErrorResponse = options.onErrorResponse ?? null;
-    this.onReadyForQuery = options.onReadyForQuery ?? null;
+    this.onErrorResponse = options.onErrorResponse;
+    this.onReadyForQuery = options.onReadyForQuery;
   }
 
   write(chunk: Uint8Array): void {
@@ -190,7 +192,7 @@ export class BackendMessageFramer {
 
     let offset = 0;
     while (offset < chunk.length) {
-      if (this.messageType === null) {
+      if (this.messageType === undefined) {
         if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
           this.dropHeldReadyForQuery();
         }
@@ -279,7 +281,7 @@ export class BackendMessageFramer {
   }
 
   reset(): void {
-    this.messageType = null;
+    this.messageType = undefined;
     this.headerBytesRead = 0;
     this.payloadBytesRemaining = 0;
     this.rfqBytesRead = 0;
@@ -336,7 +338,7 @@ export class BackendMessageFramer {
   }
 
   private finishMessage(): void {
-    this.messageType = null;
+    this.messageType = undefined;
     this.headerBytesRead = 0;
     this.payloadBytesRemaining = 0;
     if (!this.suppressIntermediateReadyForQuery) {
@@ -362,8 +364,8 @@ export class BackendMessageFramer {
  */
 export class PGliteBridge extends Duplex {
   private readonly pglite: PGlite;
-  private readonly sessionLock: SessionLock | null;
-  private readonly collector: StatsCollector | null;
+  private readonly sessionLock?: SessionLock;
+  private readonly collector?: StatsCollector;
   private readonly bridgeId: BridgeId;
   /** Incoming bytes framed directly from a queued chunk buffer */
   private readonly input = new FrontendMessageBuffer();
@@ -375,12 +377,12 @@ export class PGliteBridge extends Duplex {
   /** Buffered EQP messages awaiting Sync */
   private pipeline: Uint8Array[] = [];
 
-  constructor(pglite: PGlite, sessionLock?: SessionLock, collector?: StatsCollector | null) {
+  constructor(pglite: PGlite, sessionLock?: SessionLock, collector?: StatsCollector) {
     super();
     this.pglite = pglite;
-    this.sessionLock = sessionLock ?? null;
-    this.collector = collector ?? null;
-    this.bridgeId = createBridgeId();
+    this.sessionLock = sessionLock;
+    this.collector = collector;
+    this.bridgeId = Symbol('bridge');
   }
 
   // ── Socket compatibility (called by pg's Connection) ──
@@ -525,7 +527,7 @@ export class PGliteBridge extends Duplex {
   private async processPreStartup(): Promise<void> {
     if (this.input.length < 4) return;
     const len = this.input.readInt32BE(0);
-    if (len === null || this.input.length < len) return;
+    if (len === undefined || this.input.length < len) return;
 
     const message = this.input.consume(len);
 
@@ -550,7 +552,7 @@ export class PGliteBridge extends Duplex {
   private async processMessages(): Promise<void> {
     while (this.input.length >= 5) {
       const msgLen = this.input.readInt32BE(1);
-      if (msgLen === null) break;
+      if (msgLen === undefined) break;
       const len = 1 + msgLen;
       if (len < 5 || this.input.length < len) break;
 
@@ -576,7 +578,7 @@ export class PGliteBridge extends Duplex {
 
       // SimpleQuery or other standalone message
       const collector = this.collector;
-      if (collector === null) {
+      if (collector === undefined) {
         await this.acquireSession();
         await this.pglite.runExclusive(async () => {
           await this.execAndPush(message, false);
@@ -618,7 +620,7 @@ export class PGliteBridge extends Duplex {
     const batch = concat(messages);
     const collector = this.collector;
 
-    if (collector === null) {
+    if (collector === undefined) {
       await this.acquireSession();
       await this.pglite.runExclusive(async () => {
         await this.runPipelineBatch(batch, false);

@@ -1,8 +1,8 @@
 /**
  * Stats collector for adapter lifecycle and query-level telemetry.
  *
- * Instantiated at level 1 or 2. Level 0 is represented by `collector === null`
- * at call sites — the hot path guards on the null rather than paying for a
+ * Instantiated at level 1 or 2. Level 0 is represented by `collector === undefined`
+ * at call sites — the hot path guards on the absence rather than paying for a
  * no-op stub. One collector per {@link createPgliteAdapter} call; threaded
  * through the pool into every `PGliteBridge`.
  *
@@ -18,7 +18,7 @@ import type { PGlite } from '@electric-sql/pglite';
 /**
  * Stats collection level.
  *
- * - `0` — off. `stats()` returns `null`. Zero hot-path overhead.
+ * - `0` — off. `stats()` returns `undefined`. Zero hot-path overhead.
  * - `1` — timing (`durationMs`, `wasmInitMs`, `schemaSetupMs`), query
  *   percentiles, counters, and `dbSizeBytes`.
  * - `2` — level 1 plus `processRssPeakBytes` and session-lock waits.
@@ -114,11 +114,11 @@ export class StatsCollector {
   private sessionLockAcquisitionCount = 0;
 
   private peakRssBytes = 0;
-  private rssInterval: ReturnType<typeof setInterval> | null = null;
+  private rssInterval?: ReturnType<typeof setInterval>;
 
   private frozen = false;
-  private cachedDurationMs: number | null = null;
-  private cachedDbSizeBytes: number | undefined = undefined;
+  private cachedDurationMs?: number;
+  private cachedDbSizeBytes?: number;
   private dbSizeFrozen = false;
 
   constructor(level: 1 | 2) {
@@ -222,9 +222,9 @@ export class StatsCollector {
   }
 
   stop(): void {
-    if (this.rssInterval !== null) {
+    if (this.rssInterval !== undefined) {
       clearInterval(this.rssInterval);
-      this.rssInterval = null;
+      this.rssInterval = undefined;
     }
   }
 
@@ -235,14 +235,12 @@ export class StatsCollector {
 
   private async queryDbSize(pglite: PGlite): Promise<number | undefined> {
     try {
-      const { rows } = await pglite.query<Record<string, unknown>>(
-        'SELECT pg_database_size(current_database()) AS size',
+      const { rows } = await pglite.query<{ size: string | null }>(
+        'SELECT pg_database_size(current_database())::text AS size',
       );
-      const row = rows[0];
-      if (!row) return undefined;
-      const value = Object.values(row)[0];
-      if (value === undefined || value === null) return undefined;
-      const n = Number(value);
+      const size = rows[0]?.size;
+      if (size == null) return undefined;
+      const n = Number(size);
       return Number.isFinite(n) ? n : undefined;
     } catch {
       return undefined;

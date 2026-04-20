@@ -3,7 +3,7 @@
 ---
 
 Add opt-in stats collection (`statsLevel: 0 | 1 | 2`, default `0`).
-Retrieve via `await adapter.stats()` — returns `null` at level 0.
+Retrieve via `await adapter.stats()` — returns `undefined` at level 0.
 
 - Level 1 captures timing (`durationMs`, `wasmInitMs`,
   `schemaSetupMs`), counters (`queryCount`, `failedQueryCount`,

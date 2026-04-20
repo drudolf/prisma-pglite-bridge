@@ -1416,7 +1416,7 @@ describe('stats collection', () => {
       sql: 'CREATE TABLE s (id int PRIMARY KEY)',
     });
     try {
-      expect(await stats()).toBeNull();
+      expect(await stats()).toBeUndefined();
     } finally {
       await close();
     }
@@ -1427,7 +1427,7 @@ describe('stats collection', () => {
       sql: 'CREATE TABLE s (id int PRIMARY KEY)',
     });
     try {
-      expect(await stats()).toBeNull();
+      expect(await stats()).toBeUndefined();
     } finally {
       await close();
     }
@@ -1461,7 +1461,7 @@ describe('stats collection', () => {
       await resetDb();
 
       const s = await stats();
-      if (s === null) throw new Error('stats() returned null');
+      if (s === undefined) throw new Error('stats() returned undefined');
       expect(s.statsLevel).toBe(1);
       expect(s.queryCount).toBeGreaterThan(0);
       expect(s.failedQueryCount).toBe(0);
@@ -1484,7 +1484,7 @@ describe('stats collection', () => {
     });
     try {
       const s = await stats();
-      if (s === null) throw new Error('stats() returned null');
+      if (s === undefined) throw new Error('stats() returned undefined');
       expect(s.statsLevel).toBe(1);
       expect(s.queryCount).toBe(0);
       expect(s.failedQueryCount).toBe(0);
@@ -1513,7 +1513,7 @@ describe('stats collection', () => {
       ).rejects.toThrow();
 
       const s = await stats();
-      if (s === null) throw new Error('stats() returned null');
+      if (s === undefined) throw new Error('stats() returned undefined');
       expect(s.queryCount).toBeGreaterThan(0);
       expect(s.failedQueryCount).toBeGreaterThan(0);
       expect(s.totalQueryMs).toBeGreaterThan(0);
@@ -1533,7 +1533,7 @@ describe('stats collection', () => {
       await prismaClient.$executeRawUnsafe('INSERT INTO s (id) VALUES (1)');
 
       const s = await stats();
-      if (s === null) throw new Error('stats() returned null');
+      if (s === undefined) throw new Error('stats() returned undefined');
       if (s.statsLevel !== 2) throw new Error('expected level 2');
       expect(typeof s.processRssPeakBytes).toBe('number');
       expect(s.processRssPeakBytes).toBeGreaterThan(0);
@@ -1557,14 +1557,14 @@ describe('stats collection', () => {
 
     await prismaClient.$executeRawUnsafe('INSERT INTO s (id) VALUES (1)');
     const preClose = await stats();
-    if (preClose === null) throw new Error('pre-close stats null');
+    if (preClose === undefined) throw new Error('pre-close stats null');
 
     await prismaClient.$disconnect();
     await close();
 
     const post1 = await stats();
     const post2 = await stats();
-    if (post1 === null || post2 === null) throw new Error('post-close stats null');
+    if (post1 === undefined || post2 === undefined) throw new Error('post-close stats null');
 
     expect(post1.durationMs).toBeGreaterThanOrEqual(preClose.durationMs);
     expect(post2.durationMs).toBe(post1.durationMs);
@@ -1600,7 +1600,7 @@ describe('stats collection', () => {
       const baseline = memSpy.mock.calls.length;
       await close();
       const s = await stats();
-      if (s === null) throw new Error('stats() returned null');
+      if (s === undefined) throw new Error('stats() returned undefined');
       if (s.statsLevel !== 2) throw new Error('expected level 2');
 
       expect(memSpy.mock.calls.length - baseline).toBe(1);
@@ -1636,7 +1636,7 @@ describe('stats collection', () => {
     const statsPromise = stats();
     const [, snap] = await Promise.all([closePromise, statsPromise]);
 
-    if (snap === null) throw new Error('concurrent stats null');
+    if (snap === undefined) throw new Error('concurrent stats null');
     expect(snap.statsLevel).toBe(1);
     expect(snap.durationMs).toBeGreaterThan(0);
     expect(snap.queryCount).toBeGreaterThan(0);
@@ -1656,14 +1656,14 @@ describe('stats collection', () => {
     void _pglite;
     try {
       const before = await stats();
-      if (before === null) throw new Error('stats null');
+      if (before === undefined) throw new Error('stats null');
 
       const prismaClient = new PrismaClient({ adapter: _adapter });
       await prismaClient.$executeRawUnsafe('SELECT 1');
       await prismaClient.$disconnect();
 
       const after = await stats();
-      if (after === null) throw new Error('stats null');
+      if (after === undefined) throw new Error('stats null');
       expect(after.queryCount).toBeGreaterThan(before.queryCount);
       expect(after.totalQueryMs).toBeGreaterThan(before.totalQueryMs);
     } finally {
