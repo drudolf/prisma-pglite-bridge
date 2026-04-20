@@ -1,24 +1,25 @@
 import pg from 'pg';
-import { describe, expect, it } from 'vitest';
-import { setupPGlite } from './__tests__/pglite.ts';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+
+import setupPGlite from './__tests__/pglite.ts';
 import { BackendMessageFramer, FrontendMessageBuffer, PGliteBridge } from './pglite-bridge.ts';
 
-const getPGlite = setupPGlite({
-  setup: async (pglite) => {
-    await pglite.exec('CREATE TABLE IF NOT EXISTS conc_test (id serial PRIMARY KEY, val int)');
-  },
-  reset: async (pglite) => {
-    await pglite.exec('DROP TABLE IF EXISTS bridge_test CASCADE');
-    await pglite.exec('DROP TABLE IF EXISTS shared_test CASCADE');
-    await pglite.exec('TRUNCATE TABLE conc_test RESTART IDENTITY');
-  },
+const pglite = await setupPGlite();
+
+beforeAll(async () => {
+  await pglite.exec('CREATE TABLE IF NOT EXISTS conc_test (id serial PRIMARY KEY, val int)');
+});
+beforeEach(async () => {
+  await pglite.exec('DROP TABLE IF EXISTS bridge_test CASCADE');
+  await pglite.exec('DROP TABLE IF EXISTS shared_test CASCADE');
+  await pglite.exec('TRUNCATE TABLE conc_test RESTART IDENTITY');
 });
 
 const createClient = () =>
   new pg.Client({
     user: 'postgres',
     database: 'postgres',
-    stream: () => new PGliteBridge(getPGlite()),
+    stream: () => new PGliteBridge(pglite),
   });
 
 describe('PGliteBridge', () => {
@@ -93,7 +94,7 @@ describe('PGliteBridge concurrency', () => {
             ...cfg,
             user: 'postgres',
             database: 'postgres',
-            stream: () => new PGliteBridge(getPGlite()),
+            stream: () => new PGliteBridge(pglite),
           } as pg.ClientConfig);
         }
       } as typeof pg.Client,
@@ -121,7 +122,7 @@ describe('PGliteBridge concurrency', () => {
             ...cfg,
             user: 'postgres',
             database: 'postgres',
-            stream: () => new PGliteBridge(getPGlite()),
+            stream: () => new PGliteBridge(pglite),
           } as pg.ClientConfig);
         }
       } as typeof pg.Client,

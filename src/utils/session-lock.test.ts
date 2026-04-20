@@ -1,7 +1,7 @@
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { setupPGlite } from '../__tests__/pglite.ts';
+import setupPGlite from '../__tests__/pglite.ts';
 import { PGliteBridge } from '../pglite-bridge.ts';
 import { SessionLock } from './session-lock.ts';
 
@@ -125,20 +125,15 @@ describe('SessionLock', () => {
 
 // ─── Integration: concurrent transactions through pool ───
 
-describe('session lock integration', () => {
-  const getPGlite = setupPGlite({
-    setup: async (pglite) => {
-      await pglite.exec(`
-        CREATE TABLE session_test (id serial PRIMARY KEY, val text);
-      `);
-    },
-    reset: async (pglite) => {
-      await pglite.exec('TRUNCATE TABLE session_test');
-    },
-  });
+describe('session lock integration', async () => {
   let pool: pg.Pool;
+  const pglite = await setupPGlite();
 
   beforeAll(async () => {
+    await pglite.exec(`
+      CREATE TABLE session_test (id serial PRIMARY KEY, val text);
+    `);
+
     const sessionLock = new SessionLock();
 
     pool = new pg.Pool({
@@ -149,12 +144,16 @@ describe('session lock integration', () => {
             ...cfg,
             user: 'postgres',
             database: 'postgres',
-            stream: () => new PGliteBridge(getPGlite(), sessionLock),
+            stream: () => new PGliteBridge(pglite, sessionLock),
           } as pg.ClientConfig);
         }
       } as typeof pg.Client,
       max: 2,
     });
+  });
+
+  beforeEach(async () => {
+    await pglite.exec('TRUNCATE TABLE session_test');
   });
 
   afterAll(async () => {
@@ -196,7 +195,7 @@ describe('session lock integration', () => {
 
   it('non-transactional queries are not blocked by other non-transactional queries', async () => {
     // Multiple concurrent non-transactional queries should all complete
-    await getPGlite().exec("INSERT INTO session_test (val) VALUES ('seed')");
+    await pglite.exec("INSERT INTO session_test (val) VALUES ('seed')");
 
     const results = await Promise.all(
       Array.from({ length: 4 }, () => pool.query('SELECT val FROM session_test')),
