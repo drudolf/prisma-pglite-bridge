@@ -417,12 +417,21 @@ try {
 
 ## Stats collection
 
-Opt-in telemetry about what happened during a test run — query counts,
-timing percentiles, database size, and (at level 2) process RSS and
-session-lock wait times. Useful for CI cost insight, perf tuning, and
-understanding test-suite behavior. **Off by default**; the hot path
-stays effectively zero-cost as long as no external consumer
-subscribes to the public [diagnostics channels](#diagnostics-channels).
+For most developers, this is the easiest way to see how the bridge
+performed in tests.
+
+Enable `statsLevel` when creating the adapter, run your tests, then
+call `await stats()` at the end. You get one snapshot with the main
+things you usually care about: query counts, timing percentiles,
+database size, and, at level 2, process RSS and session-lock wait
+times.
+
+This is the built-in, low-friction path for test diagnostics. It is
+useful for CI cost insight, perf tuning, and understanding test-suite
+behavior without wiring up a separate metrics pipeline. **Off by
+default**; the hot path stays effectively zero-cost as long as no
+external consumer subscribes to the public
+[diagnostics channels](#diagnostics-channels).
 
 ```typescript
 const { adapter, stats, close } = await createPgliteAdapter({
@@ -438,10 +447,14 @@ afterAll(async () => {
 });
 ```
 
-`stats()` returns `Promise<Stats | undefined>` — `undefined`
-when `statsLevel` is `0` (or omitted). Safe to call before or
-after `close()`; post-close reads return frozen values from the
-moment `close()` was invoked.
+`stats()` returns `Promise<Stats | undefined>` — `undefined` when
+`statsLevel` is `0` (or omitted). Safe to call before or after
+`close()`; post-close reads return frozen values from the moment
+`close()` was invoked.
+
+If you need live per-query or per-lock-wait events instead of a final
+snapshot, use the public [diagnostics channels](#diagnostics-channels)
+described below. That path is more flexible, but also more advanced.
 
 ### Levels
 
