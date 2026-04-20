@@ -98,6 +98,7 @@ const percentile = (sorted: readonly number[], p: number): number => {
   const n = sorted.length;
   if (n === 0) return 0;
   const index = Math.min(n - 1, Math.max(0, Math.ceil((p / 100) * n) - 1));
+  /* c8 ignore next */
   return sorted[index] ?? 0;
 };
 

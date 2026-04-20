@@ -29,7 +29,7 @@ const resetDb = async (db: PGlite) => {
 
 type SetupPGliteFn = (options?: { reset?: boolean }) => Promise<PGlite>;
 
-const setupPGlite: SetupPGliteFn = async ({ reset } = {}) => {
+const setupPGlite: SetupPGliteFn = async ({ reset = true } = {}) => {
   const pglite = new PGlite();
   await pglite.waitReady;
 
