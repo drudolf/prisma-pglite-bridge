@@ -22,30 +22,6 @@ const STATUS_FAILED = 0x45; // 'E' — failed transaction block
 /** Opaque bridge identity token */
 export type BridgeId = symbol;
 
-export const createBridgeId = (): BridgeId => Symbol('bridge');
-
-/**
- * Extracts the ReadyForQuery status byte from a response buffer.
- * Scans from the end since RFQ is always the last message.
- * Returns null if no RFQ found.
- */
-export const extractRfqStatus = (response: Uint8Array): number | null => {
-  // RFQ is always 6 bytes: Z(5a) + length(00000005) + status
-  // It's the last message in the response
-  if (response.length < 6) return null;
-  const i = response.length - 6;
-  if (
-    response[i] === 0x5a &&
-    response[i + 1] === 0x00 &&
-    response[i + 2] === 0x00 &&
-    response[i + 3] === 0x00 &&
-    response[i + 4] === 0x05
-  ) {
-    return response[i + 5] ?? null;
-  }
-  return null;
-};
-
 /**
  * Coordinates PGlite access across concurrent pool connections.
  *
@@ -57,7 +33,7 @@ export const extractRfqStatus = (response: Uint8Array): number | null => {
  * if building a custom pool setup.
  */
 export class SessionLock {
-  private owner: BridgeId | null = null;
+  private owner?: BridgeId;
   private waitQueue: Array<{ id: BridgeId; resolve: () => void }> = [];
 
   /**
@@ -65,10 +41,8 @@ export class SessionLock {
    * active or if this bridge owns the current transaction. Queues otherwise.
    */
   async acquire(id: BridgeId): Promise<void> {
-    // No owner — session is free
-    if (this.owner === null) return;
-    // Re-entrant — same bridge already owns the session
-    if (this.owner === id) return;
+    // Free slot or re-entrant — pass through
+    if (this.owner === undefined || this.owner === id) return;
 
     // Another bridge owns the session — wait
     return new Promise<void>((resolve) => {
@@ -79,39 +53,60 @@ export class SessionLock {
   /**
    * Update session state based on the ReadyForQuery status byte.
    * Call after every PGlite response that contains RFQ.
+   *
+   * @returns `true` if ownership transitioned on this call (acquired or
+   *   released). `false` for no-op updates (e.g., re-entrant status within
+   *   the same transaction, or IDLE from a non-owning bridge).
    */
-  updateStatus(id: BridgeId, status: number): void {
+  updateStatus(id: BridgeId, status: number): boolean {
     if (status === STATUS_IN_TRANSACTION || status === STATUS_FAILED) {
-      // This bridge now owns the session
+      if (this.owner === id) return false;
       this.owner = id;
-    } else if (status === STATUS_IDLE) {
-      // Transaction complete — release ownership
-      if (this.owner === id) {
-        this.owner = null;
-        this.drainWaitQueue();
-      }
+      return true;
     }
+
+    // Transaction complete — release ownership
+    if (status === STATUS_IDLE && this.owner === id) {
+      this.owner = undefined;
+      this.drainWaitQueue();
+      return true;
+    }
+
+    return false;
   }
 
   /**
    * Release ownership (e.g., when a bridge is destroyed mid-transaction).
+   *
+   * @returns `true` if this bridge held ownership and released it. `false`
+   *   if another bridge (or no one) owned the session.
    */
-  release(id: BridgeId): void {
+  release(id: BridgeId): boolean {
     if (this.owner === id) {
-      this.owner = null;
+      this.owner = undefined;
       this.drainWaitQueue();
+      return true;
     }
+
+    return false;
   }
 
-  private drainWaitQueue(): void {
+  /**
+   * Grant ownership to the next waiter, if any.
+   *
+   * @returns `true` if a waiter was unblocked; `false` if the queue was empty.
+   */
+  private drainWaitQueue(): boolean {
     // Release one waiter at a time and grant ownership before resolving.
     // The waiter's operation will call updateStatus when it completes —
     // if IDLE, ownership is cleared and the next waiter is released.
     // This prevents interleaving where multiple waiters race past acquire
     // and one starts a transaction while others proceed unserialized.
     const next = this.waitQueue.shift();
-    if (!next) return;
+    if (!next) return false;
+
     this.owner = next.id;
     next.resolve();
+    return true;
   }
 }
