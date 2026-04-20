@@ -16,6 +16,8 @@
 import type { PGlite } from '@electric-sql/pglite';
 import { nsToMs } from './time.ts';
 
+type DbSizeQueryable = Pick<PGlite, 'query'>;
+
 /**
  * Stats collection level.
  *
@@ -173,7 +175,7 @@ export class AdapterStats implements TelemetrySink {
     this.schemaSetupMs = durationMs;
   }
 
-  async snapshot(pglite: PGlite): Promise<Stats> {
+  async snapshot(pglite: DbSizeQueryable): Promise<Stats> {
     const durationMs =
       this.cachedDurationMs ?? nsToMs(process.hrtime.bigint() - this.createdAtHrtime);
     const dbSizeBytes = this.dbSizeFrozen ? this.cachedDbSizeBytes : await this.queryDbSize(pglite);
@@ -212,7 +214,7 @@ export class AdapterStats implements TelemetrySink {
     };
   }
 
-  async freeze(pglite: PGlite, closeEntryHrtime: bigint): Promise<void> {
+  async freeze(pglite: DbSizeQueryable, closeEntryHrtime: bigint): Promise<void> {
     if (this.frozen) return;
     this.frozen = true;
 
@@ -238,7 +240,7 @@ export class AdapterStats implements TelemetrySink {
     if (rss > this.peakRssBytes) this.peakRssBytes = rss;
   }
 
-  private async queryDbSize(pglite: PGlite): Promise<number | undefined> {
+  private async queryDbSize(pglite: DbSizeQueryable): Promise<number | undefined> {
     try {
       const { rows } = await pglite.query<{ size: string | null }>(
         'SELECT pg_database_size(current_database())::text AS size',

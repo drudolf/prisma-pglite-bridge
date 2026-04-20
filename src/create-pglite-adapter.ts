@@ -395,7 +395,8 @@ export const createPgliteAdapter = async (
        FROM pg_tables
        WHERE ${USER_TABLES_WHERE}`,
     );
-    cachedTables = rows.length > 0 ? rows.map((r) => r.qualified).join(', ') : '';
+    cachedTables =
+      rows.length > 0 ? rows.map((row: { qualified: string }) => row.qualified).join(', ') : '';
     return cachedTables;
   };
 

@@ -1,11 +1,14 @@
-import { PGlite } from '@electric-sql/pglite';
 import { describe, expect, it } from 'vitest';
+import { setupPGlite } from './__tests__/pglite.ts';
 import { createPool } from './create-pool.ts';
+
+const getPGlite = setupPGlite();
 
 describe('createPool — adapterId', () => {
   it('returns a symbol, unique per call when omitted', async () => {
-    const a = await createPool();
-    const b = await createPool();
+    const pglite = getPGlite();
+    const a = await createPool({ pglite });
+    const b = await createPool({ pglite });
     try {
       expect(typeof a.adapterId).toBe('symbol');
       expect(typeof b.adapterId).toBe('symbol');
@@ -18,7 +21,7 @@ describe('createPool — adapterId', () => {
 
   it('honors the adapterId passed in options', async () => {
     const id = Symbol('custom');
-    const pool = await createPool({ adapterId: id });
+    const pool = await createPool({ pglite: getPGlite(), adapterId: id });
     try {
       expect(pool.adapterId).toBe(id);
     } finally {
@@ -40,14 +43,11 @@ describe('createPool — wasmInitMs', () => {
   });
 
   it('is undefined when the caller supplies options.pglite', async () => {
-    const pglite = new PGlite();
-    await pglite.waitReady;
-    const pool = await createPool({ pglite });
+    const pool = await createPool({ pglite: getPGlite() });
     try {
       expect(pool.wasmInitMs).toBeUndefined();
     } finally {
       await pool.close();
-      await pglite.close();
     }
   });
 });

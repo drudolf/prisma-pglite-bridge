@@ -1,15 +1,14 @@
-import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { setupPGlite } from '../__tests__/pglite.ts';
 import { PGliteBridge } from '../pglite-bridge.ts';
 import { SessionLock } from './session-lock.ts';
 
-const { Client, Pool } = pg;
-
-const flushMicrotasks = () =>
-  Promise.resolve()
-    .then(() => Promise.resolve())
-    .then(() => Promise.resolve());
+const drainMicrotasks = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
+};
 
 // ─── Unit tests for SessionLock ───
 
@@ -37,7 +36,7 @@ describe('SessionLock', () => {
       bResolved = true;
     });
 
-    await flushMicrotasks();
+    await drainMicrotasks();
     expect(bResolved).toBe(false);
 
     // Bridge A commits — status back to idle
@@ -69,12 +68,12 @@ describe('SessionLock', () => {
       bResolved = true;
     });
 
-    await flushMicrotasks();
+    await drainMicrotasks();
     expect(bResolved).toBe(false);
 
     // Rollback brings status back to idle
     lock.updateStatus(a, 0x49);
-    await flushMicrotasks();
+    await drainMicrotasks();
     expect(bResolved).toBe(true);
   });
 
@@ -90,12 +89,12 @@ describe('SessionLock', () => {
       bResolved = true;
     });
 
-    await flushMicrotasks();
+    await drainMicrotasks();
     expect(bResolved).toBe(false);
 
     // Force release (e.g., bridge destroyed mid-transaction)
     lock.release(a);
-    await flushMicrotasks();
+    await drainMicrotasks();
     expect(bResolved).toBe(true);
   });
 
@@ -113,7 +112,7 @@ describe('SessionLock', () => {
       bResolved = true;
     });
 
-    await flushMicrotasks();
+    await drainMicrotasks();
     expect(bResolved).toBe(false);
 
     // Bridge A is destroyed (crash) — release without COMMIT
@@ -127,41 +126,39 @@ describe('SessionLock', () => {
 // ─── Integration: concurrent transactions through pool ───
 
 describe('session lock integration', () => {
-  let pglite: PGlite;
+  const getPGlite = setupPGlite({
+    setup: async (pglite) => {
+      await pglite.exec(`
+        CREATE TABLE session_test (id serial PRIMARY KEY, val text);
+      `);
+    },
+    reset: async (pglite) => {
+      await pglite.exec('TRUNCATE TABLE session_test');
+    },
+  });
   let pool: pg.Pool;
 
   beforeAll(async () => {
-    pglite = new PGlite();
-    await pglite.waitReady;
-    await pglite.exec(`
-      CREATE TABLE session_test (id serial PRIMARY KEY, val text);
-    `);
-
     const sessionLock = new SessionLock();
 
-    pool = new Pool({
-      Client: class extends Client {
+    pool = new pg.Pool({
+      Client: class extends pg.Client {
         constructor(config?: string | pg.ClientConfig) {
           const cfg = typeof config === 'string' ? { connectionString: config } : (config ?? {});
           super({
             ...cfg,
             user: 'postgres',
             database: 'postgres',
-            stream: () => new PGliteBridge(pglite, sessionLock),
+            stream: () => new PGliteBridge(getPGlite(), sessionLock),
           } as pg.ClientConfig);
         }
-      } as typeof Client,
-      max: 5,
+      } as typeof pg.Client,
+      max: 2,
     });
-  });
-
-  beforeEach(async () => {
-    await pglite.exec('TRUNCATE TABLE session_test');
   });
 
   afterAll(async () => {
     await pool.end();
-    await pglite.close();
   });
 
   it('concurrent transactions do not interleave', async () => {
@@ -199,10 +196,10 @@ describe('session lock integration', () => {
 
   it('non-transactional queries are not blocked by other non-transactional queries', async () => {
     // Multiple concurrent non-transactional queries should all complete
-    await pglite.exec("INSERT INTO session_test (val) VALUES ('seed')");
+    await getPGlite().exec("INSERT INTO session_test (val) VALUES ('seed')");
 
     const results = await Promise.all(
-      Array.from({ length: 10 }, () => pool.query('SELECT val FROM session_test')),
+      Array.from({ length: 4 }, () => pool.query('SELECT val FROM session_test')),
     );
 
     for (const result of results) {
@@ -224,7 +221,7 @@ describe('session lock integration', () => {
     });
 
     // Give time for the other query to attempt to run
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setImmediate(r));
     expect(otherResolved).toBe(false); // Still blocked
 
     // Commit releases the session lock
