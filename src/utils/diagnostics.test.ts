@@ -6,7 +6,7 @@ import {
   type LockWaitEvent,
   QUERY_CHANNEL,
   type QueryEvent,
-} from './index.ts';
+} from '../index.ts';
 
 const queryCh = diagnostics_channel.channel(QUERY_CHANNEL);
 const lockWaitCh = diagnostics_channel.channel(LOCK_WAIT_CHANNEL);

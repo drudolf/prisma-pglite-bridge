@@ -14,6 +14,7 @@
  * passes to {@link freeze}.
  */
 import type { PGlite } from '@electric-sql/pglite';
+import { nsToMs } from './time.ts';
 
 /**
  * Stats collection level.
@@ -97,8 +98,6 @@ const percentile = (sorted: readonly number[], p: number): number => {
   const index = Math.min(n - 1, Math.max(0, Math.ceil((p / 100) * n) - 1));
   return sorted[index] ?? 0;
 };
-
-const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
 
 export class AdapterStats implements TelemetrySink {
   private readonly level: 1 | 2;
