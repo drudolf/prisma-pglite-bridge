@@ -1,7 +1,7 @@
 import type { PGlite } from '@electric-sql/pglite';
 import { SENTINEL_SCHEMA } from './sentinel.ts';
 
-export const SNAPSHOT_SCHEMA = '_pglite_snapshot';
+const SNAPSHOT_SCHEMA = '_pglite_snapshot';
 
 const USER_TABLES_WHERE = `schemaname NOT IN ('pg_catalog', 'information_schema')
        AND schemaname != '${SNAPSHOT_SCHEMA}'
@@ -10,7 +10,7 @@ const USER_TABLES_WHERE = `schemaname NOT IN ('pg_catalog', 'information_schema'
 
 const escapeLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
-export interface SnapshotManager {
+interface SnapshotManager {
   resetDb: () => Promise<void>;
   resetSnapshot: () => Promise<void>;
   snapshotDb: () => Promise<void>;

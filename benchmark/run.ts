@@ -6,7 +6,7 @@
  *   pnpm bench                                           # all adapters, micro
  *   pnpm bench --adapter prisma-pglite-bridge            # single adapter
  *   pnpm bench --scenario stress                         # single scenario
- *   pnpm bench --adapter pglite-prisma --scenario stress -n 3
+ *   pnpm bench --adapter pglite-prisma-adapter --scenario stress -n 3
  *   pnpm bench --json                                    # structured JSON to stdout
  *   pnpm bench --scenario all                            # all scenarios
  */
@@ -87,9 +87,9 @@ const loadAdapters = async (): Promise<AdapterHarness[]> => {
     const { bridge } = await import('./adapters/bridge.ts');
     all.push(bridge);
   }
-  if (!adapterFilter || adapterFilter === 'pglite-prisma') {
-    const { pglitePrisma } = await import('./adapters/pglite-prisma.ts');
-    all.push(pglitePrisma);
+  if (!adapterFilter || adapterFilter === 'pglite-prisma-adapter') {
+    const { pglitePrismaAdapter } = await import('./adapters/pglite-prisma-adapter.ts');
+    all.push(pglitePrismaAdapter);
   }
   if (!adapterFilter || adapterFilter === 'postgres-pg' || adapterFilter === 'postgres') {
     const { postgresPg } = await import('./adapters/postgres-pg.ts');
@@ -726,7 +726,7 @@ const printTable = (runResults: RunResult[]) => {
             ? ` (${(med / baselineMedian).toFixed(1)}x)`
             : '';
 
-        if (run.repeats <= 3) {
+        if (run && run.repeats <= 3) {
           // Few iterations: just show median
           row += `${fmt(med)}${ratio}`.padStart(colW);
         } else {

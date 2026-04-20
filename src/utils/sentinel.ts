@@ -4,7 +4,7 @@ export const SENTINEL_SCHEMA = '_pglite_bridge';
 export const SENTINEL_TABLE = '__initialized';
 export const SENTINEL_MARKER = 'prisma-pglite-bridge:init:v1';
 
-export interface SentinelRow {
+interface SentinelRow {
   marker: string;
   version: number;
 }

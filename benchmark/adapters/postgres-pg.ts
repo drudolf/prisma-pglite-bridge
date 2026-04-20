@@ -82,16 +82,16 @@ export const postgresPg: AdapterHarness = {
 
   teardown: async (ctx) => {
     await ctx.prisma.$disconnect();
-    const driverAdapter = (ctx.prisma as Record<string, unknown>).__driverAdapter as
+    const driverAdapter = (ctx.prisma as unknown as Record<string, unknown>).__driverAdapter as
       | { dispose: () => Promise<void> }
       | undefined;
     await driverAdapter?.dispose();
-    const pool = (ctx.prisma as Record<string, unknown>).__pool as Pool;
+    const pool = (ctx.prisma as unknown as Record<string, unknown>).__pool as Pool;
     await pool.end();
   },
 
   truncate: async (ctx) => {
-    const pool = (ctx.prisma as Record<string, unknown>).__pool as Pool;
+    const pool = (ctx.prisma as unknown as Record<string, unknown>).__pool as Pool;
     const { rows } = await pool.query<{ tablename: string }>(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename NOT LIKE '_prisma%'`,
     );

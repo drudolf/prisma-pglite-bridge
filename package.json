@@ -85,7 +85,6 @@
     "pg": "^8.20.0",
     "pglite-prisma-adapter": "^0.7.2",
     "prisma": "^7.7.0",
-    "prisma-pglite": "^2.0.2",
     "tsdown": "^0.21.8",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2",
