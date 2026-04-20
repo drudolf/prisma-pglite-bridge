@@ -70,13 +70,13 @@ export interface CreatePgliteAdapterOptions {
    * - `2` — everything in level 1, plus `processPeakRssBytes` (process-wide,
    *   sampled) and session-lock wait statistics.
    *
-   * Retrieve via `await adapter.stats()` — returns `null` at level 0.
+   * Retrieve via `await adapter.stats()` — returns `undefined` at level 0.
    */
   statsLevel?: StatsLevel;
 }
 
 /** Snapshot of adapter/query telemetry. See {@link CreatePgliteAdapterOptions.statsLevel}. */
-export type StatsFn = () => Promise<Stats | null>;
+export type StatsFn = () => Promise<Stats | undefined>;
 
 /** Clear all user tables. Call in `beforeEach` for per-test isolation. */
 export type ResetDbFn = () => Promise<void>;
@@ -119,8 +119,8 @@ export interface PgliteAdapter {
   close: () => Promise<void>;
 
   /**
-   * Retrieve collected telemetry. Returns `null` when `statsLevel` was `0`
-   * (or omitted). Never throws — field-level failures surface as
+   * Retrieve collected telemetry. Returns `undefined` when `statsLevel` was
+   * `0` (or omitted). Never throws — field-level failures surface as
    * `undefined` values (see {@link Stats}).
    */
   stats: StatsFn;
@@ -131,13 +131,13 @@ export interface PgliteAdapter {
  * Uses the same resolution as `prisma migrate dev` — reads prisma.config.ts,
  * resolves paths relative to config file location.
  *
- * Returns null if @prisma/config is not available or config cannot be loaded.
+ * Returns undefined if @prisma/config is not available or config cannot be loaded.
  */
-const discoverMigrationsPath = async (configRoot?: string): Promise<string | null> => {
+const discoverMigrationsPath = async (configRoot?: string): Promise<string | undefined> => {
   try {
     const { loadConfigFromFile } = await import('@prisma/config');
     const { config, error } = await loadConfigFromFile({ configRoot: configRoot ?? process.cwd() });
-    if (error) return null;
+    if (error) return undefined;
 
     // Explicit migrations path from prisma.config.ts
     if (config.migrations?.path) return config.migrations.path;
@@ -146,18 +146,18 @@ const discoverMigrationsPath = async (configRoot?: string): Promise<string | nul
     const schemaPath = config.schema;
     if (schemaPath) return join(dirname(schemaPath), 'migrations');
 
-    return null;
+    return undefined;
   } catch {
-    return null;
+    return undefined;
   }
 };
 
 /**
  * Read migration SQL files from a migrations directory in directory order.
- * Returns null if the directory doesn't exist or has no migration files.
+ * Returns undefined if the directory doesn't exist or has no migration files.
  */
-const tryReadMigrationFiles = (migrationsPath: string): string | null => {
-  if (!existsSync(migrationsPath)) return null;
+const tryReadMigrationFiles = (migrationsPath: string): string | undefined => {
+  if (!existsSync(migrationsPath)) return undefined;
 
   const dirs = readdirSync(migrationsPath)
     .filter((d) => statSync(join(migrationsPath, d)).isDirectory())
@@ -171,7 +171,7 @@ const tryReadMigrationFiles = (migrationsPath: string): string | null => {
     }
   }
 
-  return sqlParts.length > 0 ? sqlParts.join('\n') : null;
+  return sqlParts.length > 0 ? sqlParts.join('\n') : undefined;
 };
 
 /**
@@ -235,7 +235,7 @@ export const createPgliteAdapter = async (
   if (statsLevel < 0 || statsLevel > 2) {
     throw new Error(`statsLevel must be 0, 1, or 2; got ${statsLevel}`);
   }
-  const collector = statsLevel === 0 ? null : new StatsCollector(statsLevel);
+  const collector = statsLevel === 0 ? undefined : new StatsCollector(statsLevel);
 
   const { pool, pglite } = await createPool({
     dataDir: options.dataDir,
@@ -255,7 +255,6 @@ export const createPgliteAdapter = async (
     `The "${SENTINEL_SCHEMA}" schema is reserved for library metadata.`;
 
   const writeSentinel = async () => {
-    let committed = false;
     try {
       await pglite.exec(`BEGIN;\n${sentinelStatements.join(';\n')}`);
 
@@ -264,9 +263,12 @@ export const createPgliteAdapter = async (
       );
       if (!isValidSentinelRow(rows)) throw new Error(collisionError());
       await pglite.exec('COMMIT');
-      committed = true;
     } catch (err) {
-      if (!committed) await pglite.exec('ROLLBACK');
+      // Don't let a ROLLBACK failure mask the real error that sent us here.
+      await pglite.exec('ROLLBACK').catch(() => {});
+      // A pre-existing sentinel table with incompatible columns surfaces here
+      // as a cryptic "column X does not exist" from the INSERT — translate it
+      // to the collision message. Other errors propagate as-is.
       throw err instanceof Error && err.message === collisionError()
         ? err
         : new Error(collisionError(), { cause: err });
@@ -329,7 +331,7 @@ export const createPgliteAdapter = async (
     return false;
   };
 
-  const schemaStart = collector ? process.hrtime.bigint() : null;
+  const schemaStart = collector ? process.hrtime.bigint() : undefined;
   if (!options.dataDir || !(await isInitialized())) {
     const sql = await resolveSQL(options);
     const isMigrationSQL = !options.sql;
@@ -365,17 +367,17 @@ export const createPgliteAdapter = async (
       await writeSentinel();
     }
   }
-  if (collector && schemaStart !== null) {
+  if (collector && schemaStart !== undefined) {
     collector.markSchemaSetup(nsToMs(process.hrtime.bigint() - schemaStart));
   }
 
   const adapter = new PrismaPg(pool);
 
-  let cachedTables: string | null = null;
+  let cachedTables: string | undefined;
   let hasSnapshot = false;
 
   const discoverTables = async () => {
-    if (cachedTables !== null) return cachedTables;
+    if (cachedTables !== undefined) return cachedTables;
     const { rows } = await pglite.query<{ qualified: string }>(
       `SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
        FROM pg_tables
@@ -449,7 +451,7 @@ export const createPgliteAdapter = async (
 
   const resetDb = async () => {
     collector?.incrementResetDb();
-    cachedTables = null;
+    cachedTables = undefined;
     const tables = await discoverTables();
 
     if (hasSnapshot && tables) {
@@ -494,13 +496,13 @@ export const createPgliteAdapter = async (
     await pglite.exec('DEALLOCATE ALL');
   };
 
-  let closingPromise: Promise<void> | null = null;
+  let closingPromise: Promise<void> | undefined;
   const close = async () => {
     if (closingPromise) return closingPromise;
     closingPromise = (async () => {
-      const closeEntry = collector ? process.hrtime.bigint() : null;
+      const closeEntry = collector ? process.hrtime.bigint() : undefined;
       await pool.end();
-      if (collector && closeEntry !== null) {
+      if (collector && closeEntry !== undefined) {
         await collector.freeze(pglite, closeEntry);
       }
       await pglite.close();
@@ -508,7 +510,7 @@ export const createPgliteAdapter = async (
     return closingPromise;
   };
 
-  const stats: StatsFn = async () => (collector ? collector.snapshot(pglite) : null);
+  const stats: StatsFn = async () => (collector ? collector.snapshot(pglite) : undefined);
 
   return { adapter, pglite, resetDb, snapshotDb, resetSnapshot, close, stats };
 };

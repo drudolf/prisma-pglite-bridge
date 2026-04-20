@@ -37,7 +37,7 @@ export interface CreatePoolOptions {
   pglite?: PGlite;
 
   /** @internal — stats collector threaded through from createPgliteAdapter */
-  collector?: StatsCollector | null;
+  collector?: StatsCollector;
 }
 
 export interface PoolResult {
@@ -70,7 +70,7 @@ export interface PoolResult {
  * @see {@link createPgliteAdapter} for the higher-level API with schema management.
  */
 export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolResult> => {
-  const { dataDir, extensions, max = 1, collector = null } = options;
+  const { dataDir, extensions, max = 1, collector } = options;
   const ownsInstance = !options.pglite;
 
   let pglite: PGlite;
