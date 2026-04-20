@@ -143,10 +143,12 @@ Returns:
 - `adapter` — pass to `new PrismaClient({ adapter })`
 - `pglite` — the underlying PGlite instance for direct SQL,
   snapshots, or extension access
-- `resetDb()` — truncates all user tables, resets session state
-  (`RESET ALL`, `DEALLOCATE ALL`). Call in `beforeEach` for
-  per-test isolation. Note: this clears all data including seed
-  data — re-seed after reset if needed.
+- `resetDb()` — truncates all user tables and discards
+  session-local state via `DISCARD ALL` (for example `SET`
+  variables, prepared statements, temp tables, and `LISTEN`
+  registrations). Call in `beforeEach` for per-test isolation.
+  Note: this clears all data including seed data — re-seed after
+  reset if needed.
 - `close()` — shuts down pool and PGlite. Not needed in tests
   (process exit handles it). Use in long-running scripts or dev
   servers.
@@ -548,8 +550,8 @@ share a process. Obtain it from the `createPgliteAdapter()` or
 - **Single PostgreSQL session** — PGlite runs in single-user mode.
   All pool connections share one session. A `SessionLock` serializes
   transactions (one at a time), but `SET` variables leak between
-  connections within a single test. `resetDb()` clears this between
-  tests via `RESET ALL` and `DEALLOCATE ALL`.
+  connections within a single test. `resetDb()` clears more of this
+  between tests via `DISCARD ALL`.
 - **Migration files required** — run `prisma migrate dev` once to
   generate migration files, or pass schema SQL directly via the
   `sql` option.

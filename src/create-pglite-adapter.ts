@@ -77,7 +77,7 @@ export interface CreatePgliteAdapterOptions {
 /** Snapshot of adapter/query telemetry. See {@link CreatePgliteAdapterOptions.statsLevel}. */
 export type StatsFn = () => Promise<Stats | undefined>;
 
-/** Clear all user tables. Call in `beforeEach` for per-test isolation. */
+/** Clear all user tables and discard session-local state. Call in `beforeEach` for per-test isolation. */
 export type ResetDbFn = () => Promise<void>;
 
 export type SnapshotDbFn = () => Promise<void>;
@@ -107,7 +107,7 @@ export interface PgliteAdapter {
    */
   adapterId: symbol;
 
-  /** Clear all user tables. Call in `beforeEach` for per-test isolation. */
+  /** Clear all user tables and discard session-local state. Call in `beforeEach` for per-test isolation. */
   resetDb: ResetDbFn;
 
   /** Snapshot current DB state. Subsequent `resetDb` calls restore to this snapshot. */
@@ -505,8 +505,7 @@ export const createPgliteAdapter = async (
       }
     }
 
-    await pglite.exec('RESET ALL');
-    await pglite.exec('DEALLOCATE ALL');
+    await pglite.exec('DISCARD ALL');
   };
 
   let closingPromise: Promise<void> | undefined;
