@@ -18,22 +18,17 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { createPool } from './create-pool.ts';
 import { AdapterStats, type Stats, type StatsLevel } from './utils/adapter-stats.ts';
 import { getMigrationSQL, type MigrationsOptions } from './utils/migrations.ts';
+import {
+  isDatabaseInitialized,
+  isValidSentinelRow,
+  SENTINAL_COLLISON_ERROR_MESSAGE,
+  SENTINEL_SCHEMA,
+  SENTINEL_STATEMENTS,
+  SENTINEL_TABLE,
+  writeSentinel,
+} from './utils/sentinel.ts';
+import { createSnapshotManager } from './utils/snapshot.ts';
 import { nsToMs } from './utils/time.ts';
-
-const SNAPSHOT_SCHEMA = '_pglite_snapshot';
-const SENTINEL_SCHEMA = '_pglite_bridge';
-const SENTINEL_TABLE = '__initialized';
-const SENTINEL_MARKER = 'prisma-pglite-bridge:init:v1';
-
-const USER_TABLES_WHERE = `schemaname NOT IN ('pg_catalog', 'information_schema')
-       AND schemaname != '${SNAPSHOT_SCHEMA}'
-       AND schemaname != '${SENTINEL_SCHEMA}'
-       AND tablename NOT LIKE '_prisma%'`;
-
-const escapeLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;
-
-const isValidSentinelRow = (rows: Array<{ marker: string; version: number }>) =>
-  rows.length === 1 && rows[0]?.marker === SENTINEL_MARKER && rows[0]?.version === 1;
 
 export interface CreatePgliteAdapterOptions extends MigrationsOptions {
   /** PGlite data directory. Omit for in-memory. */
@@ -150,112 +145,25 @@ export const createPgliteAdapter = async (
     adapterStats.markWasmInit(wasmInitMs);
   }
 
-  const sentinelStatements = [
-    `CREATE SCHEMA IF NOT EXISTS "${SENTINEL_SCHEMA}"`,
-    `CREATE TABLE IF NOT EXISTS "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL)`,
-    `INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES (${escapeLiteral(SENTINEL_MARKER)}, 1) ON CONFLICT (marker) DO NOTHING`,
-  ];
-
-  const collisionError = () =>
-    `"${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" exists but is not owned by prisma-pglite-bridge. ` +
-    `The "${SENTINEL_SCHEMA}" schema is reserved for library metadata.`;
-
-  const writeSentinel = async () => {
-    try {
-      await pglite.exec(`BEGIN;\n${sentinelStatements.join(';\n')}`);
-
-      const { rows } = await pglite.query<{ marker: string; version: number }>(
-        `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
-      );
-      if (!isValidSentinelRow(rows)) throw new Error(collisionError());
-      await pglite.exec('COMMIT');
-    } catch (err) {
-      // Don't let a ROLLBACK failure mask the real error that sent us here.
-      await pglite.exec('ROLLBACK').catch(() => {});
-      // A pre-existing sentinel table with incompatible columns surfaces here
-      // as a cryptic "column X does not exist" from the INSERT — translate it
-      // to the collision message. Other errors propagate as-is.
-      throw err instanceof Error && err.message === collisionError()
-        ? err
-        : new Error(collisionError(), { cause: err });
-    }
-  };
-
-  const isInitialized = async () => {
-    const { rows: tableExists } = await pglite.query<{ found: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1 FROM pg_tables
-           WHERE schemaname = '${SENTINEL_SCHEMA}' AND tablename = '${SENTINEL_TABLE}'
-       ) AS found`,
-    );
-
-    if (tableExists[0]?.found) {
-      try {
-        const { rows: allRows } = await pglite.query<{ marker: string; version: number }>(
-          `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
-        );
-        if (isValidSentinelRow(allRows)) return true;
-      } catch {
-        // Table has incompatible columns — fall through to collision error
-      }
-
-      throw new Error(collisionError());
-    }
-
-    const { rows: schemaExists } = await pglite.query<{ found: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1 FROM pg_namespace WHERE nspname = '${SENTINEL_SCHEMA}'
-       ) AS found`,
-    );
-    if (schemaExists[0]?.found) {
-      throw new Error(
-        `Schema "${SENTINEL_SCHEMA}" exists but is not owned by prisma-pglite-bridge. ` +
-          `The "${SENTINEL_SCHEMA}" schema is reserved for library metadata.`,
-      );
-    }
-
-    const { rows: legacy } = await pglite.query<{ initialized: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1 FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
-           WHERE n.nspname = 'public'
-         UNION ALL
-         SELECT 1 FROM pg_type t JOIN pg_namespace n ON t.typnamespace = n.oid
-           WHERE n.nspname = 'public' AND t.typtype NOT IN ('b', 'p')
-         UNION ALL
-         SELECT 1 FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid
-           WHERE n.nspname = 'public'
-         UNION ALL
-         SELECT 1 FROM pg_namespace
-           WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'public')
-       ) AS initialized`,
-    );
-    if (legacy[0]?.initialized) {
-      await writeSentinel();
-      return true;
-    }
-
-    return false;
-  };
-
   const schemaStart = adapterStats ? process.hrtime.bigint() : undefined;
-  if (!options.dataDir || !(await isInitialized())) {
+  if (!options.dataDir || !(await isDatabaseInitialized(pglite))) {
     const sql = await getMigrationSQL(options);
     const isMigrationSQL = !options.sql;
 
     if (isMigrationSQL) {
       let committed = false;
       try {
-        await pglite.exec(`BEGIN;\n${sql};\n${sentinelStatements.join(';\n')}`);
+        await pglite.exec(`BEGIN;\n${sql};\n${SENTINEL_STATEMENTS}`);
 
         const { rows: verify } = await pglite.query<{ marker: string; version: number }>(
           `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
         );
-        if (!isValidSentinelRow(verify)) throw new Error(collisionError());
+        if (!isValidSentinelRow(verify)) throw new Error(SENTINAL_COLLISON_ERROR_MESSAGE);
         await pglite.exec('COMMIT');
         committed = true;
       } catch (err) {
         if (!committed) await pglite.exec('ROLLBACK');
-        if (err instanceof Error && err.message === collisionError()) throw err;
+        if (err instanceof Error && err.message === SENTINAL_COLLISON_ERROR_MESSAGE) throw err;
         throw new Error(
           'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
           { cause: err },
@@ -270,7 +178,7 @@ export const createPgliteAdapter = async (
           { cause: err },
         );
       }
-      await writeSentinel();
+      await writeSentinel(pglite);
     }
   }
   if (adapterStats && schemaStart !== undefined) {
@@ -278,134 +186,17 @@ export const createPgliteAdapter = async (
   }
 
   const adapter = new PrismaPg(pool);
+  const snapshotManager = createSnapshotManager(pglite);
 
-  let cachedTables: string | undefined;
-  let hasSnapshot = false;
-
-  const discoverTables = async () => {
-    if (cachedTables !== undefined) return cachedTables;
-    const { rows } = await pglite.query<{ qualified: string }>(
-      `SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
-       FROM pg_tables
-       WHERE ${USER_TABLES_WHERE}`,
-    );
-    cachedTables =
-      rows.length > 0 ? rows.map((row: { qualified: string }) => row.qualified).join(', ') : '';
-    return cachedTables;
-  };
-
-  const snapshotDb: SnapshotDbFn = async () => {
-    await pglite.exec(`DROP SCHEMA IF EXISTS "${SNAPSHOT_SCHEMA}" CASCADE`);
-
-    try {
-      await pglite.exec('BEGIN');
-      await pglite.exec(`CREATE SCHEMA "${SNAPSHOT_SCHEMA}"`);
-
-      const { rows: tables } = await pglite.query<{
-        schemaname: string;
-        tablename: string;
-        qualified: string;
-      }>(
-        `SELECT schemaname, tablename,
-                quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
-         FROM pg_tables
-         WHERE ${USER_TABLES_WHERE}`,
-      );
-
-      await pglite.exec(
-        `CREATE TABLE "${SNAPSHOT_SCHEMA}".__tables (snap_name text, source_schema text, source_table text)`,
-      );
-
-      for (const [i, { schemaname, tablename, qualified }] of tables.entries()) {
-        const snapName = `_snap_${i}`;
-        await pglite.exec(
-          `CREATE TABLE "${SNAPSHOT_SCHEMA}"."${snapName}" AS SELECT * FROM ${qualified}`,
-        );
-        await pglite.exec(
-          `INSERT INTO "${SNAPSHOT_SCHEMA}".__tables VALUES (${escapeLiteral(snapName)}, ${escapeLiteral(schemaname)}, ${escapeLiteral(tablename)})`,
-        );
-      }
-
-      const { rows: seqs } = await pglite.query<{ name: string; value: string }>(
-        `SELECT quote_literal(schemaname || '.' || sequencename) AS name, last_value::text AS value
-         FROM pg_sequences
-         WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-         AND schemaname != '${SNAPSHOT_SCHEMA}'
-         AND last_value IS NOT NULL`,
-      );
-
-      await pglite.exec(`CREATE TABLE "${SNAPSHOT_SCHEMA}".__sequences (name text, value bigint)`);
-      for (const { name, value } of seqs) {
-        await pglite.exec(
-          `INSERT INTO "${SNAPSHOT_SCHEMA}".__sequences VALUES (${name}, ${value})`,
-        );
-      }
-
-      await pglite.exec('COMMIT');
-    } catch (err) {
-      await pglite.exec('ROLLBACK');
-      await pglite.exec(`DROP SCHEMA IF EXISTS "${SNAPSHOT_SCHEMA}" CASCADE`);
-      throw err;
-    }
-
-    hasSnapshot = true;
-  };
-
-  const resetSnapshot: ResetSnapshotFn = async () => {
-    hasSnapshot = false;
-    await pglite.exec(`DROP SCHEMA IF EXISTS "${SNAPSHOT_SCHEMA}" CASCADE`);
-  };
-
-  const resetDb = async () => {
+  const resetDb: ResetDbFn = async () => {
     adapterStats?.incrementResetDb();
-    cachedTables = undefined;
-    const tables = await discoverTables();
-
-    if (hasSnapshot && tables) {
-      try {
-        await pglite.exec('SET session_replication_role = replica');
-        await pglite.exec(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
-
-        const { rows: snapshotTables } = await pglite.query<{
-          snap_name: string;
-          qualified: string;
-        }>(
-          `SELECT snap_name, quote_ident(source_schema) || '.' || quote_ident(source_table) AS qualified
-           FROM "${SNAPSHOT_SCHEMA}".__tables`,
-        );
-
-        for (const { snap_name, qualified } of snapshotTables) {
-          await pglite.exec(
-            `INSERT INTO ${qualified} SELECT * FROM "${SNAPSHOT_SCHEMA}"."${snap_name}"`,
-          );
-        }
-
-        const { rows: seqs } = await pglite.query<{ name: string; value: string }>(
-          `SELECT quote_literal(name) AS name, value::text AS value FROM "${SNAPSHOT_SCHEMA}".__sequences`,
-        );
-
-        for (const { name, value } of seqs) {
-          await pglite.exec(`SELECT setval(${name}, ${value})`);
-        }
-      } finally {
-        await pglite.exec('SET session_replication_role = DEFAULT');
-      }
-    } else if (tables) {
-      try {
-        await pglite.exec('SET session_replication_role = replica');
-        await pglite.exec(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
-      } finally {
-        await pglite.exec('SET session_replication_role = DEFAULT');
-      }
-    }
-
-    await pglite.exec('DISCARD ALL');
+    await snapshotManager.resetDb();
   };
 
-  let closingPromise: Promise<void> | undefined;
+  let closing: Promise<void> | undefined;
   const close = async () => {
-    if (closingPromise) return closingPromise;
-    closingPromise = (async () => {
+    if (closing) return closing;
+    closing = (async () => {
       const closeEntry = adapterStats ? process.hrtime.bigint() : undefined;
       await pool.end();
       if (adapterStats && closeEntry !== undefined) {
@@ -413,10 +204,17 @@ export const createPgliteAdapter = async (
       }
       await pglite.close();
     })();
-    return closingPromise;
+    return closing;
   };
 
-  const stats: StatsFn = async () => (adapterStats ? adapterStats.snapshot(pglite) : undefined);
-
-  return { adapter, pglite, adapterId, resetDb, snapshotDb, resetSnapshot, close, stats };
+  return {
+    adapter,
+    adapterId,
+    close,
+    pglite,
+    resetDb,
+    resetSnapshot: snapshotManager.resetSnapshot,
+    snapshotDb: snapshotManager.snapshotDb,
+    stats: async () => (adapterStats ? adapterStats.snapshot(pglite) : undefined),
+  };
 };

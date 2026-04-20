@@ -245,6 +245,25 @@ describe('AdapterStats — freeze()', () => {
     }
   });
 
+  it('freeze is idempotent after the instance is already frozen', async () => {
+    const c = new AdapterStats(1);
+    try {
+      vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 123n }] });
+
+      await c.freeze(pglite, process.hrtime.bigint());
+      const callsAfterFirstFreeze = vi.mocked(pglite.query).mock.calls.length;
+      const snapshotAfterFirstFreeze = await c.snapshot(pglite);
+
+      await c.freeze(pglite, process.hrtime.bigint());
+      const snapshotAfterSecondFreeze = await c.snapshot(pglite);
+
+      expect(vi.mocked(pglite.query).mock.calls.length).toBe(callsAfterFirstFreeze);
+      expect(snapshotAfterSecondFreeze).toEqual(snapshotAfterFirstFreeze);
+    } finally {
+      c.stop();
+    }
+  });
+
   it('ignores recordQuery / recordLockWait / incrementResetDb after freeze', async () => {
     const c = new AdapterStats(2);
     try {
