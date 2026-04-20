@@ -150,8 +150,12 @@ Returns:
 - `close()` — shuts down pool and PGlite. Not needed in tests
   (process exit handles it). Use in long-running scripts or dev
   servers.
-- `stats()` — returns telemetry when `statsLevel > 0`, else `null`.
-  See [Stats collection](#stats-collection).
+- `stats()` — returns telemetry when `statsLevel > 0`, else
+  `undefined`. See [Stats collection](#stats-collection).
+- `adapterId` — a unique `symbol` identifying this adapter. Use it
+  to filter events from the public
+  [diagnostics channels](#diagnostics-channels) when multiple
+  adapters share a process.
 
 ### `createPool(options?)`
 
@@ -168,8 +172,12 @@ const adapter = new PrismaPg(pool);
 ```
 
 Returns `pool` (pg.Pool), `pglite` (the underlying PGlite
-instance), and `close()`. Accepts `dataDir`, `extensions`, `max`,
-and `pglite` (bring your own pre-configured PGlite instance).
+instance), `adapterId` (a unique `symbol` for
+[diagnostics channel](#diagnostics-channels) filtering),
+`wasmInitMs` (how long `new PGlite()` took, or `undefined` when
+you supplied your own `pglite`), and `close()`. Accepts
+`adapterId`, `dataDir`, `extensions`, `max`, and `pglite` (bring
+your own pre-configured PGlite instance).
 
 ### `PGliteBridge`
 
@@ -412,8 +420,9 @@ try {
 Opt-in telemetry about what happened during a test run — query counts,
 timing percentiles, database size, and (at level 2) process RSS and
 session-lock wait times. Useful for CI cost insight, perf tuning, and
-understanding test-suite behavior. **Off by default** (zero overhead
-on the hot path).
+understanding test-suite behavior. **Off by default**; the hot path
+stays effectively zero-cost as long as no external consumer
+subscribes to the public [diagnostics channels](#diagnostics-channels).
 
 ```typescript
 const { adapter, stats, close } = await createPgliteAdapter({
@@ -429,10 +438,10 @@ afterAll(async () => {
 });
 ```
 
-`stats()` returns `Promise<Stats | null>` — `null` when
-`statsLevel` is `0` (or omitted). Safe to call before or after
-`close()`; post-close reads return frozen values from the moment
-`close()` was invoked.
+`stats()` returns `Promise<Stats | undefined>` — `undefined`
+when `statsLevel` is `0` (or omitted). Safe to call before or
+after `close()`; post-close reads return frozen values from the
+moment `close()` was invoked.
 
 ### Levels
 
@@ -469,6 +478,51 @@ afterAll(async () => {
 `dbSizeBytes` is the only field that can be `undefined` — if the
 `pg_database_size` query rejects (broken pglite state), the rest of
 the object still returns.
+
+## Diagnostics channels
+
+The bridge publishes per-query and per-lock-wait events to
+[`node:diagnostics_channel`](https://nodejs.org/api/diagnostics_channel.html)
+channels. The built-in stats collector subscribes to these when
+`statsLevel > 0`; external consumers (OpenTelemetry, APM, custom
+loggers) can subscribe directly without touching the bridge API.
+
+Publication is gated by `channel.hasSubscribers`, so when nobody
+is listening the hot path pays no timing or payload cost.
+Subscribing opts you in to that work.
+
+```typescript
+import diagnostics_channel from 'node:diagnostics_channel';
+import {
+  createPgliteAdapter,
+  QUERY_CHANNEL,
+  type QueryEvent,
+} from 'prisma-pglite-bridge';
+
+const { adapterId } = await createPgliteAdapter({ /* ... */ });
+
+const listener = (msg: unknown) => {
+  const e = msg as QueryEvent;
+  if (e.adapterId !== adapterId) return;
+  myMetrics.record('db.query', e.durationMs, { ok: e.succeeded });
+};
+diagnostics_channel.channel(QUERY_CHANNEL).subscribe(listener);
+```
+
+Channels:
+
+- `QUERY_CHANNEL` (`prisma-pglite-bridge:query`) — every
+  whole-query boundary. Payload: `{ adapterId: symbol; durationMs:
+  number; succeeded: boolean }`. `succeeded` is `false` for both
+  thrown errors and protocol-level `ErrorResponse` frames.
+- `LOCK_WAIT_CHANNEL` (`prisma-pglite-bridge:lock-wait`) — every
+  session-lock acquisition. Payload: `{ adapterId: symbol;
+  durationMs: number }`. `durationMs` is how long the acquirer
+  waited before the lock was granted.
+
+Filter on `adapterId` to isolate events when multiple adapters
+share a process. Obtain it from the `createPgliteAdapter()` or
+`createPool()` return value.
 
 ## Limitations
 
