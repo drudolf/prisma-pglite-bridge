@@ -2,7 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PGliteBridge } from './pglite-bridge.ts';
-import { createBridgeId, extractRfqStatus, SessionLock } from './session-lock.ts';
+import { SessionLock } from './session-lock.ts';
 
 const { Client, Pool } = pg;
 
@@ -16,8 +16,8 @@ const flushMicrotasks = () =>
 describe('SessionLock', () => {
   it('allows any bridge when idle', async () => {
     const lock = new SessionLock();
-    const a = createBridgeId();
-    const b = createBridgeId();
+    const a = Symbol('bridge');
+    const b = Symbol('bridge');
 
     await lock.acquire(a); // should resolve immediately
     await lock.acquire(b); // should resolve immediately
@@ -25,8 +25,8 @@ describe('SessionLock', () => {
 
   it('blocks other bridges during a transaction', async () => {
     const lock = new SessionLock();
-    const a = createBridgeId();
-    const b = createBridgeId();
+    const a = Symbol('bridge');
+    const b = Symbol('bridge');
 
     // Bridge A starts a transaction
     lock.updateStatus(a, 0x54); // 'T' = in transaction
@@ -49,7 +49,7 @@ describe('SessionLock', () => {
 
   it('allows the owning bridge to continue during its transaction', async () => {
     const lock = new SessionLock();
-    const a = createBridgeId();
+    const a = Symbol('bridge');
 
     lock.updateStatus(a, 0x54); // 'T'
 
@@ -59,8 +59,8 @@ describe('SessionLock', () => {
 
   it('blocks during failed transaction state', async () => {
     const lock = new SessionLock();
-    const a = createBridgeId();
-    const b = createBridgeId();
+    const a = Symbol('bridge');
+    const b = Symbol('bridge');
 
     lock.updateStatus(a, 0x45); // 'E' = failed transaction
 
@@ -80,8 +80,8 @@ describe('SessionLock', () => {
 
   it('release() unblocks waiting bridges', async () => {
     const lock = new SessionLock();
-    const a = createBridgeId();
-    const b = createBridgeId();
+    const a = Symbol('bridge');
+    const b = Symbol('bridge');
 
     lock.updateStatus(a, 0x54);
 
@@ -101,8 +101,8 @@ describe('SessionLock', () => {
 
   it('release() unblocks waiting bridges on crash (no COMMIT)', async () => {
     const lock = new SessionLock();
-    const bridgeA = createBridgeId();
-    const bridgeB = createBridgeId();
+    const bridgeA = Symbol('bridge');
+    const bridgeB = Symbol('bridge');
 
     // Bridge A starts a transaction
     lock.updateStatus(bridgeA, 0x54); // 'T'
@@ -121,52 +121,6 @@ describe('SessionLock', () => {
 
     await bPromise;
     expect(bResolved).toBe(true);
-  });
-});
-
-// ─── Unit tests for extractRfqStatus ───
-
-describe('extractRfqStatus', () => {
-  it('extracts idle status', () => {
-    const rfq = new Uint8Array([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
-    expect(extractRfqStatus(rfq)).toBe(0x49);
-  });
-
-  it('extracts transaction status', () => {
-    const rfq = new Uint8Array([0x5a, 0x00, 0x00, 0x00, 0x05, 0x54]);
-    expect(extractRfqStatus(rfq)).toBe(0x54);
-  });
-
-  it('extracts failed transaction status', () => {
-    const rfq = new Uint8Array([0x5a, 0x00, 0x00, 0x00, 0x05, 0x45]);
-    expect(extractRfqStatus(rfq)).toBe(0x45);
-  });
-
-  it('extracts from response with preceding messages', () => {
-    // ParseComplete(5 bytes) + RFQ(6 bytes)
-    const response = new Uint8Array([
-      0x31,
-      0x00,
-      0x00,
-      0x00,
-      0x04, // ParseComplete
-      0x5a,
-      0x00,
-      0x00,
-      0x00,
-      0x05,
-      0x54, // RFQ with 'T'
-    ]);
-    expect(extractRfqStatus(response)).toBe(0x54);
-  });
-
-  it('returns null for empty response', () => {
-    expect(extractRfqStatus(new Uint8Array(0))).toBeNull();
-  });
-
-  it('returns null for response without RFQ', () => {
-    const response = new Uint8Array([0x31, 0x00, 0x00, 0x00, 0x04]);
-    expect(extractRfqStatus(response)).toBeNull();
   });
 });
 
