@@ -14,11 +14,10 @@
  * beforeEach(() => resetDb());
  * ```
  */
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createPool } from './create-pool.ts';
 import { AdapterStats, type Stats, type StatsLevel } from './utils/adapter-stats.ts';
+import { getMigrationSQL, type MigrationsOptions } from './utils/migrations.ts';
 import { nsToMs } from './utils/time.ts';
 
 const SNAPSHOT_SCHEMA = '_pglite_snapshot';
@@ -36,16 +35,7 @@ const escapeLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const isValidSentinelRow = (rows: Array<{ marker: string; version: number }>) =>
   rows.length === 1 && rows[0]?.marker === SENTINEL_MARKER && rows[0]?.version === 1;
 
-export interface CreatePgliteAdapterOptions {
-  /** Path to prisma/migrations/ directory (auto-discovered via prisma.config.ts if omitted) */
-  migrationsPath?: string;
-
-  /** Pre-generated SQL to apply instead of auto-generating from schema */
-  sql?: string;
-
-  /** Root directory for prisma.config.ts discovery (default: process.cwd()). Set this in monorepos where tests run from the workspace root. */
-  configRoot?: string;
-
+export interface CreatePgliteAdapterOptions extends MigrationsOptions {
   /** PGlite data directory. Omit for in-memory. */
   dataDir?: string;
 
@@ -132,102 +122,6 @@ export interface PgliteAdapter {
    */
   stats: StatsFn;
 }
-
-/**
- * Discover the migrations directory via Prisma's config API.
- * Uses the same resolution as `prisma migrate dev` — reads prisma.config.ts,
- * resolves paths relative to config file location.
- *
- * Returns undefined if @prisma/config is not available or config cannot be loaded.
- */
-const discoverMigrationsPath = async (configRoot?: string): Promise<string | undefined> => {
-  try {
-    const { loadConfigFromFile } = await import('@prisma/config');
-    const { config, error } = await loadConfigFromFile({ configRoot: configRoot ?? process.cwd() });
-    if (error) return undefined;
-
-    // Explicit migrations path from prisma.config.ts
-    if (config.migrations?.path) return config.migrations.path;
-
-    // Fallback: Prisma convention is {schemaDir}/migrations
-    const schemaPath = config.schema;
-    if (schemaPath) return join(dirname(schemaPath), 'migrations');
-
-    return undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-/**
- * Read migration SQL files from a migrations directory in directory order.
- * Returns undefined if the directory doesn't exist or has no migration files.
- */
-const tryReadMigrationFiles = (migrationsPath: string): string | undefined => {
-  if (!existsSync(migrationsPath)) return undefined;
-
-  const dirs = readdirSync(migrationsPath)
-    .filter((d) => statSync(join(migrationsPath, d)).isDirectory())
-    .sort();
-
-  const sqlParts: string[] = [];
-  for (const dir of dirs) {
-    const sqlPath = join(migrationsPath, dir, 'migration.sql');
-    if (existsSync(sqlPath)) {
-      sqlParts.push(readFileSync(sqlPath, 'utf8'));
-    }
-  }
-
-  return sqlParts.length > 0 ? sqlParts.join('\n') : undefined;
-};
-
-/**
- * Resolve schema SQL. Priority:
- *   1. Explicit `sql` option — use directly
- *   2. Explicit `migrationsPath` — read migration files
- *   3. Auto-discovered migrations (via prisma.config.ts) — read migration files
- *   4. Error — tell the user to generate migration files
- */
-const resolveSQL = async (options: CreatePgliteAdapterOptions): Promise<string> => {
-  if (options.sql) return options.sql;
-
-  // Explicit migrationsPath
-  if (options.migrationsPath) {
-    const sql = tryReadMigrationFiles(options.migrationsPath);
-    if (sql) return sql;
-    throw new Error(
-      `No migration.sql files found in ${options.migrationsPath}. Run \`prisma migrate dev\` to generate migration files.`,
-    );
-  }
-
-  // Auto-discover via Prisma config
-  const migrationsPath = await discoverMigrationsPath(options.configRoot);
-
-  if (migrationsPath) {
-    const sql = tryReadMigrationFiles(migrationsPath);
-    if (sql) return sql;
-
-    throw new Error(
-      `No migration.sql files found in auto-discovered path ${migrationsPath}. ` +
-        'Run `prisma migrate dev` to generate migration files, ' +
-        'or pass pre-generated SQL via the `sql` option.',
-    );
-  }
-
-  if (options.configRoot) {
-    throw new Error(
-      `prisma.config.ts loaded from configRoot (${options.configRoot}) but no schema ` +
-        'or migrations path could be resolved. Ensure your config specifies a schema path, ' +
-        'or pass pre-generated SQL via the `sql` option.',
-    );
-  }
-
-  throw new Error(
-    'No migration files found and no prisma.config.ts could be loaded. ' +
-      'Run `prisma migrate dev` to generate them, ' +
-      'or pass pre-generated SQL via the `sql` option.',
-  );
-};
 
 /**
  * Creates a Prisma adapter backed by an in-process PGlite instance.
@@ -345,7 +239,7 @@ export const createPgliteAdapter = async (
 
   const schemaStart = adapterStats ? process.hrtime.bigint() : undefined;
   if (!options.dataDir || !(await isInitialized())) {
-    const sql = await resolveSQL(options);
+    const sql = await getMigrationSQL(options);
     const isMigrationSQL = !options.sql;
 
     if (isMigrationSQL) {
