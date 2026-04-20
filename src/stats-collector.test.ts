@@ -1,5 +1,11 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  type LockWaitEvent,
+  lockWaitChannel,
+  type QueryEvent,
+  queryChannel,
+} from './diagnostics.ts';
 import { QUERY_DURATION_WINDOW_SIZE, StatsCollector } from './stats-collector.ts';
 
 type PGliteLike = import('@electric-sql/pglite').PGlite;
@@ -10,7 +16,7 @@ const makePglite = (size: bigint = BigInt(12345)) =>
   }) as unknown as PGliteLike;
 
 const withCollector = async (level: 1 | 2, fn: (c: StatsCollector) => Promise<void>) => {
-  const c = new StatsCollector(level);
+  const c = new StatsCollector(level, Symbol('adapter'));
   try {
     await fn(c);
   } finally {
@@ -193,7 +199,7 @@ describe('StatsCollector — pglite query robustness', () => {
 
 describe('StatsCollector — freeze()', () => {
   it('post-freeze snapshots use cached values and do not call pglite.query', async () => {
-    const c = new StatsCollector(1);
+    const c = new StatsCollector(1, Symbol('adapter'));
     try {
       const pglite = makePglite(BigInt(99999));
       await c.freeze(pglite, process.hrtime.bigint());
@@ -211,7 +217,7 @@ describe('StatsCollector — freeze()', () => {
   });
 
   it('freeze uses the passed-in closeEntryHrtime for durationMs (not invocation time)', async () => {
-    const c = new StatsCollector(1);
+    const c = new StatsCollector(1, Symbol('adapter'));
     try {
       const earlyTimestamp = process.hrtime.bigint();
       await sleep(50);
@@ -224,7 +230,7 @@ describe('StatsCollector — freeze()', () => {
   });
 
   it('seals dbSizeFrozen even when queryDbSize rejects', async () => {
-    const c = new StatsCollector(1);
+    const c = new StatsCollector(1, Symbol('adapter'));
     try {
       const throwing = {
         query: vi.fn().mockRejectedValue(new Error('boom')),
@@ -243,7 +249,7 @@ describe('StatsCollector — freeze()', () => {
   });
 
   it('ignores recordQuery / recordLockWait / incrementResetDb after freeze', async () => {
-    const c = new StatsCollector(2);
+    const c = new StatsCollector(2, Symbol('adapter'));
     try {
       c.recordQuery(10, true);
       c.recordLockWait(5);
@@ -281,7 +287,7 @@ describe('StatsCollector — level 2 RSS sampler', () => {
 
   it('short-run: memoryUsage is called exactly twice (construct + freeze) and peak > 0', async () => {
     memSpy = vi.spyOn(process, 'memoryUsage');
-    const c = new StatsCollector(2);
+    const c = new StatsCollector(2, Symbol('adapter'));
     try {
       await c.freeze(makePglite(), process.hrtime.bigint());
       expect(memSpy.mock.calls.length).toBe(2);
@@ -297,7 +303,7 @@ describe('StatsCollector — level 2 RSS sampler', () => {
     vi.useFakeTimers();
     try {
       memSpy = vi.spyOn(process, 'memoryUsage');
-      const c = new StatsCollector(2);
+      const c = new StatsCollector(2, Symbol('adapter'));
       try {
         const afterCtor = memSpy.mock.calls.length;
         vi.advanceTimersByTime(500);
@@ -375,5 +381,105 @@ describe('StatsCollector — level 2 session-lock accumulation', () => {
       expect(bag.sessionLockAcquisitionCount).toBeUndefined();
       expect(bag.avgSessionLockWaitMs).toBeUndefined();
     });
+  });
+});
+
+describe('StatsCollector — channel subscription', () => {
+  it('ingests QUERY_CHANNEL events for its adapterId', async () => {
+    const adapterId = Symbol('adapter');
+    const c = new StatsCollector(1, adapterId);
+    try {
+      const event: QueryEvent = { adapterId, durationMs: 17, succeeded: true };
+      queryChannel.publish(event);
+      const s = await c.snapshot(makePglite());
+      expect(s.queryCount).toBe(1);
+      expect(s.totalQueryMs).toBe(17);
+    } finally {
+      c.stop();
+    }
+  });
+
+  it('ignores QUERY_CHANNEL events tagged with a different adapterId', async () => {
+    const mine = Symbol('adapter');
+    const other = Symbol('adapter');
+    const c = new StatsCollector(1, mine);
+    try {
+      const event: QueryEvent = { adapterId: other, durationMs: 99, succeeded: true };
+      queryChannel.publish(event);
+      const s = await c.snapshot(makePglite());
+      expect(s.queryCount).toBe(0);
+      expect(s.totalQueryMs).toBe(0);
+    } finally {
+      c.stop();
+    }
+  });
+
+  it('two collectors in the same process see only their own events', async () => {
+    const idA = Symbol('adapter-a');
+    const idB = Symbol('adapter-b');
+    const a = new StatsCollector(1, idA);
+    const b = new StatsCollector(1, idB);
+    try {
+      queryChannel.publish({ adapterId: idA, durationMs: 10, succeeded: true } as QueryEvent);
+      queryChannel.publish({ adapterId: idB, durationMs: 20, succeeded: true } as QueryEvent);
+      queryChannel.publish({ adapterId: idB, durationMs: 30, succeeded: false } as QueryEvent);
+      const sa = await a.snapshot(makePglite());
+      const sb = await b.snapshot(makePglite());
+      expect(sa.queryCount).toBe(1);
+      expect(sa.totalQueryMs).toBe(10);
+      expect(sa.failedQueryCount).toBe(0);
+      expect(sb.queryCount).toBe(2);
+      expect(sb.totalQueryMs).toBe(50);
+      expect(sb.failedQueryCount).toBe(1);
+    } finally {
+      a.stop();
+      b.stop();
+    }
+  });
+
+  it('level 2 ingests LOCK_WAIT_CHANNEL events', async () => {
+    const adapterId = Symbol('adapter');
+    const c = new StatsCollector(2, adapterId);
+    try {
+      lockWaitChannel.publish({ adapterId, durationMs: 7 } as LockWaitEvent);
+      lockWaitChannel.publish({ adapterId, durationMs: 3 } as LockWaitEvent);
+      const s = await c.snapshot(makePglite());
+      if (s.statsLevel !== 2) throw new Error('expected level 2');
+      expect(s.sessionLockAcquisitionCount).toBe(2);
+      expect(s.totalSessionLockWaitMs).toBe(10);
+    } finally {
+      c.stop();
+    }
+  });
+});
+
+describe('StatsCollector — lifecycle unsubscribe', () => {
+  it('stop() removes the QUERY_CHANNEL subscription (level 1)', () => {
+    expect(queryChannel.hasSubscribers).toBe(false);
+    const c = new StatsCollector(1, Symbol('adapter'));
+    expect(queryChannel.hasSubscribers).toBe(true);
+    expect(lockWaitChannel.hasSubscribers).toBe(false);
+    c.stop();
+    expect(queryChannel.hasSubscribers).toBe(false);
+  });
+
+  it('stop() removes both channel subscriptions at level 2', () => {
+    expect(queryChannel.hasSubscribers).toBe(false);
+    expect(lockWaitChannel.hasSubscribers).toBe(false);
+    const c = new StatsCollector(2, Symbol('adapter'));
+    expect(queryChannel.hasSubscribers).toBe(true);
+    expect(lockWaitChannel.hasSubscribers).toBe(true);
+    c.stop();
+    expect(queryChannel.hasSubscribers).toBe(false);
+    expect(lockWaitChannel.hasSubscribers).toBe(false);
+  });
+
+  it('freeze() unsubscribes via stop() (level 2)', async () => {
+    const c = new StatsCollector(2, Symbol('adapter'));
+    expect(queryChannel.hasSubscribers).toBe(true);
+    expect(lockWaitChannel.hasSubscribers).toBe(true);
+    await c.freeze(makePglite(), process.hrtime.bigint());
+    expect(queryChannel.hasSubscribers).toBe(false);
+    expect(lockWaitChannel.hasSubscribers).toBe(false);
   });
 });

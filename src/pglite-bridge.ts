@@ -18,8 +18,8 @@
  */
 import { Duplex } from 'node:stream';
 import type { PGlite } from '@electric-sql/pglite';
+import { lockWaitChannel, queryChannel } from './diagnostics.ts';
 import type { BridgeId, SessionLock } from './session-lock.ts';
-import type { StatsCollector } from './stats-collector.ts';
 
 const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
 
@@ -365,7 +365,7 @@ export class BackendMessageFramer {
 export class PGliteBridge extends Duplex {
   private readonly pglite: PGlite;
   private readonly sessionLock?: SessionLock;
-  private readonly collector?: StatsCollector;
+  private readonly adapterId?: symbol;
   private readonly bridgeId: BridgeId;
   /** Incoming bytes framed directly from a queued chunk buffer */
   private readonly input = new FrontendMessageBuffer();
@@ -377,11 +377,11 @@ export class PGliteBridge extends Duplex {
   /** Buffered EQP messages awaiting Sync */
   private pipeline: Uint8Array[] = [];
 
-  constructor(pglite: PGlite, sessionLock?: SessionLock, collector?: StatsCollector) {
+  constructor(pglite: PGlite, sessionLock?: SessionLock, adapterId?: symbol) {
     super();
     this.pglite = pglite;
     this.sessionLock = sessionLock;
-    this.collector = collector;
+    this.adapterId = adapterId;
     this.bridgeId = Symbol('bridge');
   }
 
@@ -577,30 +577,7 @@ export class PGliteBridge extends Duplex {
       }
 
       // SimpleQuery or other standalone message
-      const collector = this.collector;
-      if (collector === undefined) {
-        await this.acquireSession();
-        await this.pglite.runExclusive(async () => {
-          await this.execAndPush(message, false);
-        });
-        continue;
-      }
-
-      const lockStart = process.hrtime.bigint();
-      await this.acquireSession();
-      const queryStart = process.hrtime.bigint();
-      collector.recordLockWait(nsToMs(queryStart - lockStart));
-      let succeeded = true;
-      try {
-        await this.pglite.runExclusive(async () => {
-          succeeded = await this.execAndPush(message, true);
-        });
-      } catch (err) {
-        succeeded = false;
-        throw err;
-      } finally {
-        collector.recordQuery(nsToMs(process.hrtime.bigint() - queryStart), succeeded);
-      }
+      await this.runWithTiming((detectErrors) => this.execAndPush(message, detectErrors));
     }
   }
 
@@ -618,30 +595,59 @@ export class PGliteBridge extends Duplex {
     const messages = this.pipeline;
     this.pipeline = [];
     const batch = concat(messages);
-    const collector = this.collector;
+    await this.runWithTiming((detectErrors) => this.runPipelineBatch(batch, detectErrors));
+  }
 
-    if (collector === undefined) {
+  /**
+   * Acquires the session, runs the op under `pglite.runExclusive`, and
+   * publishes query / lock-wait events when subscribers are present. When
+   * the adapter has no id (standalone bridge) or nobody is listening on
+   * either channel, skips timing entirely.
+   *
+   * `op` returns `false` when an `ErrorResponse` was seen without throwing
+   * (protocol-level failure). Combined with the catch branch, both failure
+   * modes flip `succeeded` so `failedQueryCount` stays accurate.
+   */
+  private async runWithTiming(op: (detectErrors: boolean) => Promise<boolean>): Promise<void> {
+    const wantTiming =
+      this.adapterId !== undefined &&
+      (queryChannel.hasSubscribers || lockWaitChannel.hasSubscribers);
+
+    if (!wantTiming) {
       await this.acquireSession();
       await this.pglite.runExclusive(async () => {
-        await this.runPipelineBatch(batch, false);
+        await op(false);
       });
       return;
     }
 
+    const adapterId = this.adapterId as symbol;
     const lockStart = process.hrtime.bigint();
     await this.acquireSession();
     const queryStart = process.hrtime.bigint();
-    collector.recordLockWait(nsToMs(queryStart - lockStart));
+    if (lockWaitChannel.hasSubscribers) {
+      lockWaitChannel.publish({
+        adapterId,
+        durationMs: nsToMs(queryStart - lockStart),
+      });
+    }
+
     let succeeded = true;
     try {
       await this.pglite.runExclusive(async () => {
-        succeeded = await this.runPipelineBatch(batch, true);
+        succeeded = await op(true);
       });
     } catch (err) {
       succeeded = false;
       throw err;
     } finally {
-      collector.recordQuery(nsToMs(process.hrtime.bigint() - queryStart), succeeded);
+      if (queryChannel.hasSubscribers) {
+        queryChannel.publish({
+          adapterId,
+          durationMs: nsToMs(process.hrtime.bigint() - queryStart),
+          succeeded,
+        });
+      }
     }
   }
 

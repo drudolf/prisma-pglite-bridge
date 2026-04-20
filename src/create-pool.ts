@@ -11,7 +11,6 @@ import { type Extensions, PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { PGliteBridge } from './pglite-bridge.ts';
 import { SessionLock } from './session-lock.ts';
-import type { StatsCollector } from './stats-collector.ts';
 
 const { Client, Pool } = pg;
 
@@ -36,8 +35,12 @@ export interface CreatePoolOptions {
   /** Existing PGlite instance to use instead of creating one */
   pglite?: PGlite;
 
-  /** @internal — stats collector threaded through from createPgliteAdapter */
-  collector?: StatsCollector;
+  /**
+   * Identity tag published with every diagnostics-channel event. Subscribers
+   * filter on this to distinguish events from different adapters in the
+   * same process. A fresh `Symbol('adapter')` is generated if omitted.
+   */
+  adapterId?: symbol;
 }
 
 export interface PoolResult {
@@ -46,6 +49,22 @@ export interface PoolResult {
 
   /** The underlying PGlite instance */
   pglite: PGlite;
+
+  /**
+   * Identity tag carried on every `QUERY_CHANNEL` / `LOCK_WAIT_CHANNEL`
+   * event this pool produces. Matches the `adapterId` option if supplied,
+   * otherwise a freshly minted symbol. Filter on it from external
+   * subscribers to isolate this pool's events.
+   */
+  adapterId: symbol;
+
+  /**
+   * Milliseconds spent constructing and awaiting PGlite's `waitReady`.
+   * Defined only when the pool constructed the PGlite instance itself —
+   * `undefined` when the caller supplied `options.pglite`, since the
+   * caller owns that timing.
+   */
+  wasmInitMs?: number;
 
   /** Shut down pool and PGlite */
   close: () => Promise<void>;
@@ -70,10 +89,12 @@ export interface PoolResult {
  * @see {@link createPgliteAdapter} for the higher-level API with schema management.
  */
 export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolResult> => {
-  const { dataDir, extensions, max = 1, collector } = options;
+  const { dataDir, extensions, max = 1 } = options;
+  const adapterId = options.adapterId ?? Symbol('adapter');
   const ownsInstance = !options.pglite;
 
   let pglite: PGlite;
+  let wasmInitMs: number | undefined;
   if (options.pglite) {
     pglite = options.pglite;
     await pglite.waitReady;
@@ -81,7 +102,7 @@ export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolR
     const wasmStart = process.hrtime.bigint();
     pglite = new PGlite(dataDir, extensions ? { extensions } : undefined);
     await pglite.waitReady;
-    collector?.markWasmInit(nsToMs(process.hrtime.bigint() - wasmStart));
+    wasmInitMs = nsToMs(process.hrtime.bigint() - wasmStart);
   }
 
   const sessionLock = new SessionLock();
@@ -95,7 +116,7 @@ export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolR
         user: 'postgres',
         database: 'postgres',
         stream: (() =>
-          new PGliteBridge(pglite, sessionLock, collector)) as pg.ClientConfig['stream'],
+          new PGliteBridge(pglite, sessionLock, adapterId)) as pg.ClientConfig['stream'],
       });
     }
   };
@@ -112,5 +133,5 @@ export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolR
     }
   };
 
-  return { pool, pglite, close };
+  return { pool, pglite, adapterId, wasmInitMs, close };
 };

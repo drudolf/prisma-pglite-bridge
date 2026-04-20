@@ -100,6 +100,14 @@ export interface PgliteAdapter {
    */
   pglite: import('@electric-sql/pglite').PGlite;
 
+  /**
+   * Identity tag published on every `QUERY_CHANNEL` / `LOCK_WAIT_CHANNEL`
+   * diagnostics event produced by this adapter's bridges. External
+   * subscribers filter on it to isolate events from this adapter in
+   * multi-adapter processes.
+   */
+  adapterId: symbol;
+
   /** Clear all user tables. Call in `beforeEach` for per-test isolation. */
   resetDb: ResetDbFn;
 
@@ -235,14 +243,18 @@ export const createPgliteAdapter = async (
   if (statsLevel < 0 || statsLevel > 2) {
     throw new Error(`statsLevel must be 0, 1, or 2; got ${statsLevel}`);
   }
-  const collector = statsLevel === 0 ? undefined : new StatsCollector(statsLevel);
+  const adapterId = Symbol('adapter');
+  const collector = statsLevel === 0 ? undefined : new StatsCollector(statsLevel, adapterId);
 
-  const { pool, pglite } = await createPool({
+  const { pool, pglite, wasmInitMs } = await createPool({
     dataDir: options.dataDir,
     extensions: options.extensions,
     max: options.max,
-    collector,
+    adapterId,
   });
+  if (collector && wasmInitMs !== undefined) {
+    collector.markWasmInit(wasmInitMs);
+  }
 
   const sentinelStatements = [
     `CREATE SCHEMA IF NOT EXISTS "${SENTINEL_SCHEMA}"`,
@@ -512,5 +524,5 @@ export const createPgliteAdapter = async (
 
   const stats: StatsFn = async () => (collector ? collector.snapshot(pglite) : undefined);
 
-  return { adapter, pglite, resetDb, snapshotDb, resetSnapshot, close, stats };
+  return { adapter, pglite, adapterId, resetDb, snapshotDb, resetSnapshot, close, stats };
 };
