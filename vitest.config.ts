@@ -6,11 +6,11 @@ export default defineConfig({
     testTimeout: 30_000,
     teardownTimeout: 5_000,
     include: ['src/**/*.test.ts'],
-    exclude: ['node_modules', 'dist'],
+    exclude: ['node_modules', 'dist', 'src/**/__tests__/**'],
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.test.ts'],
+      exclude: ['src/**/*.test.ts', 'src/**/__tests__/**'],
       reporter: ['text', 'html', 'lcov'],
     },
   },

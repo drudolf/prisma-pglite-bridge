@@ -129,5 +129,3 @@ export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolR
 
   return { pool, pglite, adapterId, wasmInitMs, close };
 };
-
-export const createPoolWithTelemetry: typeof createPool = createPool;

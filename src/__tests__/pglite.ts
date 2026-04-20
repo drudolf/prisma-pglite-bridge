@@ -1,39 +1,49 @@
+/** biome-ignore-all lint/style/noNonNullAssertion: test files only */
 import { PGlite } from '@electric-sql/pglite';
-import { afterAll, beforeAll, beforeEach } from 'vitest';
+import { afterAll, beforeEach } from 'vitest';
 
-interface PGliteOptions {
-  setup?: (pglite: PGlite) => Promise<void> | void;
-  reset?: (pglite: PGlite) => Promise<void> | void;
-}
+const getTables = async (db: PGlite) => {
+  const { rows } = await db.query<{ qualified: string }>(`
+    SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
+    FROM pg_tables
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+  `);
 
-/**
- * Canonical per-file PGlite pattern for tests:
- * creates one instance for the file, optionally prepares schema in `setup`,
- * resets state in `reset`, and closes it in `afterAll`.
- */
-export const setupPGlite = (options: PGliteOptions = {}): (() => PGlite) => {
-  let pglite: PGlite | undefined;
+  return rows.map((r) => r.qualified);
+};
 
-  beforeAll(async () => {
-    pglite = new PGlite();
-    await pglite.waitReady;
-    await options.setup?.(pglite);
-  });
+const resetDb = async (db: PGlite) => {
+  const tables = await getTables(db);
 
-  if (options.reset) {
+  if (tables.length) {
+    try {
+      await db.exec('SET session_replication_role = replica');
+      await db.exec(`TRUNCATE TABLE ${tables.join(', ')} RESTART IDENTITY CASCADE`);
+    } finally {
+      await db.exec('SET session_replication_role = DEFAULT');
+    }
+  }
+
+  await db.exec('DISCARD ALL');
+};
+
+type SetupPGliteFn = (options?: { reset?: boolean }) => Promise<PGlite>;
+
+const setupPGlite: SetupPGliteFn = async ({ reset } = {}) => {
+  const pglite = new PGlite();
+  await pglite.waitReady;
+
+  if (reset) {
     beforeEach(async () => {
-      if (!pglite) throw new Error('setupPGlite accessed before beforeAll');
-      await options.reset?.(pglite);
+      await resetDb(pglite);
     });
   }
 
   afterAll(async () => {
     await pglite?.close();
-    pglite = undefined;
   });
 
-  return () => {
-    if (!pglite) throw new Error('setupPGlite accessed before beforeAll');
-    return pglite;
-  };
+  return pglite;
 };
+
+export default setupPGlite;

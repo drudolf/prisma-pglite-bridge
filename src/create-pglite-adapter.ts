@@ -17,7 +17,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { createPoolWithTelemetry } from './create-pool.ts';
+import { createPool } from './create-pool.ts';
 import { AdapterStats, type Stats, type StatsLevel } from './utils/adapter-stats.ts';
 import { nsToMs } from './utils/time.ts';
 
@@ -245,7 +245,7 @@ export const createPgliteAdapter = async (
   const adapterId = Symbol('adapter');
   const adapterStats = statsLevel === 0 ? undefined : new AdapterStats(statsLevel);
 
-  const { pool, pglite, wasmInitMs } = await createPoolWithTelemetry({
+  const { pool, pglite, wasmInitMs } = await createPool({
     dataDir: options.dataDir,
     extensions: options.extensions,
     max: options.max,

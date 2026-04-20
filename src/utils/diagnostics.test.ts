@@ -1,6 +1,7 @@
 import diagnostics_channel from 'node:diagnostics_channel';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { setupPGlite } from '../__tests__/pglite.ts';
+
+import setupPGlite from '../__tests__/pglite.ts';
 import {
   createPool,
   LOCK_WAIT_CHANNEL,
@@ -11,7 +12,7 @@ import {
 
 const queryCh = diagnostics_channel.channel(QUERY_CHANNEL);
 const lockWaitCh = diagnostics_channel.channel(LOCK_WAIT_CHANNEL);
-const getPGlite = setupPGlite();
+const pglite = await setupPGlite();
 
 type PoolResult = Awaited<ReturnType<typeof createPool>>;
 
@@ -20,7 +21,6 @@ let queryPoolB: PoolResult;
 let lockWaitPool: PoolResult;
 
 beforeAll(async () => {
-  const pglite = getPGlite();
   queryPool = await createPool({ pglite });
   queryPoolB = await createPool({ pglite });
   lockWaitPool = await createPool({ pglite, max: 2 });

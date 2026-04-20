@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { setupPGlite } from './__tests__/pglite.ts';
+
+import setupPGlite from './__tests__/pglite.ts';
 import { createPool } from './create-pool.ts';
 
-const getPGlite = setupPGlite();
+const pglite = await setupPGlite();
 
-describe('createPool — adapterId', () => {
+describe('createPool — adapterId', async () => {
   it('returns a symbol, unique per call when omitted', async () => {
-    const pglite = getPGlite();
     const a = await createPool({ pglite });
     const b = await createPool({ pglite });
     try {
@@ -20,10 +20,10 @@ describe('createPool — adapterId', () => {
   });
 
   it('honors the adapterId passed in options', async () => {
-    const id = Symbol('custom');
-    const pool = await createPool({ pglite: getPGlite(), adapterId: id });
+    const adapterId = Symbol('custom');
+    const pool = await createPool({ pglite, adapterId });
     try {
-      expect(pool.adapterId).toBe(id);
+      expect(pool.adapterId).toBe(adapterId);
     } finally {
       await pool.close();
     }
@@ -43,7 +43,7 @@ describe('createPool — wasmInitMs', () => {
   });
 
   it('is undefined when the caller supplies options.pglite', async () => {
-    const pool = await createPool({ pglite: getPGlite() });
+    const pool = await createPool({ pglite });
     try {
       expect(pool.wasmInitMs).toBeUndefined();
     } finally {
