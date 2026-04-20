@@ -13,6 +13,7 @@
  * @packageDocumentation
  */
 
+export type { Stats, StatsLevel } from './adapter-stats.ts';
 // ── High-level API (most users only need this) ──
 export type {
   CreatePgliteAdapterOptions,
@@ -27,9 +28,11 @@ export { createPgliteAdapter } from './create-pglite-adapter.ts';
 export type { CreatePoolOptions, PoolResult } from './create-pool.ts';
 export { createPool } from './create-pool.ts';
 // ── Diagnostics channels (public observability surface) ──
-export type { LockWaitEvent, QueryEvent } from './diagnostics.ts';
-export { LOCK_WAIT_CHANNEL, QUERY_CHANNEL } from './diagnostics.ts';
+export {
+  LOCK_WAIT_CHANNEL,
+  type LockWaitEvent,
+  QUERY_CHANNEL,
+  type QueryEvent,
+} from './diagnostics.ts';
 export { PGliteBridge } from './pglite-bridge.ts';
 export { SessionLock } from './session-lock.ts';
-export type { Stats, Stats1, Stats2, StatsLevel } from './stats-collector.ts';
-export { QUERY_DURATION_WINDOW_SIZE } from './stats-collector.ts';

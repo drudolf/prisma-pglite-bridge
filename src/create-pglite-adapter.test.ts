@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { StatsLevel } from './adapter-stats.ts';
 import type {
   PgliteAdapter,
   ResetDbFn,
@@ -11,7 +12,6 @@ import type {
   SnapshotDbFn,
 } from './create-pglite-adapter.ts';
 import { createPgliteAdapter } from './create-pglite-adapter.ts';
-import type { StatsLevel } from './stats-collector.ts';
 
 let prisma: PrismaClient;
 let resetDb: ResetDbFn;

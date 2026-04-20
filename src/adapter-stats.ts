@@ -1,12 +1,10 @@
 /**
- * Stats collector for adapter lifecycle and query-level telemetry.
+ * Private per-adapter stats state used to power `stats()`.
  *
- * Instantiated at level 1 or 2 (level 0 means no collector exists). Subscribes
- * to `node:diagnostics_channel` channels published by the bridge — see
- * {@link ./diagnostics.ts} — filtered by the owning adapter's `adapterId`.
- * One-shot lifecycle signals (`markWasmInit`, `markSchemaSetup`,
- * `incrementResetDb`, `freeze`) remain direct method calls invoked by the
- * adapter itself.
+ * Instantiated at level 1 or 2 (level 0 means no stats object exists).
+ * Query-level timing is recorded directly by the bridge; one-shot lifecycle
+ * signals (`markWasmInit`, `markSchemaSetup`, `incrementResetDb`, `freeze`)
+ * remain direct method calls invoked by the adapter itself.
  *
  * Percentiles use nearest-rank (no interpolation) over a sliding window of
  * the most recent {@link QUERY_DURATION_WINDOW_SIZE} queries. Lifetime
@@ -16,12 +14,6 @@
  * passes to {@link freeze}.
  */
 import type { PGlite } from '@electric-sql/pglite';
-import {
-  type LockWaitEvent,
-  lockWaitChannel,
-  type QueryEvent,
-  queryChannel,
-} from './diagnostics.ts';
 
 /**
  * Stats collection level.
@@ -32,6 +24,12 @@ import {
  * - `2` — level 1 plus `processRssPeakBytes` and session-lock waits.
  */
 export type StatsLevel = 0 | 1 | 2;
+
+/** Internal bridge-facing telemetry contract. */
+export interface TelemetrySink {
+  recordQuery(durationMs: number, succeeded: boolean): void;
+  recordLockWait(durationMs: number): void;
+}
 
 /**
  * Maximum number of recent query durations retained for percentile
@@ -102,9 +100,8 @@ const percentile = (sorted: readonly number[], p: number): number => {
 
 const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
 
-export class StatsCollector {
+export class AdapterStats implements TelemetrySink {
   private readonly level: 1 | 2;
-  private readonly adapterId: symbol;
   private readonly createdAtHrtime: bigint;
 
   private queryDurations: number[] = [];
@@ -130,16 +127,9 @@ export class StatsCollector {
   private cachedDbSizeBytes?: number;
   private dbSizeFrozen = false;
 
-  constructor(level: 1 | 2, adapterId: symbol) {
+  constructor(level: 1 | 2) {
     this.level = level;
-    this.adapterId = adapterId;
     this.createdAtHrtime = process.hrtime.bigint();
-
-    queryChannel.subscribe(this.onQuery);
-    // Level 1 does not use lock-wait metrics — subscribing would flip
-    // `lockWaitChannel.hasSubscribers` true and cause the bridge to publish
-    // a payload every query with nobody consuming it. Level 2 only.
-    if (level === 2) lockWaitChannel.subscribe(this.onLockWait);
 
     if (level === 2) {
       this.sampleRss();
@@ -147,18 +137,6 @@ export class StatsCollector {
       this.rssInterval.unref();
     }
   }
-
-  private onQuery = (msg: unknown): void => {
-    const e = msg as QueryEvent;
-    if (e.adapterId !== this.adapterId) return;
-    this.recordQuery(e.durationMs, e.succeeded);
-  };
-
-  private onLockWait = (msg: unknown): void => {
-    const e = msg as LockWaitEvent;
-    if (e.adapterId !== this.adapterId) return;
-    this.recordLockWait(e.durationMs);
-  };
 
   recordQuery(durationMs: number, succeeded: boolean): void {
     if (this.frozen) return;
@@ -250,8 +228,6 @@ export class StatsCollector {
   }
 
   stop(): void {
-    queryChannel.unsubscribe(this.onQuery);
-    if (this.level === 2) lockWaitChannel.unsubscribe(this.onLockWait);
     if (this.rssInterval !== undefined) {
       clearInterval(this.rssInterval);
       this.rssInterval = undefined;

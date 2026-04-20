@@ -2,9 +2,10 @@
  * Public `node:diagnostics_channel` surface.
  *
  * The bridge publishes per-query and per-lock-wait events to named
- * channels. The built-in `StatsCollector` subscribes to these when
- * `statsLevel > 0`; external consumers (OpenTelemetry, APM tools,
- * custom loggers) can subscribe without touching the library API.
+ * channels. External consumers (OpenTelemetry, APM tools, custom
+ * loggers) can subscribe without touching the library API. Built-in
+ * adapter stats are updated directly from the bridge and are
+ * independent of these public channels.
  *
  * Publication is gated by `channel.hasSubscribers`, so the hot path
  * pays no cost when nobody is listening. Subscribing opts the consumer

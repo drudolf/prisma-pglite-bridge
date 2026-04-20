@@ -18,6 +18,7 @@
  */
 import { Duplex } from 'node:stream';
 import type { PGlite } from '@electric-sql/pglite';
+import type { TelemetrySink } from './adapter-stats.ts';
 import { lockWaitChannel, queryChannel } from './diagnostics.ts';
 import type { BridgeId, SessionLock } from './session-lock.ts';
 
@@ -366,6 +367,7 @@ export class PGliteBridge extends Duplex {
   private readonly pglite: PGlite;
   private readonly sessionLock?: SessionLock;
   private readonly adapterId?: symbol;
+  private readonly telemetry?: TelemetrySink;
   private readonly bridgeId: BridgeId;
   /** Incoming bytes framed directly from a queued chunk buffer */
   private readonly input = new FrontendMessageBuffer();
@@ -377,11 +379,17 @@ export class PGliteBridge extends Duplex {
   /** Buffered EQP messages awaiting Sync */
   private pipeline: Uint8Array[] = [];
 
-  constructor(pglite: PGlite, sessionLock?: SessionLock, adapterId?: symbol) {
+  constructor(
+    pglite: PGlite,
+    sessionLock?: SessionLock,
+    adapterId?: symbol,
+    telemetry?: TelemetrySink,
+  ) {
     super();
     this.pglite = pglite;
     this.sessionLock = sessionLock;
     this.adapterId = adapterId;
+    this.telemetry = telemetry;
     this.bridgeId = Symbol('bridge');
   }
 
@@ -600,18 +608,22 @@ export class PGliteBridge extends Duplex {
 
   /**
    * Acquires the session, runs the op under `pglite.runExclusive`, and
-   * publishes query / lock-wait events when subscribers are present. When
-   * the adapter has no id (standalone bridge) or nobody is listening on
-   * either channel, skips timing entirely.
+   * updates internal stats and/or publishes diagnostics events when enabled.
+   * When neither internal telemetry nor diagnostics subscribers need timing,
+   * skips timing entirely.
    *
    * `op` returns `false` when an `ErrorResponse` was seen without throwing
    * (protocol-level failure). Combined with the catch branch, both failure
-   * modes flip `succeeded` so `failedQueryCount` stays accurate.
+   * modes flip `succeeded` so both `AdapterStats` and `QUERY_CHANNEL`
+   * payloads stay accurate. `detectErrors` is therefore tied to whether
+   * either of those consumers is active, not to timing in general.
    */
   private async runWithTiming(op: (detectErrors: boolean) => Promise<boolean>): Promise<void> {
-    const wantTiming =
-      this.adapterId !== undefined &&
-      (queryChannel.hasSubscribers || lockWaitChannel.hasSubscribers);
+    const wantTelemetry = this.telemetry !== undefined;
+    const publishQuery = this.adapterId !== undefined && queryChannel.hasSubscribers;
+    const publishLockWait = this.adapterId !== undefined && lockWaitChannel.hasSubscribers;
+    const wantTiming = wantTelemetry || publishQuery || publishLockWait;
+    const detectErrors = wantTelemetry || publishQuery;
 
     if (!wantTiming) {
       await this.acquireSession();
@@ -621,30 +633,38 @@ export class PGliteBridge extends Duplex {
       return;
     }
 
-    const adapterId = this.adapterId as symbol;
+    const adapterId = this.adapterId;
     const lockStart = process.hrtime.bigint();
     await this.acquireSession();
     const queryStart = process.hrtime.bigint();
-    if (lockWaitChannel.hasSubscribers) {
+    const lockWaitMs = nsToMs(queryStart - lockStart);
+    if (wantTelemetry) {
+      this.telemetry?.recordLockWait(lockWaitMs);
+    }
+    if (publishLockWait) {
       lockWaitChannel.publish({
-        adapterId,
-        durationMs: nsToMs(queryStart - lockStart),
+        adapterId: adapterId as symbol,
+        durationMs: lockWaitMs,
       });
     }
 
     let succeeded = true;
     try {
       await this.pglite.runExclusive(async () => {
-        succeeded = await op(true);
+        succeeded = await op(detectErrors);
       });
     } catch (err) {
       succeeded = false;
       throw err;
     } finally {
-      if (queryChannel.hasSubscribers) {
+      const queryMs = nsToMs(process.hrtime.bigint() - queryStart);
+      if (wantTelemetry) {
+        this.telemetry?.recordQuery(queryMs, succeeded);
+      }
+      if (publishQuery) {
         queryChannel.publish({
-          adapterId,
-          durationMs: nsToMs(process.hrtime.bigint() - queryStart),
+          adapterId: adapterId as symbol,
+          durationMs: queryMs,
           succeeded,
         });
       }
