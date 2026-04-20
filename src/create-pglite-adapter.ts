@@ -17,8 +17,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { createPool } from './create-pool.ts';
-import { type Stats, StatsCollector, type StatsLevel } from './stats-collector.ts';
+import { AdapterStats, type Stats, type StatsLevel } from './adapter-stats.ts';
+import { createPoolWithTelemetry } from './create-pool.ts';
 
 const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
 
@@ -244,16 +244,17 @@ export const createPgliteAdapter = async (
     throw new Error(`statsLevel must be 0, 1, or 2; got ${statsLevel}`);
   }
   const adapterId = Symbol('adapter');
-  const collector = statsLevel === 0 ? undefined : new StatsCollector(statsLevel, adapterId);
+  const adapterStats = statsLevel === 0 ? undefined : new AdapterStats(statsLevel);
 
-  const { pool, pglite, wasmInitMs } = await createPool({
+  const { pool, pglite, wasmInitMs } = await createPoolWithTelemetry({
     dataDir: options.dataDir,
     extensions: options.extensions,
     max: options.max,
     adapterId,
+    telemetry: adapterStats,
   });
-  if (collector && wasmInitMs !== undefined) {
-    collector.markWasmInit(wasmInitMs);
+  if (adapterStats && wasmInitMs !== undefined) {
+    adapterStats.markWasmInit(wasmInitMs);
   }
 
   const sentinelStatements = [
@@ -343,7 +344,7 @@ export const createPgliteAdapter = async (
     return false;
   };
 
-  const schemaStart = collector ? process.hrtime.bigint() : undefined;
+  const schemaStart = adapterStats ? process.hrtime.bigint() : undefined;
   if (!options.dataDir || !(await isInitialized())) {
     const sql = await resolveSQL(options);
     const isMigrationSQL = !options.sql;
@@ -379,8 +380,8 @@ export const createPgliteAdapter = async (
       await writeSentinel();
     }
   }
-  if (collector && schemaStart !== undefined) {
-    collector.markSchemaSetup(nsToMs(process.hrtime.bigint() - schemaStart));
+  if (adapterStats && schemaStart !== undefined) {
+    adapterStats.markSchemaSetup(nsToMs(process.hrtime.bigint() - schemaStart));
   }
 
   const adapter = new PrismaPg(pool);
@@ -462,7 +463,7 @@ export const createPgliteAdapter = async (
   };
 
   const resetDb = async () => {
-    collector?.incrementResetDb();
+    adapterStats?.incrementResetDb();
     cachedTables = undefined;
     const tables = await discoverTables();
 
@@ -512,17 +513,17 @@ export const createPgliteAdapter = async (
   const close = async () => {
     if (closingPromise) return closingPromise;
     closingPromise = (async () => {
-      const closeEntry = collector ? process.hrtime.bigint() : undefined;
+      const closeEntry = adapterStats ? process.hrtime.bigint() : undefined;
       await pool.end();
-      if (collector && closeEntry !== undefined) {
-        await collector.freeze(pglite, closeEntry);
+      if (adapterStats && closeEntry !== undefined) {
+        await adapterStats.freeze(pglite, closeEntry);
       }
       await pglite.close();
     })();
     return closingPromise;
   };
 
-  const stats: StatsFn = async () => (collector ? collector.snapshot(pglite) : undefined);
+  const stats: StatsFn = async () => (adapterStats ? adapterStats.snapshot(pglite) : undefined);
 
   return { adapter, pglite, adapterId, resetDb, snapshotDb, resetSnapshot, close, stats };
 };

@@ -483,9 +483,10 @@ the object still returns.
 
 The bridge publishes per-query and per-lock-wait events to
 [`node:diagnostics_channel`](https://nodejs.org/api/diagnostics_channel.html)
-channels. The built-in stats collector subscribes to these when
-`statsLevel > 0`; external consumers (OpenTelemetry, APM, custom
-loggers) can subscribe directly without touching the bridge API.
+channels. Built-in adapter stats are updated directly by the bridge
+when `statsLevel > 0`; external consumers (OpenTelemetry, APM,
+custom loggers) can subscribe directly without touching the bridge
+API.
 
 Publication is gated by `channel.hasSubscribers`, so when nobody
 is listening the hot path pays no timing or payload cost.

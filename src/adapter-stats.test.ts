@@ -1,12 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  type LockWaitEvent,
-  lockWaitChannel,
-  type QueryEvent,
-  queryChannel,
-} from './diagnostics.ts';
-import { QUERY_DURATION_WINDOW_SIZE, StatsCollector } from './stats-collector.ts';
+import { AdapterStats, QUERY_DURATION_WINDOW_SIZE } from './adapter-stats.ts';
 
 type PGliteLike = import('@electric-sql/pglite').PGlite;
 
@@ -15,8 +9,8 @@ const makePglite = (size: bigint = BigInt(12345)) =>
     query: vi.fn().mockResolvedValue({ rows: [{ size }] }),
   }) as unknown as PGliteLike;
 
-const withCollector = async (level: 1 | 2, fn: (c: StatsCollector) => Promise<void>) => {
-  const c = new StatsCollector(level, Symbol('adapter'));
+const withStats = async (level: 1 | 2, fn: (c: AdapterStats) => Promise<void>) => {
+  const c = new AdapterStats(level);
   try {
     await fn(c);
   } finally {
@@ -24,9 +18,9 @@ const withCollector = async (level: 1 | 2, fn: (c: StatsCollector) => Promise<vo
   }
 };
 
-describe('StatsCollector — percentile math', () => {
+describe('AdapterStats — percentile math', () => {
   it('computes p50/p95/max for [10,20,30,40,50]', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       for (const d of [10, 20, 30, 40, 50]) c.recordQuery(d, true);
       const s = await c.snapshot(makePglite());
       expect(s.recentP50QueryMs).toBe(30);
@@ -36,7 +30,7 @@ describe('StatsCollector — percentile math', () => {
   });
 
   it('computes p50/p95/max for [1..100]', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       for (let i = 1; i <= 100; i++) c.recordQuery(i, true);
       const s = await c.snapshot(makePglite());
       expect(s.recentP50QueryMs).toBe(50);
@@ -46,7 +40,7 @@ describe('StatsCollector — percentile math', () => {
   });
 
   it('sorts unsorted input before computing percentiles', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       for (const d of [50, 10, 40, 20, 30]) c.recordQuery(d, true);
       const s = await c.snapshot(makePglite());
       expect(s.recentP50QueryMs).toBe(30);
@@ -56,7 +50,7 @@ describe('StatsCollector — percentile math', () => {
   });
 
   it('n === 0: all percentiles and avg are 0, durationMs > 0 after await', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       await sleep(5);
       const s = await c.snapshot(makePglite());
       expect(s.queryCount).toBe(0);
@@ -69,7 +63,7 @@ describe('StatsCollector — percentile math', () => {
   });
 
   it('n === 1: p50 === p95 === max === the single duration', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       c.recordQuery(42, true);
       const s = await c.snapshot(makePglite());
       expect(s.recentP50QueryMs).toBe(42);
@@ -79,7 +73,7 @@ describe('StatsCollector — percentile math', () => {
   });
 
   it('ring buffer: recent window reflects only last QUERY_DURATION_WINDOW_SIZE entries; lifetime counters stay complete', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       const trimThreshold = QUERY_DURATION_WINDOW_SIZE * 2;
       for (let i = 0; i < trimThreshold; i++) c.recordQuery(1, true);
       for (let i = 0; i < trimThreshold; i++) c.recordQuery(999, true);
@@ -92,9 +86,9 @@ describe('StatsCollector — percentile math', () => {
   });
 });
 
-describe('StatsCollector — counters', () => {
+describe('AdapterStats — counters', () => {
   it('recordQuery is additive across calls', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       c.recordQuery(10, true);
       c.recordQuery(20, true);
       c.recordQuery(30, true);
@@ -107,7 +101,7 @@ describe('StatsCollector — counters', () => {
   });
 
   it('failed query increments queryCount AND failedQueryCount, adds to totalQueryMs', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       c.recordQuery(5, false);
       const s = await c.snapshot(makePglite());
       expect(s.queryCount).toBe(1);
@@ -117,7 +111,7 @@ describe('StatsCollector — counters', () => {
   });
 
   it('markWasmInit: first call wins', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       c.markWasmInit(100);
       c.markWasmInit(999);
       c.markWasmInit(1);
@@ -127,7 +121,7 @@ describe('StatsCollector — counters', () => {
   });
 
   it('markSchemaSetup: first call wins', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       c.markSchemaSetup(42);
       c.markSchemaSetup(777);
       const s = await c.snapshot(makePglite());
@@ -136,7 +130,7 @@ describe('StatsCollector — counters', () => {
   });
 
   it('incrementResetDb counts each call', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       c.incrementResetDb();
       c.incrementResetDb();
       c.incrementResetDb();
@@ -146,9 +140,9 @@ describe('StatsCollector — counters', () => {
   });
 });
 
-describe('StatsCollector — snapshot level gating', () => {
+describe('AdapterStats — snapshot level gating', () => {
   it('level 1: statsLevel === 1 and level-2 fields are undefined', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       const s = await c.snapshot(makePglite());
       expect(s.statsLevel).toBe(1);
       const bag = s as unknown as Record<string, unknown>;
@@ -161,7 +155,7 @@ describe('StatsCollector — snapshot level gating', () => {
   });
 
   it('level 2: statsLevel === 2 and level-2 fields are defined with session-lock defaults', async () => {
-    await withCollector(2, async (c) => {
+    await withStats(2, async (c) => {
       const s = await c.snapshot(makePglite());
       if (s.statsLevel !== 2) throw new Error('expected level 2');
       expect(s.processRssPeakBytes).toBeGreaterThan(0);
@@ -173,9 +167,9 @@ describe('StatsCollector — snapshot level gating', () => {
   });
 });
 
-describe('StatsCollector — pglite query robustness', () => {
+describe('AdapterStats — pglite query robustness', () => {
   it('snapshot parses dbSizeBytes from the single column of rows[0]', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       const pglite = makePglite(BigInt(54321));
       const s = await c.snapshot(pglite);
       expect(s.dbSizeBytes).toBe(54321);
@@ -183,7 +177,7 @@ describe('StatsCollector — pglite query robustness', () => {
   });
 
   it('snapshot tolerates a rejecting pglite.query: dbSizeBytes undefined, rest returns', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       c.recordQuery(10, true);
       const pglite = {
         query: vi.fn().mockRejectedValueOnce(new Error('broken')),
@@ -197,9 +191,9 @@ describe('StatsCollector — pglite query robustness', () => {
   });
 });
 
-describe('StatsCollector — freeze()', () => {
+describe('AdapterStats — freeze()', () => {
   it('post-freeze snapshots use cached values and do not call pglite.query', async () => {
-    const c = new StatsCollector(1, Symbol('adapter'));
+    const c = new AdapterStats(1);
     try {
       const pglite = makePglite(BigInt(99999));
       await c.freeze(pglite, process.hrtime.bigint());
@@ -217,7 +211,7 @@ describe('StatsCollector — freeze()', () => {
   });
 
   it('freeze uses the passed-in closeEntryHrtime for durationMs (not invocation time)', async () => {
-    const c = new StatsCollector(1, Symbol('adapter'));
+    const c = new AdapterStats(1);
     try {
       const earlyTimestamp = process.hrtime.bigint();
       await sleep(50);
@@ -230,7 +224,7 @@ describe('StatsCollector — freeze()', () => {
   });
 
   it('seals dbSizeFrozen even when queryDbSize rejects', async () => {
-    const c = new StatsCollector(1, Symbol('adapter'));
+    const c = new AdapterStats(1);
     try {
       const throwing = {
         query: vi.fn().mockRejectedValue(new Error('boom')),
@@ -249,7 +243,7 @@ describe('StatsCollector — freeze()', () => {
   });
 
   it('ignores recordQuery / recordLockWait / incrementResetDb after freeze', async () => {
-    const c = new StatsCollector(2, Symbol('adapter'));
+    const c = new AdapterStats(2);
     try {
       c.recordQuery(10, true);
       c.recordLockWait(5);
@@ -274,7 +268,7 @@ describe('StatsCollector — freeze()', () => {
   });
 });
 
-describe('StatsCollector — level 2 RSS sampler', () => {
+describe('AdapterStats — level 2 RSS sampler', () => {
   let memSpy: ReturnType<typeof vi.spyOn> | undefined;
 
   beforeEach(() => {
@@ -287,7 +281,7 @@ describe('StatsCollector — level 2 RSS sampler', () => {
 
   it('short-run: memoryUsage is called exactly twice (construct + freeze) and peak > 0', async () => {
     memSpy = vi.spyOn(process, 'memoryUsage');
-    const c = new StatsCollector(2, Symbol('adapter'));
+    const c = new AdapterStats(2);
     try {
       await c.freeze(makePglite(), process.hrtime.bigint());
       expect(memSpy.mock.calls.length).toBe(2);
@@ -303,7 +297,7 @@ describe('StatsCollector — level 2 RSS sampler', () => {
     vi.useFakeTimers();
     try {
       memSpy = vi.spyOn(process, 'memoryUsage');
-      const c = new StatsCollector(2, Symbol('adapter'));
+      const c = new AdapterStats(2);
       try {
         const afterCtor = memSpy.mock.calls.length;
         vi.advanceTimersByTime(500);
@@ -323,9 +317,9 @@ describe('StatsCollector — level 2 RSS sampler', () => {
   });
 });
 
-describe('StatsCollector — queryDbSize robustness', () => {
+describe('AdapterStats — queryDbSize robustness', () => {
   it('returns undefined when pg_database_size yields a non-numeric value', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       const pglite = {
         query: vi.fn().mockResolvedValue({ rows: [{ size: 'not-a-number' }] }),
       } as unknown as PGliteLike;
@@ -335,7 +329,7 @@ describe('StatsCollector — queryDbSize robustness', () => {
   });
 
   it('returns undefined when the single column is null', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       const pglite = {
         query: vi.fn().mockResolvedValue({ rows: [{ size: null }] }),
       } as unknown as PGliteLike;
@@ -345,7 +339,7 @@ describe('StatsCollector — queryDbSize robustness', () => {
   });
 
   it('returns undefined when rows is empty', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       const pglite = {
         query: vi.fn().mockResolvedValue({ rows: [] }),
       } as unknown as PGliteLike;
@@ -355,9 +349,9 @@ describe('StatsCollector — queryDbSize robustness', () => {
   });
 });
 
-describe('StatsCollector — level 2 session-lock accumulation', () => {
+describe('AdapterStats — level 2 session-lock accumulation', () => {
   it('recordLockWait(5), (15), (10) produces total=30, max=15, count=3, avg=10', async () => {
-    await withCollector(2, async (c) => {
+    await withStats(2, async (c) => {
       c.recordLockWait(5);
       c.recordLockWait(15);
       c.recordLockWait(10);
@@ -371,7 +365,7 @@ describe('StatsCollector — level 2 session-lock accumulation', () => {
   });
 
   it('level 1 recordLockWait is a no-op and level-2 fields remain undefined', async () => {
-    await withCollector(1, async (c) => {
+    await withStats(1, async (c) => {
       c.recordLockWait(100);
       c.recordLockWait(200);
       const s = await c.snapshot(makePglite());
@@ -384,102 +378,21 @@ describe('StatsCollector — level 2 session-lock accumulation', () => {
   });
 });
 
-describe('StatsCollector — channel subscription', () => {
-  it('ingests QUERY_CHANNEL events for its adapterId', async () => {
-    const adapterId = Symbol('adapter');
-    const c = new StatsCollector(1, adapterId);
-    try {
-      const event: QueryEvent = { adapterId, durationMs: 17, succeeded: true };
-      queryChannel.publish(event);
-      const s = await c.snapshot(makePglite());
-      expect(s.queryCount).toBe(1);
-      expect(s.totalQueryMs).toBe(17);
-    } finally {
-      c.stop();
-    }
-  });
-
-  it('ignores QUERY_CHANNEL events tagged with a different adapterId', async () => {
-    const mine = Symbol('adapter');
-    const other = Symbol('adapter');
-    const c = new StatsCollector(1, mine);
-    try {
-      const event: QueryEvent = { adapterId: other, durationMs: 99, succeeded: true };
-      queryChannel.publish(event);
-      const s = await c.snapshot(makePglite());
-      expect(s.queryCount).toBe(0);
-      expect(s.totalQueryMs).toBe(0);
-    } finally {
-      c.stop();
-    }
-  });
-
-  it('two collectors in the same process see only their own events', async () => {
-    const idA = Symbol('adapter-a');
-    const idB = Symbol('adapter-b');
-    const a = new StatsCollector(1, idA);
-    const b = new StatsCollector(1, idB);
-    try {
-      queryChannel.publish({ adapterId: idA, durationMs: 10, succeeded: true } as QueryEvent);
-      queryChannel.publish({ adapterId: idB, durationMs: 20, succeeded: true } as QueryEvent);
-      queryChannel.publish({ adapterId: idB, durationMs: 30, succeeded: false } as QueryEvent);
-      const sa = await a.snapshot(makePglite());
-      const sb = await b.snapshot(makePglite());
-      expect(sa.queryCount).toBe(1);
-      expect(sa.totalQueryMs).toBe(10);
-      expect(sa.failedQueryCount).toBe(0);
-      expect(sb.queryCount).toBe(2);
-      expect(sb.totalQueryMs).toBe(50);
-      expect(sb.failedQueryCount).toBe(1);
-    } finally {
-      a.stop();
-      b.stop();
-    }
-  });
-
-  it('level 2 ingests LOCK_WAIT_CHANNEL events', async () => {
-    const adapterId = Symbol('adapter');
-    const c = new StatsCollector(2, adapterId);
-    try {
-      lockWaitChannel.publish({ adapterId, durationMs: 7 } as LockWaitEvent);
-      lockWaitChannel.publish({ adapterId, durationMs: 3 } as LockWaitEvent);
-      const s = await c.snapshot(makePglite());
-      if (s.statsLevel !== 2) throw new Error('expected level 2');
-      expect(s.sessionLockAcquisitionCount).toBe(2);
-      expect(s.totalSessionLockWaitMs).toBe(10);
-    } finally {
-      c.stop();
-    }
-  });
-});
-
-describe('StatsCollector — lifecycle unsubscribe', () => {
-  it('stop() removes the QUERY_CHANNEL subscription (level 1)', () => {
-    expect(queryChannel.hasSubscribers).toBe(false);
-    const c = new StatsCollector(1, Symbol('adapter'));
-    expect(queryChannel.hasSubscribers).toBe(true);
-    expect(lockWaitChannel.hasSubscribers).toBe(false);
+describe('AdapterStats — lifecycle stop', () => {
+  it('stop() is a no-op for level 1 state beyond cleanup safety', () => {
+    const c = new AdapterStats(1);
     c.stop();
-    expect(queryChannel.hasSubscribers).toBe(false);
-  });
-
-  it('stop() removes both channel subscriptions at level 2', () => {
-    expect(queryChannel.hasSubscribers).toBe(false);
-    expect(lockWaitChannel.hasSubscribers).toBe(false);
-    const c = new StatsCollector(2, Symbol('adapter'));
-    expect(queryChannel.hasSubscribers).toBe(true);
-    expect(lockWaitChannel.hasSubscribers).toBe(true);
     c.stop();
-    expect(queryChannel.hasSubscribers).toBe(false);
-    expect(lockWaitChannel.hasSubscribers).toBe(false);
   });
 
-  it('freeze() unsubscribes via stop() (level 2)', async () => {
-    const c = new StatsCollector(2, Symbol('adapter'));
-    expect(queryChannel.hasSubscribers).toBe(true);
-    expect(lockWaitChannel.hasSubscribers).toBe(true);
+  it('freeze() retains cached level-2 state after stop() cleanup', async () => {
+    const c = new AdapterStats(2);
+    c.recordQuery(11, true);
+    c.recordLockWait(7);
     await c.freeze(makePglite(), process.hrtime.bigint());
-    expect(queryChannel.hasSubscribers).toBe(false);
-    expect(lockWaitChannel.hasSubscribers).toBe(false);
+    const s = await c.snapshot(makePglite());
+    if (s.statsLevel !== 2) throw new Error('expected level 2');
+    expect(s.queryCount).toBe(1);
+    expect(s.totalSessionLockWaitMs).toBe(7);
   });
 });

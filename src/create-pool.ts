@@ -9,6 +9,7 @@
  */
 import { type Extensions, PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
+import type { TelemetrySink } from './adapter-stats.ts';
 import { PGliteBridge } from './pglite-bridge.ts';
 import { SessionLock } from './session-lock.ts';
 
@@ -42,6 +43,10 @@ export interface CreatePoolOptions {
    */
   adapterId?: symbol;
 }
+
+type CreateBridgePoolOptions = CreatePoolOptions & {
+  telemetry?: TelemetrySink;
+};
 
 export interface PoolResult {
   /** pg.Pool backed by PGlite — pass to PrismaPg */
@@ -88,10 +93,11 @@ export interface PoolResult {
  *
  * @see {@link createPgliteAdapter} for the higher-level API with schema management.
  */
-export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolResult> => {
+const createBridgePool = async (options: CreateBridgePoolOptions = {}): Promise<PoolResult> => {
   const { dataDir, extensions, max = 1 } = options;
   const adapterId = options.adapterId ?? Symbol('adapter');
   const ownsInstance = !options.pglite;
+  const { telemetry } = options;
 
   let pglite: PGlite;
   let wasmInitMs: number | undefined;
@@ -116,7 +122,7 @@ export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolR
         user: 'postgres',
         database: 'postgres',
         stream: (() =>
-          new PGliteBridge(pglite, sessionLock, adapterId)) as pg.ClientConfig['stream'],
+          new PGliteBridge(pglite, sessionLock, adapterId, telemetry)) as pg.ClientConfig['stream'],
       });
     }
   };
@@ -135,3 +141,11 @@ export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolR
 
   return { pool, pglite, adapterId, wasmInitMs, close };
 };
+
+export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolResult> =>
+  createBridgePool(options);
+
+/** @internal Adapter-owned stats wiring for bridge-backed pools. */
+export const createPoolWithTelemetry = async (
+  options: CreateBridgePoolOptions = {},
+): Promise<PoolResult> => createBridgePool(options);
