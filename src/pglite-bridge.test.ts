@@ -1,37 +1,35 @@
-import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { setupPGlite } from './__tests__/pglite.ts';
 import { BackendMessageFramer, FrontendMessageBuffer, PGliteBridge } from './pglite-bridge.ts';
 
-const { Client, Pool } = pg;
+const getPGlite = setupPGlite({
+  setup: async (pglite) => {
+    await pglite.exec('CREATE TABLE IF NOT EXISTS conc_test (id serial PRIMARY KEY, val int)');
+  },
+  reset: async (pglite) => {
+    await pglite.exec('DROP TABLE IF EXISTS bridge_test CASCADE');
+    await pglite.exec('DROP TABLE IF EXISTS shared_test CASCADE');
+    await pglite.exec('TRUNCATE TABLE conc_test RESTART IDENTITY');
+  },
+});
 
-const createClient = (pglite: PGlite) =>
-  new Client({
+const createClient = () =>
+  new pg.Client({
     user: 'postgres',
     database: 'postgres',
-    stream: () => new PGliteBridge(pglite),
+    stream: () => new PGliteBridge(getPGlite()),
   });
 
 describe('PGliteBridge', () => {
-  let pglite: PGlite;
-
-  beforeAll(async () => {
-    pglite = new PGlite();
-    await pglite.waitReady;
-  });
-
-  afterAll(async () => {
-    await pglite.close();
-  });
-
   it('pg.Client connects through the bridge', async () => {
-    const client = createClient(pglite);
+    const client = createClient();
     await client.connect();
     await client.end();
   });
 
   it('executes a simple query', async () => {
-    const client = createClient(pglite);
+    const client = createClient();
     await client.connect();
     const { rows } = await client.query('SELECT 1 + 1 AS result');
     expect(rows[0]?.result).toBe(2);
@@ -39,7 +37,7 @@ describe('PGliteBridge', () => {
   });
 
   it('executes parameterized queries', async () => {
-    const client = createClient(pglite);
+    const client = createClient();
     await client.connect();
     const { rows } = await client.query('SELECT $1::int + $2::int AS result', [3, 4]);
     expect(rows[0]?.result).toBe(7);
@@ -47,7 +45,7 @@ describe('PGliteBridge', () => {
   });
 
   it('handles DDL and DML', async () => {
-    const client = createClient(pglite);
+    const client = createClient();
     await client.connect();
 
     await client.query('CREATE TABLE IF NOT EXISTS bridge_test (id serial PRIMARY KEY, name text)');
@@ -60,13 +58,13 @@ describe('PGliteBridge', () => {
   });
 
   it('multiple sequential clients share the same PGlite', async () => {
-    const c1 = createClient(pglite);
+    const c1 = createClient();
     await c1.connect();
     await c1.query('CREATE TABLE IF NOT EXISTS shared_test (id serial PRIMARY KEY, val int)');
     await c1.query('INSERT INTO shared_test (val) VALUES (42)');
     await c1.end();
 
-    const c2 = createClient(pglite);
+    const c2 = createClient();
     await c2.connect();
     const { rows } = await c2.query('SELECT val FROM shared_test');
     expect(rows[0]?.val).toBe(42);
@@ -75,7 +73,7 @@ describe('PGliteBridge', () => {
   });
 
   it('propagates SQL errors correctly', async () => {
-    const client = createClient(pglite);
+    const client = createClient();
     await client.connect();
     await expect(client.query('SELECT * FROM nonexistent_table')).rejects.toThrow(/does not exist/);
     // Client should still be usable after error
@@ -86,31 +84,19 @@ describe('PGliteBridge', () => {
 });
 
 describe('PGliteBridge concurrency', () => {
-  let pglite: PGlite;
-
-  beforeAll(async () => {
-    pglite = new PGlite();
-    await pglite.waitReady;
-    await pglite.exec('CREATE TABLE conc_test (id serial PRIMARY KEY, val int)');
-  });
-
-  afterAll(async () => {
-    await pglite.close();
-  });
-
   it('concurrent parameterized queries through pool do not cause portal errors', async () => {
-    const pool = new Pool({
-      Client: class extends Client {
+    const pool = new pg.Pool({
+      Client: class extends pg.Client {
         constructor(config?: string | pg.ClientConfig) {
           const cfg = typeof config === 'string' ? { connectionString: config } : (config ?? {});
           super({
             ...cfg,
             user: 'postgres',
             database: 'postgres',
-            stream: () => new PGliteBridge(pglite),
+            stream: () => new PGliteBridge(getPGlite()),
           } as pg.ClientConfig);
         }
-      } as typeof Client,
+      } as typeof pg.Client,
       max: 5,
     });
 
@@ -127,18 +113,18 @@ describe('PGliteBridge concurrency', () => {
   });
 
   it('concurrent inserts produce correct row counts', async () => {
-    const pool = new Pool({
-      Client: class extends Client {
+    const pool = new pg.Pool({
+      Client: class extends pg.Client {
         constructor(config?: string | pg.ClientConfig) {
           const cfg = typeof config === 'string' ? { connectionString: config } : (config ?? {});
           super({
             ...cfg,
             user: 'postgres',
             database: 'postgres',
-            stream: () => new PGliteBridge(pglite),
+            stream: () => new PGliteBridge(getPGlite()),
           } as pg.ClientConfig);
         }
-      } as typeof Client,
+      } as typeof pg.Client,
       max: 3,
     });
 

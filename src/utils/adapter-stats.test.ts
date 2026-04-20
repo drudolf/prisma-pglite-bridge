@@ -1,13 +1,7 @@
-import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdapterStats, QUERY_DURATION_WINDOW_SIZE } from './adapter-stats.ts';
 
-type PGliteLike = import('@electric-sql/pglite').PGlite;
-
-const makePglite = (size: bigint = BigInt(12345)) =>
-  ({
-    query: vi.fn().mockResolvedValue({ rows: [{ size }] }),
-  }) as unknown as PGliteLike;
+let pglite: Parameters<AdapterStats['snapshot']>[0];
 
 const withStats = async (level: 1 | 2, fn: (c: AdapterStats) => Promise<void>) => {
   const c = new AdapterStats(level);
@@ -18,11 +12,15 @@ const withStats = async (level: 1 | 2, fn: (c: AdapterStats) => Promise<void>) =
   }
 };
 
+beforeEach(() => {
+  pglite = { query: vi.fn().mockResolvedValue({ rows: [{ size: 12345n }] }) };
+});
+
 describe('AdapterStats — percentile math', () => {
   it('computes p50/p95/max for [10,20,30,40,50]', async () => {
     await withStats(1, async (c) => {
       for (const d of [10, 20, 30, 40, 50]) c.recordQuery(d, true);
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       expect(s.recentP50QueryMs).toBe(30);
       expect(s.recentP95QueryMs).toBe(50);
       expect(s.recentMaxQueryMs).toBe(50);
@@ -32,7 +30,7 @@ describe('AdapterStats — percentile math', () => {
   it('computes p50/p95/max for [1..100]', async () => {
     await withStats(1, async (c) => {
       for (let i = 1; i <= 100; i++) c.recordQuery(i, true);
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       expect(s.recentP50QueryMs).toBe(50);
       expect(s.recentP95QueryMs).toBe(95);
       expect(s.recentMaxQueryMs).toBe(100);
@@ -42,7 +40,7 @@ describe('AdapterStats — percentile math', () => {
   it('sorts unsorted input before computing percentiles', async () => {
     await withStats(1, async (c) => {
       for (const d of [50, 10, 40, 20, 30]) c.recordQuery(d, true);
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       expect(s.recentP50QueryMs).toBe(30);
       expect(s.recentP95QueryMs).toBe(50);
       expect(s.recentMaxQueryMs).toBe(50);
@@ -50,22 +48,29 @@ describe('AdapterStats — percentile math', () => {
   });
 
   it('n === 0: all percentiles and avg are 0, durationMs > 0 after await', async () => {
-    await withStats(1, async (c) => {
-      await sleep(5);
-      const s = await c.snapshot(makePglite());
+    const hrtimeSpy = vi.spyOn(process.hrtime, 'bigint');
+    hrtimeSpy.mockReturnValueOnce(1_000_000_000n);
+
+    const c = new AdapterStats(1);
+    try {
+      hrtimeSpy.mockReturnValueOnce(1_005_000_000n);
+      const s = await c.snapshot(pglite);
       expect(s.queryCount).toBe(0);
       expect(s.avgQueryMs).toBe(0);
       expect(s.recentP50QueryMs).toBe(0);
       expect(s.recentP95QueryMs).toBe(0);
       expect(s.recentMaxQueryMs).toBe(0);
       expect(s.durationMs).toBeGreaterThan(0);
-    });
+    } finally {
+      hrtimeSpy.mockRestore();
+      c.stop();
+    }
   });
 
   it('n === 1: p50 === p95 === max === the single duration', async () => {
     await withStats(1, async (c) => {
       c.recordQuery(42, true);
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       expect(s.recentP50QueryMs).toBe(42);
       expect(s.recentP95QueryMs).toBe(42);
       expect(s.recentMaxQueryMs).toBe(42);
@@ -77,7 +82,7 @@ describe('AdapterStats — percentile math', () => {
       const trimThreshold = QUERY_DURATION_WINDOW_SIZE * 2;
       for (let i = 0; i < trimThreshold; i++) c.recordQuery(1, true);
       for (let i = 0; i < trimThreshold; i++) c.recordQuery(999, true);
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       expect(s.queryCount).toBe(trimThreshold * 2);
       expect(s.recentP50QueryMs).toBe(999);
       expect(s.recentP95QueryMs).toBe(999);
@@ -92,7 +97,7 @@ describe('AdapterStats — counters', () => {
       c.recordQuery(10, true);
       c.recordQuery(20, true);
       c.recordQuery(30, true);
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       expect(s.queryCount).toBe(3);
       expect(s.totalQueryMs).toBe(60);
       expect(s.avgQueryMs).toBe(20);
@@ -103,7 +108,7 @@ describe('AdapterStats — counters', () => {
   it('failed query increments queryCount AND failedQueryCount, adds to totalQueryMs', async () => {
     await withStats(1, async (c) => {
       c.recordQuery(5, false);
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       expect(s.queryCount).toBe(1);
       expect(s.failedQueryCount).toBe(1);
       expect(s.totalQueryMs).toBe(5);
@@ -115,7 +120,7 @@ describe('AdapterStats — counters', () => {
       c.markWasmInit(100);
       c.markWasmInit(999);
       c.markWasmInit(1);
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       expect(s.wasmInitMs).toBe(100);
     });
   });
@@ -124,7 +129,7 @@ describe('AdapterStats — counters', () => {
     await withStats(1, async (c) => {
       c.markSchemaSetup(42);
       c.markSchemaSetup(777);
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       expect(s.schemaSetupMs).toBe(42);
     });
   });
@@ -134,7 +139,7 @@ describe('AdapterStats — counters', () => {
       c.incrementResetDb();
       c.incrementResetDb();
       c.incrementResetDb();
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       expect(s.resetDbCalls).toBe(3);
     });
   });
@@ -143,20 +148,19 @@ describe('AdapterStats — counters', () => {
 describe('AdapterStats — snapshot level gating', () => {
   it('level 1: statsLevel === 1 and level-2 fields are undefined', async () => {
     await withStats(1, async (c) => {
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       expect(s.statsLevel).toBe(1);
-      const bag = s as unknown as Record<string, unknown>;
-      expect(bag.processRssPeakBytes).toBeUndefined();
-      expect(bag.totalSessionLockWaitMs).toBeUndefined();
-      expect(bag.sessionLockAcquisitionCount).toBeUndefined();
-      expect(bag.avgSessionLockWaitMs).toBeUndefined();
-      expect(bag.maxSessionLockWaitMs).toBeUndefined();
+      expect(s).not.toHaveProperty('processRssPeakBytes');
+      expect(s).not.toHaveProperty('totalSessionLockWaitMs');
+      expect(s).not.toHaveProperty('sessionLockAcquisitionCount');
+      expect(s).not.toHaveProperty('avgSessionLockWaitMs');
+      expect(s).not.toHaveProperty('maxSessionLockWaitMs');
     });
   });
 
   it('level 2: statsLevel === 2 and level-2 fields are defined with session-lock defaults', async () => {
     await withStats(2, async (c) => {
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       if (s.statsLevel !== 2) throw new Error('expected level 2');
       expect(s.processRssPeakBytes).toBeGreaterThan(0);
       expect(s.totalSessionLockWaitMs).toBe(0);
@@ -170,7 +174,7 @@ describe('AdapterStats — snapshot level gating', () => {
 describe('AdapterStats — pglite query robustness', () => {
   it('snapshot parses dbSizeBytes from the single column of rows[0]', async () => {
     await withStats(1, async (c) => {
-      const pglite = makePglite(BigInt(54321));
+      vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 54321n }] });
       const s = await c.snapshot(pglite);
       expect(s.dbSizeBytes).toBe(54321);
     });
@@ -179,9 +183,7 @@ describe('AdapterStats — pglite query robustness', () => {
   it('snapshot tolerates a rejecting pglite.query: dbSizeBytes undefined, rest returns', async () => {
     await withStats(1, async (c) => {
       c.recordQuery(10, true);
-      const pglite = {
-        query: vi.fn().mockRejectedValueOnce(new Error('broken')),
-      } as unknown as PGliteLike;
+      vi.mocked(pglite.query).mockRejectedValueOnce(new Error('broken'));
       const s = await c.snapshot(pglite);
       expect(s.dbSizeBytes).toBeUndefined();
       expect(s.queryCount).toBe(1);
@@ -195,14 +197,14 @@ describe('AdapterStats — freeze()', () => {
   it('post-freeze snapshots use cached values and do not call pglite.query', async () => {
     const c = new AdapterStats(1);
     try {
-      const pglite = makePglite(BigInt(99999));
+      vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 99999n }] });
       await c.freeze(pglite, process.hrtime.bigint());
-      const callsAfterFreeze = (pglite.query as ReturnType<typeof vi.fn>).mock.calls.length;
+      const callsAfterFreeze = vi.mocked(pglite.query).mock.calls.length;
 
       const s1 = await c.snapshot(pglite);
       const s2 = await c.snapshot(pglite);
 
-      expect((pglite.query as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterFreeze);
+      expect(vi.mocked(pglite.query).mock.calls.length).toBe(callsAfterFreeze);
       expect(s1.dbSizeBytes).toBe(99999);
       expect(s2.dbSizeBytes).toBe(99999);
     } finally {
@@ -211,14 +213,17 @@ describe('AdapterStats — freeze()', () => {
   });
 
   it('freeze uses the passed-in closeEntryHrtime for durationMs (not invocation time)', async () => {
+    const hrtimeSpy = vi.spyOn(process.hrtime, 'bigint');
+    hrtimeSpy.mockReturnValueOnce(1_000_000_000n);
+
     const c = new AdapterStats(1);
     try {
-      const earlyTimestamp = process.hrtime.bigint();
-      await sleep(50);
-      await c.freeze(makePglite(), earlyTimestamp);
-      const s = await c.snapshot(makePglite());
-      expect(s.durationMs).toBeLessThan(50);
+      const earlyTimestamp = 1_010_000_000n;
+      await c.freeze(pglite, earlyTimestamp);
+      const s = await c.snapshot(pglite);
+      expect(s.durationMs).toBe(10);
     } finally {
+      hrtimeSpy.mockRestore();
       c.stop();
     }
   });
@@ -226,17 +231,15 @@ describe('AdapterStats — freeze()', () => {
   it('seals dbSizeFrozen even when queryDbSize rejects', async () => {
     const c = new AdapterStats(1);
     try {
-      const throwing = {
-        query: vi.fn().mockRejectedValue(new Error('boom')),
-      } as unknown as PGliteLike;
+      vi.mocked(pglite.query).mockRejectedValue(new Error('boom'));
 
-      await c.freeze(throwing, process.hrtime.bigint());
-      const callsAfterFreeze = (throwing.query as ReturnType<typeof vi.fn>).mock.calls.length;
+      await c.freeze(pglite, process.hrtime.bigint());
+      const callsAfterFreeze = vi.mocked(pglite.query).mock.calls.length;
 
-      await c.snapshot(throwing);
-      await c.snapshot(throwing);
+      await c.snapshot(pglite);
+      await c.snapshot(pglite);
 
-      expect((throwing.query as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterFreeze);
+      expect(vi.mocked(pglite.query).mock.calls.length).toBe(callsAfterFreeze);
     } finally {
       c.stop();
     }
@@ -248,14 +251,14 @@ describe('AdapterStats — freeze()', () => {
       c.recordQuery(10, true);
       c.recordLockWait(5);
       c.incrementResetDb();
-      await c.freeze(makePglite(), process.hrtime.bigint());
-      const before = await c.snapshot(makePglite());
+      await c.freeze(pglite, process.hrtime.bigint());
+      const before = await c.snapshot(pglite);
       if (before.statsLevel !== 2) throw new Error('expected level 2');
 
       c.recordQuery(999, false);
       c.recordLockWait(999);
       c.incrementResetDb();
-      const after = await c.snapshot(makePglite());
+      const after = await c.snapshot(pglite);
       if (after.statsLevel !== 2) throw new Error('expected level 2');
 
       expect(after.queryCount).toBe(before.queryCount);
@@ -283,9 +286,9 @@ describe('AdapterStats — level 2 RSS sampler', () => {
     memSpy = vi.spyOn(process, 'memoryUsage');
     const c = new AdapterStats(2);
     try {
-      await c.freeze(makePglite(), process.hrtime.bigint());
+      await c.freeze(pglite, process.hrtime.bigint());
       expect(memSpy.mock.calls.length).toBe(2);
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       if (s.statsLevel !== 2) throw new Error('expected level 2');
       expect(s.processRssPeakBytes).toBeGreaterThan(0);
     } finally {
@@ -320,9 +323,10 @@ describe('AdapterStats — level 2 RSS sampler', () => {
 describe('AdapterStats — queryDbSize robustness', () => {
   it('returns undefined when pg_database_size yields a non-numeric value', async () => {
     await withStats(1, async (c) => {
-      const pglite = {
-        query: vi.fn().mockResolvedValue({ rows: [{ size: 'not-a-number' }] }),
-      } as unknown as PGliteLike;
+      vi.mocked(pglite.query).mockResolvedValueOnce({
+        fields: [],
+        rows: [{ size: 'not-a-number' }],
+      });
       const s = await c.snapshot(pglite);
       expect(s.dbSizeBytes).toBeUndefined();
     });
@@ -330,9 +334,7 @@ describe('AdapterStats — queryDbSize robustness', () => {
 
   it('returns undefined when the single column is null', async () => {
     await withStats(1, async (c) => {
-      const pglite = {
-        query: vi.fn().mockResolvedValue({ rows: [{ size: null }] }),
-      } as unknown as PGliteLike;
+      vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: null }] });
       const s = await c.snapshot(pglite);
       expect(s.dbSizeBytes).toBeUndefined();
     });
@@ -340,9 +342,7 @@ describe('AdapterStats — queryDbSize robustness', () => {
 
   it('returns undefined when rows is empty', async () => {
     await withStats(1, async (c) => {
-      const pglite = {
-        query: vi.fn().mockResolvedValue({ rows: [] }),
-      } as unknown as PGliteLike;
+      vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [] });
       const s = await c.snapshot(pglite);
       expect(s.dbSizeBytes).toBeUndefined();
     });
@@ -355,7 +355,7 @@ describe('AdapterStats — level 2 session-lock accumulation', () => {
       c.recordLockWait(5);
       c.recordLockWait(15);
       c.recordLockWait(10);
-      const s = await c.snapshot(makePglite());
+      const s = await c.snapshot(pglite);
       if (s.statsLevel !== 2) throw new Error('expected level 2');
       expect(s.totalSessionLockWaitMs).toBe(30);
       expect(s.maxSessionLockWaitMs).toBe(15);
@@ -368,12 +368,11 @@ describe('AdapterStats — level 2 session-lock accumulation', () => {
     await withStats(1, async (c) => {
       c.recordLockWait(100);
       c.recordLockWait(200);
-      const s = await c.snapshot(makePglite());
-      const bag = s as unknown as Record<string, unknown>;
-      expect(bag.totalSessionLockWaitMs).toBeUndefined();
-      expect(bag.maxSessionLockWaitMs).toBeUndefined();
-      expect(bag.sessionLockAcquisitionCount).toBeUndefined();
-      expect(bag.avgSessionLockWaitMs).toBeUndefined();
+      const s = await c.snapshot(pglite);
+      expect(s).not.toHaveProperty('totalSessionLockWaitMs');
+      expect(s).not.toHaveProperty('maxSessionLockWaitMs');
+      expect(s).not.toHaveProperty('sessionLockAcquisitionCount');
+      expect(s).not.toHaveProperty('avgSessionLockWaitMs');
     });
   });
 });
@@ -389,8 +388,8 @@ describe('AdapterStats — lifecycle stop', () => {
     const c = new AdapterStats(2);
     c.recordQuery(11, true);
     c.recordLockWait(7);
-    await c.freeze(makePglite(), process.hrtime.bigint());
-    const s = await c.snapshot(makePglite());
+    await c.freeze(pglite, process.hrtime.bigint());
+    const s = await c.snapshot(pglite);
     if (s.statsLevel !== 2) throw new Error('expected level 2');
     expect(s.queryCount).toBe(1);
     expect(s.totalSessionLockWaitMs).toBe(7);

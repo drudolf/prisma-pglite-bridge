@@ -14,8 +14,6 @@ import type { TelemetrySink } from './utils/adapter-stats.ts';
 import { SessionLock } from './utils/session-lock.ts';
 import { nsToMs } from './utils/time.ts';
 
-const { Client, Pool } = pg;
-
 export interface CreatePoolOptions {
   /** PGlite data directory. Omit for in-memory. */
   dataDir?: string;
@@ -41,11 +39,9 @@ export interface CreatePoolOptions {
    * same process. A fresh `Symbol('adapter')` is generated if omitted.
    */
   adapterId?: symbol;
-}
 
-type CreateBridgePoolOptions = CreatePoolOptions & {
   telemetry?: TelemetrySink;
-};
+}
 
 export interface PoolResult {
   /** pg.Pool backed by PGlite — pass to PrismaPg */
@@ -92,14 +88,13 @@ export interface PoolResult {
  *
  * @see {@link createPgliteAdapter} for the higher-level API with schema management.
  */
-const createBridgePool = async (options: CreateBridgePoolOptions = {}): Promise<PoolResult> => {
-  const { dataDir, extensions, max = 1 } = options;
+export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolResult> => {
+  const { dataDir, extensions, max = 1, telemetry } = options;
   const adapterId = options.adapterId ?? Symbol('adapter');
-  const ownsInstance = !options.pglite;
-  const { telemetry } = options;
 
   let pglite: PGlite;
   let wasmInitMs: number | undefined;
+
   if (options.pglite) {
     pglite = options.pglite;
     await pglite.waitReady;
@@ -113,38 +108,26 @@ const createBridgePool = async (options: CreateBridgePoolOptions = {}): Promise<
   const sessionLock = new SessionLock();
 
   // Subclass pg.Client to inject PGliteBridge as the stream
-  const BridgedClient = class extends Client {
+  const Client = class extends pg.Client {
     constructor(config?: string | pg.ClientConfig) {
       const cfg = typeof config === 'string' ? { connectionString: config } : (config ?? {});
       super({
         ...cfg,
         user: 'postgres',
         database: 'postgres',
-        stream: (() =>
-          new PGliteBridge(pglite, sessionLock, adapterId, telemetry)) as pg.ClientConfig['stream'],
+        stream: () => new PGliteBridge(pglite, sessionLock, adapterId, telemetry),
       });
     }
   };
 
-  const pool = new Pool({
-    Client: BridgedClient as typeof Client,
-    max,
-  });
+  const pool = new pg.Pool({ Client, max });
 
   const close = async () => {
     await pool.end();
-    if (ownsInstance) {
-      await pglite.close();
-    }
+    if (!options.pglite) await pglite.close();
   };
 
   return { pool, pglite, adapterId, wasmInitMs, close };
 };
 
-export const createPool = async (options: CreatePoolOptions = {}): Promise<PoolResult> =>
-  createBridgePool(options);
-
-/** @internal Adapter-owned stats wiring for bridge-backed pools. */
-export const createPoolWithTelemetry = async (
-  options: CreateBridgePoolOptions = {},
-): Promise<PoolResult> => createBridgePool(options);
+export const createPoolWithTelemetry: typeof createPool = createPool;
