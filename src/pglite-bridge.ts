@@ -18,11 +18,10 @@
  */
 import { Duplex } from 'node:stream';
 import type { PGlite } from '@electric-sql/pglite';
-import type { TelemetrySink } from './adapter-stats.ts';
-import { lockWaitChannel, queryChannel } from './diagnostics.ts';
-import type { BridgeId, SessionLock } from './session-lock.ts';
-
-const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
+import type { TelemetrySink } from './utils/adapter-stats.ts';
+import { lockWaitChannel, queryChannel } from './utils/diagnostics.ts';
+import type { BridgeId, SessionLock } from './utils/session-lock.ts';
+import { nsToMs } from './utils/time.ts';
 
 // Frontend message types
 const PARSE = 0x50; // P

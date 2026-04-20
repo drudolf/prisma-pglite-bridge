@@ -17,10 +17,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { AdapterStats, type Stats, type StatsLevel } from './adapter-stats.ts';
 import { createPoolWithTelemetry } from './create-pool.ts';
-
-const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
+import { AdapterStats, type Stats, type StatsLevel } from './utils/adapter-stats.ts';
+import { nsToMs } from './utils/time.ts';
 
 const SNAPSHOT_SCHEMA = '_pglite_snapshot';
 const SENTINEL_SCHEMA = '_pglite_bridge';

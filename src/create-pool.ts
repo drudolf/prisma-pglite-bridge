@@ -9,13 +9,12 @@
  */
 import { type Extensions, PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
-import type { TelemetrySink } from './adapter-stats.ts';
 import { PGliteBridge } from './pglite-bridge.ts';
-import { SessionLock } from './session-lock.ts';
+import type { TelemetrySink } from './utils/adapter-stats.ts';
+import { SessionLock } from './utils/session-lock.ts';
+import { nsToMs } from './utils/time.ts';
 
 const { Client, Pool } = pg;
-
-const nsToMs = (ns: bigint): number => Number(ns) / 1_000_000;
 
 export interface CreatePoolOptions {
   /** PGlite data directory. Omit for in-memory. */
