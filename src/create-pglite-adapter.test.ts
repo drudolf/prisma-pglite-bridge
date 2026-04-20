@@ -45,6 +45,26 @@ describe('createPgliteAdapter', () => {
     expect(tenant.id).toBeDefined();
   });
 
+  it('resetDb() discards session-local state', async () => {
+    const { pglite, resetDb, close } = await createTestPgliteAdapter();
+
+    try {
+      await pglite.exec("SET application_name = 'reset-db-test'");
+      await pglite.exec('CREATE TEMP TABLE temp_reset_test (id int PRIMARY KEY)');
+      await pglite.exec('INSERT INTO temp_reset_test VALUES (1)');
+
+      await resetDb();
+
+      const { rows } = await pglite.query<{ value: string }>(
+        "SELECT current_setting('application_name') AS value",
+      );
+      expect(rows[0]?.value).toBe('');
+      await expect(pglite.query('SELECT * FROM temp_reset_test')).rejects.toThrow(/does not exist/);
+    } finally {
+      await close();
+    }
+  });
+
   it('accepts explicit sql option', async () => {
     const { adapter: sqlAdapter, close } = await createTestPgliteAdapter({
       sql: 'CREATE TABLE test_explicit (id serial PRIMARY KEY, name text);',
