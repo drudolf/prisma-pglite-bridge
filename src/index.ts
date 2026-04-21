@@ -3,10 +3,15 @@
  *
  * @example
  * ```typescript
+ * import { PGlite } from '@electric-sql/pglite';
  * import { createPgliteAdapter } from 'prisma-pglite-bridge';
  * import { PrismaClient } from '@prisma/client';
  *
- * const { adapter, resetDb } = await createPgliteAdapter();
+ * const pglite = new PGlite();
+ * const { adapter, resetDb } = await createPgliteAdapter({
+ *   pglite,
+ *   migrationsPath: './prisma/migrations',
+ * });
  * const prisma = new PrismaClient({ adapter });
  * ```
  *
@@ -33,7 +38,7 @@ import {
 
 export type { PoolResult };
 export type CreatePoolOptions = Omit<CreateBasePoolOptions, 'telemetry'>;
-export const createPool = async (options?: CreatePoolOptions): Promise<PoolResult> =>
+export const createPool = async (options: CreatePoolOptions): Promise<PoolResult> =>
   createBasePool(options);
 export { PGliteBridge } from './pglite-bridge.ts';
 export type { Stats, StatsLevel } from './utils/adapter-stats.ts';

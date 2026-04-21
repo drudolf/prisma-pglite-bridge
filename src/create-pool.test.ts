@@ -39,41 +39,6 @@ describe('createPool — adapterId', async () => {
   });
 });
 
-describe('createPool — wasmInitMs', () => {
-  it('is a finite non-negative number when createPool constructs PGlite', async () => {
-    const pool = await createPool();
-    try {
-      expect(typeof pool.wasmInitMs).toBe('number');
-      expect(Number.isFinite(pool.wasmInitMs)).toBe(true);
-      expect(pool.wasmInitMs).toBeGreaterThanOrEqual(0);
-    } finally {
-      await pool.close();
-    }
-  });
-
-  it('accepts an explicit extensions object when createPool constructs PGlite', async () => {
-    const pool = await createPool({ extensions: {} });
-    try {
-      expect(typeof pool.wasmInitMs).toBe('number');
-      expect(Number.isFinite(pool.wasmInitMs)).toBe(true);
-      await expect(pool.pool.query('SELECT 1 AS n')).resolves.toMatchObject({
-        rows: [{ n: 1 }],
-      });
-    } finally {
-      await pool.close();
-    }
-  });
-
-  it('is undefined when the caller supplies options.pglite', async () => {
-    const pool = await createPool({ pglite });
-    try {
-      expect(pool.wasmInitMs).toBeUndefined();
-    } finally {
-      await pool.close();
-    }
-  });
-});
-
 describe('createPool — custom Client config normalization', () => {
   it('supports undefined, string, and object client configs', async () => {
     const created = await createPool({ pglite });

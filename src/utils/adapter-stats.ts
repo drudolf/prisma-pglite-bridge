@@ -3,8 +3,8 @@
  *
  * Instantiated at level 1 or 2 (level 0 means no stats object exists).
  * Query-level timing is recorded directly by the bridge; one-shot lifecycle
- * signals (`markWasmInit`, `markSchemaSetup`, `incrementResetDb`, `freeze`)
- * remain direct method calls invoked by the adapter itself.
+ * signals (`markSchemaSetup`, `incrementResetDb`, `freeze`) remain direct
+ * method calls invoked by the adapter itself.
  *
  * Percentiles use nearest-rank (no interpolation) over a sliding window of
  * the most recent {@link QUERY_DURATION_WINDOW_SIZE} queries. Lifetime
@@ -22,8 +22,8 @@ type DbSizeQueryable = Pick<PGlite, 'query'>;
  * Stats collection level.
  *
  * - `0` — off. `stats()` returns `undefined`. Zero hot-path overhead.
- * - `1` — timing (`durationMs`, `wasmInitMs`, `schemaSetupMs`), query
- *   percentiles, counters, and `dbSizeBytes`.
+ * - `1` — timing (`durationMs`, `schemaSetupMs`), query percentiles,
+ *   counters, and `dbSizeBytes`.
  * - `2` — level 1 plus `processRssPeakBytes` and session-lock waits.
  */
 export type StatsLevel = 0 | 1 | 2;
@@ -46,7 +46,6 @@ const QUERY_DURATION_TRIM_THRESHOLD = QUERY_DURATION_WINDOW_SIZE * 2;
 
 interface StatsBase {
   durationMs: number;
-  wasmInitMs: number;
   schemaSetupMs: number;
   /** Lifetime count of recorded queries. Not windowed. */
   queryCount: number;
@@ -112,8 +111,6 @@ export class AdapterStats implements TelemetrySink {
   private failedQueryCount = 0;
   private resetDbCalls = 0;
 
-  private wasmInitMs = 0;
-  private wasmInitSet = false;
   private schemaSetupMs = 0;
   private schemaSetupSet = false;
 
@@ -164,12 +161,6 @@ export class AdapterStats implements TelemetrySink {
     this.resetDbCalls += 1;
   }
 
-  markWasmInit(durationMs: number): void {
-    if (this.wasmInitSet) return;
-    this.wasmInitSet = true;
-    this.wasmInitMs = durationMs;
-  }
-
   markSchemaSetup(durationMs: number): void {
     if (this.schemaSetupSet) return;
     this.schemaSetupSet = true;
@@ -186,7 +177,6 @@ export class AdapterStats implements TelemetrySink {
 
     const base: StatsBase = {
       durationMs,
-      wasmInitMs: this.wasmInitMs,
       schemaSetupMs: this.schemaSetupMs,
       queryCount: this.queryCount,
       failedQueryCount: this.failedQueryCount,

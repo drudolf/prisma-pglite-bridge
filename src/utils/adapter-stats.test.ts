@@ -115,16 +115,6 @@ describe('AdapterStats — counters', () => {
     });
   });
 
-  it('markWasmInit: first call wins', async () => {
-    await withStats(1, async (c) => {
-      c.markWasmInit(100);
-      c.markWasmInit(999);
-      c.markWasmInit(1);
-      const s = await c.snapshot(pglite);
-      expect(s.wasmInitMs).toBe(100);
-    });
-  });
-
   it('markSchemaSetup: first call wins', async () => {
     await withStats(1, async (c) => {
       c.markSchemaSetup(42);

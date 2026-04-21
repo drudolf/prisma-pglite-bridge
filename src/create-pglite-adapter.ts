@@ -1,21 +1,25 @@
 /**
- * Creates a Prisma adapter backed by in-process PGlite.
+ * Creates a Prisma adapter backed by a caller-supplied PGlite instance.
  *
  * No TCP, no Docker, no worker threads — everything runs in the same process.
  * Works for testing, development, seeding, and scripts.
  *
  * ```typescript
+ * import { PGlite } from '@electric-sql/pglite';
  * import { createPgliteAdapter } from 'prisma-pglite-bridge';
  * import { PrismaClient } from '@prisma/client';
  *
- * const { adapter, resetDb } = await createPgliteAdapter();
+ * const pglite = new PGlite();
+ * const { adapter, resetDb } = await createPgliteAdapter({
+ *   pglite,
+ *   migrationsPath: './prisma/migrations',
+ * });
  * const prisma = new PrismaClient({ adapter });
  *
  * beforeEach(() => resetDb());
  * ```
  */
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import type { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createPool } from './create-pool.ts';
 import { AdapterStats, type Stats, type StatsLevel } from './utils/adapter-stats.ts';
@@ -24,11 +28,11 @@ import { createSnapshotManager } from './utils/snapshot.ts';
 import { nsToMs } from './utils/time.ts';
 
 export interface CreatePgliteAdapterOptions extends MigrationsOptions {
-  /** PGlite data directory. Omit for in-memory. */
-  dataDir?: string;
-
-  /** PGlite extensions (e.g., `{ uuid_ossp: uuidOssp() }`) */
-  extensions?: import('@electric-sql/pglite').Extensions;
+  /**
+   * PGlite instance to bridge to. The caller owns its lifecycle — `close()`
+   * shuts down the pool only, not the PGlite instance.
+   */
+  pglite: PGlite;
 
   /**
    * Maximum pool connections (default: 1).
@@ -41,9 +45,9 @@ export interface CreatePgliteAdapterOptions extends MigrationsOptions {
   /**
    * Collect adapter/query telemetry. Default `0` (off, zero overhead).
    *
-   * - `1` — timing (`durationMs`, `wasmInitMs`, `schemaSetupMs`, query
-   *   percentiles) and counters (`queryCount`, `failedQueryCount`,
-   *   `resetDbCalls`), plus `dbSizeBytes`.
+   * - `1` — timing (`durationMs`, `schemaSetupMs`, query percentiles) and
+   *   counters (`queryCount`, `failedQueryCount`, `resetDbCalls`), plus
+   *   `dbSizeBytes`.
    * - `2` — everything in level 1, plus `processPeakRssBytes` (process-wide,
    *   sampled) and session-lock wait statistics.
    *
@@ -67,17 +71,6 @@ export interface PgliteAdapter {
   adapter: PrismaPg;
 
   /**
-   * The underlying PGlite instance for direct SQL, snapshots, or extensions.
-   *
-   * @remarks
-   * Direct `pglite.exec()` / `pglite.query()` calls bypass the pool's
-   * {@link SessionLock}. Avoid mixing direct calls with Prisma operations
-   * inside a transaction — use them only for setup, teardown, or utilities
-   * that run outside active Prisma transactions.
-   */
-  pglite: import('@electric-sql/pglite').PGlite;
-
-  /**
    * Identity tag published on every `QUERY_CHANNEL` / `LOCK_WAIT_CHANNEL`
    * diagnostics event produced by this adapter's bridges. External
    * subscribers filter on it to isolate events from this adapter in
@@ -95,7 +88,7 @@ export interface PgliteAdapter {
   resetSnapshot: ResetSnapshotFn;
 
   /**
-   * Shut down pool and PGlite. Not needed in tests (process exit handles it).
+   * Shut down the pool. The caller-owned PGlite instance is not closed.
    *
    * When `statsLevel > 0`, call `stats()` *after* `close()` to collect the
    * frozen snapshot — `durationMs` and `dbSizeBytes` are cached at the
@@ -112,13 +105,15 @@ export interface PgliteAdapter {
 }
 
 /**
- * Creates a Prisma adapter backed by an in-process PGlite instance.
+ * Creates a Prisma adapter backed by a caller-supplied PGlite instance.
  *
- * Applies the schema and returns a ready-to-use adapter + a `resetDb`
- * function for clearing tables between tests.
+ * When migration config is provided (`sql`, `migrationsPath`, or
+ * `configRoot`), the resolved SQL is applied once on construction.
+ * Otherwise, the PGlite instance is assumed to already hold the schema —
+ * useful for reopening a persistent `dataDir`.
  */
 export const createPgliteAdapter = async (
-  options: CreatePgliteAdapterOptions = {},
+  options: CreatePgliteAdapterOptions,
 ): Promise<PgliteAdapter> => {
   const statsLevel = options.statsLevel ?? 0;
   if (statsLevel < 0 || statsLevel > 2) {
@@ -127,22 +122,22 @@ export const createPgliteAdapter = async (
   const adapterId = Symbol('adapter');
   const adapterStats = statsLevel === 0 ? undefined : new AdapterStats(statsLevel);
 
-  const dataDirInitialized =
-    options.dataDir !== undefined && existsSync(join(options.dataDir, 'PG_VERSION'));
+  const { pglite } = options;
 
-  const { pool, pglite, wasmInitMs } = await createPool({
-    dataDir: options.dataDir,
-    extensions: options.extensions,
+  const { pool } = await createPool({
+    pglite,
     max: options.max,
     adapterId,
     telemetry: adapterStats,
   });
-  if (adapterStats && wasmInitMs !== undefined) {
-    adapterStats.markWasmInit(wasmInitMs);
-  }
+
+  const hasMigrationConfig =
+    options.sql !== undefined ||
+    options.migrationsPath !== undefined ||
+    options.configRoot !== undefined;
 
   const schemaStart = adapterStats ? process.hrtime.bigint() : undefined;
-  if (!dataDirInitialized) {
+  if (hasMigrationConfig) {
     const sql = await getMigrationSQL(options);
     try {
       await pglite.exec(sql);
@@ -174,7 +169,6 @@ export const createPgliteAdapter = async (
         if (adapterStats && closeEntry !== undefined) {
           await adapterStats.freeze(pglite, closeEntry);
         }
-        await pglite.close();
       })();
     }
     return closing;
@@ -184,7 +178,6 @@ export const createPgliteAdapter = async (
     adapter,
     adapterId,
     close,
-    pglite,
     resetDb,
     resetSnapshot: snapshotManager.resetSnapshot,
     snapshotDb: snapshotManager.snapshotDb,
