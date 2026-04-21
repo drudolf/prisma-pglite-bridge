@@ -79,12 +79,17 @@ export interface StatsBasic extends StatsBase {
 export interface StatsFull extends StatsBase {
   statsLevel: 'full';
   /**
-   * Process-wide RSS peak (sampled, lower bound). This value reflects the
-   * entire Node process, not just this adapter — parallel test runners or
-   * other work in the same process will inflate it. Use only as an
+   * Process-wide RSS high-water mark since process start, read from
+   * `process.resourceUsage().maxRSS` (kernel-tracked, lossless). Reflects
+   * the entire Node process — parallel test runners, other adapters, and
+   * prior work in the same process all contribute. Use only as an
    * ordering signal, not an absolute measurement.
+   *
+   * `undefined` on runtimes that don't expose `process.resourceUsage`
+   * (e.g. Bun, Deno, edge workers) — matches the field-level-undefined
+   * contract of every other `Stats` member.
    */
-  processRssPeakBytes: number;
+  processRssPeakBytes: number | undefined;
   totalSessionLockWaitMs: number;
   sessionLockAcquisitionCount: number;
   avgSessionLockWaitMs: number;
@@ -93,7 +98,21 @@ export interface StatsFull extends StatsBase {
 
 export type Stats = StatsBasic | StatsFull;
 
-const RSS_SAMPLE_INTERVAL_MS = 500;
+const DB_SIZE_QUERY_TIMEOUT_MS = 5_000;
+
+/**
+ * `process.resourceUsage().maxRSS` returns kilobytes on every platform
+ * Node supports — we convert to bytes so the public `processRssPeakBytes`
+ * field matches its name. Returns `undefined` on runtimes that don't
+ * expose `resourceUsage` (Bun, Deno, edge workers).
+ */
+const readProcessRssPeakBytes = (): number | undefined => {
+  try {
+    return process.resourceUsage().maxRSS * 1024;
+  } catch {
+    return undefined;
+  }
+};
 
 const percentile = (sorted: readonly number[], p: number): number => {
   const n = sorted.length;
@@ -120,9 +139,6 @@ export class AdapterStats implements TelemetrySink {
   private maxSessionLockWaitMs = 0;
   private sessionLockAcquisitionCount = 0;
 
-  private peakRssBytes = 0;
-  private rssInterval?: ReturnType<typeof setInterval>;
-
   private frozen = false;
   private cachedDurationMs?: number;
   private cachedDbSizeBytes?: number;
@@ -131,12 +147,6 @@ export class AdapterStats implements TelemetrySink {
   constructor(level: 'basic' | 'full') {
     this.level = level;
     this.createdAtHrtime = process.hrtime.bigint();
-
-    if (level === 'full') {
-      this.sampleRss();
-      this.rssInterval = setInterval(() => this.sampleRss(), RSS_SAMPLE_INTERVAL_MS);
-      this.rssInterval.unref();
-    }
   }
 
   recordQuery(durationMs: number, succeeded: boolean): void {
@@ -199,7 +209,7 @@ export class AdapterStats implements TelemetrySink {
     return {
       ...base,
       statsLevel: 'full',
-      processRssPeakBytes: this.peakRssBytes,
+      processRssPeakBytes: readProcessRssPeakBytes(),
       totalSessionLockWaitMs: this.totalSessionLockWaitMs,
       sessionLockAcquisitionCount: count,
       avgSessionLockWaitMs: count === 0 ? 0 : this.totalSessionLockWaitMs / count,
@@ -216,34 +226,33 @@ export class AdapterStats implements TelemetrySink {
       this.cachedDbSizeBytes = await this.queryDbSize(pglite);
     } finally {
       this.dbSizeFrozen = true;
-      if (this.level === 'full') this.sampleRss();
-      this.stop();
     }
-  }
-
-  stop(): void {
-    if (this.rssInterval !== undefined) {
-      clearInterval(this.rssInterval);
-      this.rssInterval = undefined;
-    }
-  }
-
-  private sampleRss(): void {
-    const rss = process.memoryUsage().rss;
-    if (rss > this.peakRssBytes) this.peakRssBytes = rss;
   }
 
   private async queryDbSize(pglite: DbSizeQueryable): Promise<number | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const { rows } = await pglite.query<{ size: string | null }>(
-        'SELECT pg_database_size(current_database())::text AS size',
-      );
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('pg_database_size query timed out')),
+          DB_SIZE_QUERY_TIMEOUT_MS,
+        );
+        timer.unref?.();
+      });
+      const { rows } = await Promise.race([
+        pglite.query<{ size: string | null }>(
+          'SELECT pg_database_size(current_database())::text AS size',
+        ),
+        timeout,
+      ]);
       const size = rows[0]?.size;
       if (size == null) return undefined;
       const n = Number(size);
       return Number.isFinite(n) ? n : undefined;
     } catch {
       return undefined;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 }

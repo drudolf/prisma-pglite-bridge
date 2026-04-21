@@ -59,7 +59,7 @@ export type CreatePoolOptions = Omit<CreateBasePoolOptions, 'telemetry'>;
 export const createPool = async (options: CreatePoolOptions): Promise<PoolResult> =>
   createBasePool(options);
 export { PGliteBridge } from './pglite-bridge.ts';
-export type { Stats, StatsLevel } from './utils/adapter-stats.ts';
+export type { Stats, StatsBasic, StatsFull, StatsLevel } from './utils/adapter-stats.ts';
 // ── Diagnostics channels (public observability surface) ──
 export {
   LOCK_WAIT_CHANNEL,

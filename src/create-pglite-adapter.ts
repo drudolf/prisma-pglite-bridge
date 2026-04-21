@@ -27,6 +27,17 @@ import { getMigrationSQL, type MigrationsOptions } from './utils/migrations.ts';
 import { createSnapshotManager } from './utils/snapshot.ts';
 import { nsToMs } from './utils/time.ts';
 
+/** @internal Exported for testing. */
+export const emitAdapterLeakWarning = (description: string): void => {
+  process.emitWarning(
+    `PGlite adapter "${description}" was garbage-collected before close() was called. ` +
+      'Call adapter.close() to release the pool and finalize stats().',
+    { type: 'PgliteAdapterLeakWarning' },
+  );
+};
+
+const leakRegistry = new FinalizationRegistry<string>(emitAdapterLeakWarning);
+
 export interface CreatePgliteAdapterOptions extends MigrationsOptions {
   /**
    * PGlite instance to bridge to. The caller owns its lifecycle — `close()`
@@ -81,10 +92,23 @@ export interface PgliteAdapter {
   /** Clear all user tables and discard session-local state. Call in `beforeEach` for per-test isolation. */
   resetDb: ResetDbFn;
 
-  /** Snapshot current DB state. Subsequent `resetDb` calls restore to this snapshot. */
+  /**
+   * Snapshot the current DB state into an internal `_pglite_snapshot`
+   * schema. Subsequent `resetDb` calls restore from this snapshot instead
+   * of truncating to empty.
+   *
+   * **Concurrency:** runs multiple `exec()` statements directly against
+   * the PGlite instance, bypassing the pool's `SessionLock`. Call from a
+   * test `beforeAll` after migrations but before Prisma traffic starts;
+   * invoking it while another pool connection is inside a transaction is
+   * unsafe and may deadlock against PGlite's internal mutex.
+   */
   snapshotDb: SnapshotDbFn;
 
-  /** Discard the current snapshot. Subsequent `resetDb` calls truncate to empty. */
+  /**
+   * Discard the current snapshot. Subsequent `resetDb` calls truncate to
+   * empty. Same concurrency requirements as {@link snapshotDb}.
+   */
   resetSnapshot: ResetSnapshotFn;
 
   /**
@@ -143,8 +167,9 @@ export const createPgliteAdapter = async (
     try {
       await pglite.exec(sql);
     } catch (err) {
+      const target = pglite.dataDir ? `PGlite(dataDir=${pglite.dataDir})` : 'in-memory PGlite';
       throw new Error(
-        'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
+        `Failed to apply schema SQL to ${target}. Check your schema or migration files.`,
         { cause: err },
       );
     }
@@ -161,6 +186,8 @@ export const createPgliteAdapter = async (
     await snapshotManager.resetDb();
   };
 
+  const leakToken: object = {};
+
   let closing: Promise<void> | undefined;
   const close = async () => {
     if (!closing) {
@@ -170,12 +197,13 @@ export const createPgliteAdapter = async (
         if (adapterStats && closeEntry !== undefined) {
           await adapterStats.freeze(pglite, closeEntry);
         }
+        leakRegistry.unregister(leakToken);
       })();
     }
     return closing;
   };
 
-  return {
+  const result: PgliteAdapter = {
     adapter,
     adapterId,
     close,
@@ -184,4 +212,8 @@ export const createPgliteAdapter = async (
     snapshotDb: snapshotManager.snapshotDb,
     stats: async () => (adapterStats ? adapterStats.snapshot(pglite) : undefined),
   };
+
+  leakRegistry.register(result, adapterId.description ?? 'adapter', leakToken);
+
+  return result;
 };

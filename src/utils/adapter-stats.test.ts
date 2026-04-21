@@ -6,11 +6,7 @@ let pglite: Parameters<AdapterStats['snapshot']>[0];
 
 const withStats = async (level: 'basic' | 'full', fn: (c: AdapterStats) => Promise<void>) => {
   const c = new AdapterStats(level);
-  try {
-    await fn(c);
-  } finally {
-    c.stop();
-  }
+  await fn(c);
 };
 
 beforeEach(() => {
@@ -57,18 +53,14 @@ describe('AdapterStats — percentile math', () => {
     hrtimeSpy.mockReturnValueOnce(1_000_000_000n);
 
     const c = new AdapterStats('basic');
-    try {
-      hrtimeSpy.mockReturnValueOnce(1_005_000_000n);
-      const s = await c.snapshot(pglite);
-      expect(s.queryCount).toBe(0);
-      expect(s.avgQueryMs).toBe(0);
-      expect(s.recentP50QueryMs).toBe(0);
-      expect(s.recentP95QueryMs).toBe(0);
-      expect(s.recentMaxQueryMs).toBe(0);
-      expect(s.durationMs).toBeGreaterThan(0);
-    } finally {
-      c.stop();
-    }
+    hrtimeSpy.mockReturnValueOnce(1_005_000_000n);
+    const s = await c.snapshot(pglite);
+    expect(s.queryCount).toBe(0);
+    expect(s.avgQueryMs).toBe(0);
+    expect(s.recentP50QueryMs).toBe(0);
+    expect(s.recentP95QueryMs).toBe(0);
+    expect(s.recentMaxQueryMs).toBe(0);
+    expect(s.durationMs).toBeGreaterThan(0);
   });
 
   it('n === 1: p50 === p95 === max === the single duration', async () => {
@@ -190,20 +182,16 @@ describe('AdapterStats — pglite query robustness', () => {
 describe('AdapterStats — freeze()', () => {
   it('post-freeze snapshots use cached values and do not call pglite.query', async () => {
     const c = new AdapterStats('basic');
-    try {
-      vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 99999n }] });
-      await c.freeze(pglite, process.hrtime.bigint());
-      const callsAfterFreeze = vi.mocked(pglite.query).mock.calls.length;
+    vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 99999n }] });
+    await c.freeze(pglite, process.hrtime.bigint());
+    const callsAfterFreeze = vi.mocked(pglite.query).mock.calls.length;
 
-      const s1 = await c.snapshot(pglite);
-      const s2 = await c.snapshot(pglite);
+    const s1 = await c.snapshot(pglite);
+    const s2 = await c.snapshot(pglite);
 
-      expect(vi.mocked(pglite.query).mock.calls.length).toBe(callsAfterFreeze);
-      expect(s1.dbSizeBytes).toBe(99999);
-      expect(s2.dbSizeBytes).toBe(99999);
-    } finally {
-      c.stop();
-    }
+    expect(vi.mocked(pglite.query).mock.calls.length).toBe(callsAfterFreeze);
+    expect(s1.dbSizeBytes).toBe(99999);
+    expect(s2.dbSizeBytes).toBe(99999);
   });
 
   it('freeze uses the passed-in closeEntryHrtime for durationMs (not invocation time)', async () => {
@@ -211,118 +199,123 @@ describe('AdapterStats — freeze()', () => {
     hrtimeSpy.mockReturnValueOnce(1_000_000_000n);
 
     const c = new AdapterStats('basic');
-    try {
-      const earlyTimestamp = 1_010_000_000n;
-      await c.freeze(pglite, earlyTimestamp);
-      const s = await c.snapshot(pglite);
-      expect(s.durationMs).toBe(10);
-    } finally {
-      c.stop();
-    }
+    const earlyTimestamp = 1_010_000_000n;
+    await c.freeze(pglite, earlyTimestamp);
+    const s = await c.snapshot(pglite);
+    expect(s.durationMs).toBe(10);
   });
 
   it('seals dbSizeFrozen even when queryDbSize rejects', async () => {
     const c = new AdapterStats('basic');
-    try {
-      vi.mocked(pglite.query).mockRejectedValue(new Error('boom'));
+    vi.mocked(pglite.query).mockRejectedValue(new Error('boom'));
 
-      await c.freeze(pglite, process.hrtime.bigint());
-      const callsAfterFreeze = vi.mocked(pglite.query).mock.calls.length;
+    await c.freeze(pglite, process.hrtime.bigint());
+    const callsAfterFreeze = vi.mocked(pglite.query).mock.calls.length;
 
-      await c.snapshot(pglite);
-      await c.snapshot(pglite);
+    await c.snapshot(pglite);
+    await c.snapshot(pglite);
 
-      expect(vi.mocked(pglite.query).mock.calls.length).toBe(callsAfterFreeze);
-    } finally {
-      c.stop();
-    }
+    expect(vi.mocked(pglite.query).mock.calls.length).toBe(callsAfterFreeze);
   });
 
   it('freeze is idempotent after the instance is already frozen', async () => {
     const c = new AdapterStats('basic');
+    vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 123n }] });
+
+    await c.freeze(pglite, process.hrtime.bigint());
+    const callsAfterFirstFreeze = vi.mocked(pglite.query).mock.calls.length;
+    const snapshotAfterFirstFreeze = await c.snapshot(pglite);
+
+    await c.freeze(pglite, process.hrtime.bigint());
+    const snapshotAfterSecondFreeze = await c.snapshot(pglite);
+
+    expect(vi.mocked(pglite.query).mock.calls.length).toBe(callsAfterFirstFreeze);
+    expect(snapshotAfterSecondFreeze).toEqual(snapshotAfterFirstFreeze);
+  });
+
+  it('resolves within the timeout when pglite.query hangs, and leaves dbSizeBytes undefined', async () => {
+    vi.useFakeTimers();
+    const c = new AdapterStats('basic');
     try {
-      vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 123n }] });
+      vi.mocked(pglite.query).mockReturnValue(new Promise(() => {}) as Promise<never>);
 
-      await c.freeze(pglite, process.hrtime.bigint());
-      const callsAfterFirstFreeze = vi.mocked(pglite.query).mock.calls.length;
-      const snapshotAfterFirstFreeze = await c.snapshot(pglite);
+      const freezePromise = c.freeze(pglite, process.hrtime.bigint());
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(freezePromise).resolves.toBeUndefined();
 
-      await c.freeze(pglite, process.hrtime.bigint());
-      const snapshotAfterSecondFreeze = await c.snapshot(pglite);
-
-      expect(vi.mocked(pglite.query).mock.calls.length).toBe(callsAfterFirstFreeze);
-      expect(snapshotAfterSecondFreeze).toEqual(snapshotAfterFirstFreeze);
+      const s = await c.snapshot(pglite);
+      expect(s.dbSizeBytes).toBeUndefined();
     } finally {
-      c.stop();
+      vi.useRealTimers();
     }
   });
 
   it('ignores recordQuery / recordLockWait / incrementResetDb after freeze', async () => {
     const c = new AdapterStats('full');
-    try {
-      c.recordQuery(10, true);
-      c.recordLockWait(5);
-      c.incrementResetDb();
-      await c.freeze(pglite, process.hrtime.bigint());
-      const before = await c.snapshot(pglite);
-      if (before.statsLevel !== 'full') throw new Error("expected level 'full'");
+    c.recordQuery(10, true);
+    c.recordLockWait(5);
+    c.incrementResetDb();
+    await c.freeze(pglite, process.hrtime.bigint());
+    const before = await c.snapshot(pglite);
+    if (before.statsLevel !== 'full') throw new Error("expected level 'full'");
 
-      c.recordQuery(999, false);
-      c.recordLockWait(999);
-      c.incrementResetDb();
-      const after = await c.snapshot(pglite);
-      if (after.statsLevel !== 'full') throw new Error("expected level 'full'");
+    c.recordQuery(999, false);
+    c.recordLockWait(999);
+    c.incrementResetDb();
+    const after = await c.snapshot(pglite);
+    if (after.statsLevel !== 'full') throw new Error("expected level 'full'");
 
-      expect(after.queryCount).toBe(before.queryCount);
-      expect(after.failedQueryCount).toBe(before.failedQueryCount);
-      expect(after.resetDbCalls).toBe(before.resetDbCalls);
-      expect(after.sessionLockAcquisitionCount).toBe(before.sessionLockAcquisitionCount);
-    } finally {
-      c.stop();
-    }
+    expect(after.queryCount).toBe(before.queryCount);
+    expect(after.failedQueryCount).toBe(before.failedQueryCount);
+    expect(after.resetDbCalls).toBe(before.resetDbCalls);
+    expect(after.sessionLockAcquisitionCount).toBe(before.sessionLockAcquisitionCount);
   });
 });
 
-describe(`AdapterStats — 'full' RSS sampler`, () => {
-  let memSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    memSpy = vi.spyOn(process, 'memoryUsage');
-  });
-
-  it('short-run: memoryUsage is called exactly twice (construct + freeze) and peak > 0', async () => {
-    const c = new AdapterStats('full');
+describe(`AdapterStats — 'full' processRssPeakBytes`, () => {
+  it('reads process.resourceUsage().maxRSS and converts kilobytes to bytes', async () => {
+    const resourceSpy = vi.spyOn(process, 'resourceUsage').mockReturnValue({
+      userCPUTime: 0,
+      systemCPUTime: 0,
+      maxRSS: 12_345,
+      sharedMemorySize: 0,
+      unsharedDataSize: 0,
+      unsharedStackSize: 0,
+      minorPageFault: 0,
+      majorPageFault: 0,
+      swappedOut: 0,
+      fsRead: 0,
+      fsWrite: 0,
+      ipcSent: 0,
+      ipcReceived: 0,
+      signalsCount: 0,
+      voluntaryContextSwitches: 0,
+      involuntaryContextSwitches: 0,
+    });
     try {
-      await c.freeze(pglite, process.hrtime.bigint());
-      expect(memSpy.mock.calls.length).toBe(2);
-      const s = await c.snapshot(pglite);
-      if (s.statsLevel !== 'full') throw new Error("expected level 'full'");
-      expect(s.processRssPeakBytes).toBeGreaterThan(0);
+      await withStats('full', async (c) => {
+        const s = await c.snapshot(pglite);
+        if (s.statsLevel !== 'full') throw new Error("expected level 'full'");
+        expect(s.processRssPeakBytes).toBe(12_345 * 1024);
+      });
     } finally {
-      c.stop();
+      resourceSpy.mockRestore();
     }
   });
 
-  describe('interval sampler', () => {
-    beforeEach(() => vi.useFakeTimers());
-    afterEach(() => vi.useRealTimers());
-
-    it('fires on schedule', () => {
-      const c = new AdapterStats('full');
-      try {
-        const afterCtor = memSpy.mock.calls.length;
-        vi.advanceTimersByTime(500);
-        expect(memSpy.mock.calls.length).toBe(afterCtor + 1);
-        vi.advanceTimersByTime(2_000);
-        expect(memSpy.mock.calls.length).toBe(afterCtor + 5);
-      } finally {
-        c.stop();
-        vi.advanceTimersByTime(10_000);
-        const afterStop = memSpy.mock.calls.length;
-        vi.advanceTimersByTime(10_000);
-        expect(memSpy.mock.calls.length).toBe(afterStop);
-      }
+  it('returns undefined processRssPeakBytes when process.resourceUsage throws', async () => {
+    const resourceSpy = vi.spyOn(process, 'resourceUsage').mockImplementation(() => {
+      throw new TypeError('process.resourceUsage is not a function');
     });
+    try {
+      await withStats('full', async (c) => {
+        const s = await c.snapshot(pglite);
+        if (s.statsLevel !== 'full') throw new Error("expected level 'full'");
+        expect(s.processRssPeakBytes).toBeUndefined();
+      });
+    } finally {
+      resourceSpy.mockRestore();
+    }
   });
 });
 
@@ -383,14 +376,8 @@ describe(`AdapterStats — 'full' session-lock accumulation`, () => {
   });
 });
 
-describe('AdapterStats — lifecycle stop', () => {
-  it(`stop() is a no-op for 'basic' state beyond cleanup safety`, () => {
-    const c = new AdapterStats('basic');
-    c.stop();
-    c.stop();
-  });
-
-  it(`freeze() retains cached 'full' state after stop() cleanup`, async () => {
+describe('AdapterStats — freeze preserves cached state', () => {
+  it(`freeze() retains cached 'full' state across snapshots`, async () => {
     const c = new AdapterStats('full');
     c.recordQuery(11, true);
     c.recordLockWait(7);

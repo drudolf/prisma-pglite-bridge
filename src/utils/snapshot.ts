@@ -8,6 +8,11 @@ const USER_TABLES_WHERE = `schemaname NOT IN ('pg_catalog', 'information_schema'
 
 const escapeLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
+/** JS equivalent of PostgreSQL's `quote_ident()`; matches its escaping rules. */
+const quoteIdent = (identifier: string): string => `"${identifier.replace(/"/g, '""')}"`;
+
+const SNAPSHOT_SCHEMA_IDENT = quoteIdent(SNAPSHOT_SCHEMA);
+
 interface SnapshotManager {
   /**
    * Truncate all user tables. If a snapshot exists, restore its contents and
@@ -46,11 +51,11 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
   };
 
   const snapshotDb = async () => {
-    await pglite.exec(`DROP SCHEMA IF EXISTS "${SNAPSHOT_SCHEMA}" CASCADE`);
+    await pglite.exec(`DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_IDENT} CASCADE`);
 
     try {
       await pglite.exec('BEGIN');
-      await pglite.exec(`CREATE SCHEMA "${SNAPSHOT_SCHEMA}"`);
+      await pglite.exec(`CREATE SCHEMA ${SNAPSHOT_SCHEMA_IDENT}`);
 
       const { rows: tables } = await pglite.query<{
         schemaname: string;
@@ -64,16 +69,16 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
       );
 
       await pglite.exec(
-        `CREATE TABLE "${SNAPSHOT_SCHEMA}".__tables (snap_name text, source_schema text, source_table text)`,
+        `CREATE TABLE ${SNAPSHOT_SCHEMA_IDENT}.__tables (snap_name text, source_schema text, source_table text)`,
       );
 
       for (const [i, { schemaname, tablename, qualified }] of tables.entries()) {
         const snapName = `_snap_${i}`;
         await pglite.exec(
-          `CREATE TABLE "${SNAPSHOT_SCHEMA}"."${snapName}" AS SELECT * FROM ${qualified}`,
+          `CREATE TABLE ${SNAPSHOT_SCHEMA_IDENT}.${quoteIdent(snapName)} AS SELECT * FROM ${qualified}`,
         );
         await pglite.exec(
-          `INSERT INTO "${SNAPSHOT_SCHEMA}".__tables VALUES (${escapeLiteral(snapName)}, ${escapeLiteral(schemaname)}, ${escapeLiteral(tablename)})`,
+          `INSERT INTO ${SNAPSHOT_SCHEMA_IDENT}.__tables VALUES (${escapeLiteral(snapName)}, ${escapeLiteral(schemaname)}, ${escapeLiteral(tablename)})`,
         );
       }
 
@@ -85,17 +90,19 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
          AND last_value IS NOT NULL`,
       );
 
-      await pglite.exec(`CREATE TABLE "${SNAPSHOT_SCHEMA}".__sequences (name text, value bigint)`);
+      await pglite.exec(
+        `CREATE TABLE ${SNAPSHOT_SCHEMA_IDENT}.__sequences (name text, value bigint)`,
+      );
       for (const { name, value } of seqs) {
         await pglite.exec(
-          `INSERT INTO "${SNAPSHOT_SCHEMA}".__sequences VALUES (${name}, ${value})`,
+          `INSERT INTO ${SNAPSHOT_SCHEMA_IDENT}.__sequences VALUES (${name}, ${value})`,
         );
       }
 
       await pglite.exec('COMMIT');
     } catch (err) {
       await pglite.exec('ROLLBACK');
-      await pglite.exec(`DROP SCHEMA IF EXISTS "${SNAPSHOT_SCHEMA}" CASCADE`);
+      await pglite.exec(`DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_IDENT} CASCADE`);
       throw err;
     }
 
@@ -104,7 +111,7 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
 
   const resetSnapshot = async () => {
     hasSnapshot = false;
-    await pglite.exec(`DROP SCHEMA IF EXISTS "${SNAPSHOT_SCHEMA}" CASCADE`);
+    await pglite.exec(`DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_IDENT} CASCADE`);
   };
 
   const withReplicationRoleReplica = async (fn: () => Promise<void>) => {
@@ -126,21 +133,22 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
         if (!hasSnapshot) return;
 
         const { rows: snapshotTables } = await pglite.query<{
-          snap_name: string;
+          snap_name_ident: string;
           qualified: string;
         }>(
-          `SELECT snap_name, quote_ident(source_schema) || '.' || quote_ident(source_table) AS qualified
-           FROM "${SNAPSHOT_SCHEMA}".__tables`,
+          `SELECT quote_ident(snap_name) AS snap_name_ident,
+                  quote_ident(source_schema) || '.' || quote_ident(source_table) AS qualified
+           FROM ${SNAPSHOT_SCHEMA_IDENT}.__tables`,
         );
 
-        for (const { snap_name, qualified } of snapshotTables) {
+        for (const { snap_name_ident, qualified } of snapshotTables) {
           await pglite.exec(
-            `INSERT INTO ${qualified} SELECT * FROM "${SNAPSHOT_SCHEMA}"."${snap_name}"`,
+            `INSERT INTO ${qualified} SELECT * FROM ${SNAPSHOT_SCHEMA_IDENT}.${snap_name_ident}`,
           );
         }
 
         const { rows: seqs } = await pglite.query<{ name: string; value: string }>(
-          `SELECT quote_literal(name) AS name, value::text AS value FROM "${SNAPSHOT_SCHEMA}".__sequences`,
+          `SELECT quote_literal(name) AS name, value::text AS value FROM ${SNAPSHOT_SCHEMA_IDENT}.__sequences`,
         );
 
         for (const { name, value } of seqs) {
