@@ -28,15 +28,15 @@ import { createSnapshotManager } from './utils/snapshot.ts';
 import { nsToMs } from './utils/time.ts';
 
 /** @internal Exported for testing. */
-export const emitAdapterLeakWarning = (description: string): void => {
+export const emitAdapterLeakWarning = (adapterId: symbol): void => {
   process.emitWarning(
-    `PGlite adapter "${description}" was garbage-collected before close() was called. ` +
+    `PGlite adapter "${String(adapterId)}" was garbage-collected before close() was called. ` +
       'Call adapter.close() to release the pool and finalize stats().',
     { type: 'PgliteAdapterLeakWarning' },
   );
 };
 
-const leakRegistry = new FinalizationRegistry<string>(emitAdapterLeakWarning);
+const leakRegistry = new FinalizationRegistry(emitAdapterLeakWarning);
 
 export interface CreatePgliteAdapterOptions extends MigrationsOptions {
   /**
@@ -213,7 +213,7 @@ export const createPgliteAdapter = async (
     stats: async () => (adapterStats ? adapterStats.snapshot(pglite) : undefined),
   };
 
-  leakRegistry.register(result, adapterId.description ?? 'adapter', leakToken);
+  leakRegistry.register(result, adapterId, leakToken);
 
   return result;
 };

@@ -277,7 +277,7 @@ describe('createPgliteAdapter', () => {
   it('emitAdapterLeakWarning emits a typed process warning', () => {
     const spy = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
     try {
-      emitAdapterLeakWarning('adapter-xyz');
+      emitAdapterLeakWarning(Symbol('adapter-xyz'));
       expect(spy).toHaveBeenCalledTimes(1);
       const [message, options] = spy.mock.calls[0] ?? [];
       expect(String(message)).toContain('adapter-xyz');

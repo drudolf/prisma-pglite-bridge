@@ -252,7 +252,7 @@ export class AdapterStats implements TelemetrySink {
     } catch {
       return undefined;
     } finally {
-      if (timer !== undefined) clearTimeout(timer);
+      clearTimeout(timer);
     }
   }
 }
