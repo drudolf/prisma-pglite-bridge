@@ -489,7 +489,7 @@ export class PGliteBridge extends Duplex {
     this.drainQueue.push(callback);
     if (!this.draining) {
       // Errors are propagated through drainQueue callbacks, not through this promise
-      this.drain().catch(() => {});
+      this.drain().catch(/* c8 ignore next */ () => {});
     }
   }
 

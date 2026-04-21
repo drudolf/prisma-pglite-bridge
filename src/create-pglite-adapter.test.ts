@@ -6,7 +6,7 @@ import setupTestSuite from './__tests__/adapter.ts';
 import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
 import { createPgliteAdapter } from './create-pglite-adapter.ts';
 
-const { prisma, adapter } = await setupTestSuite({
+const { pglite, prisma, adapter } = await setupTestSuite({
   options: { statsLevel: 1 },
 });
 
@@ -63,14 +63,9 @@ afterEach(() => {
 
 describe('createPgliteAdapter', () => {
   it('rejects invalid stats levels', async () => {
-    const pglite = new PGlite();
-    try {
-      await expect(
-        createPgliteAdapter({ pglite, sql: 'SELECT 1', statsLevel: 3 as 2 }),
-      ).rejects.toThrow('statsLevel must be 0, 1, or 2; got 3');
-    } finally {
-      await pglite.close();
-    }
+    await expect(
+      createPgliteAdapter({ pglite, sql: 'SELECT 1', statsLevel: 3 as 2 }),
+    ).rejects.toThrow('statsLevel must be 0, 1, or 2; got 3');
   });
 
   it('returns telemetry when stats are enabled', async () => {
@@ -82,15 +77,9 @@ describe('createPgliteAdapter', () => {
   });
 
   it('returns undefined stats when statsLevel is 0', async () => {
-    const pglite = new PGlite();
-    const created = await createPgliteAdapter({ pglite, sql: 'SELECT 1' });
-
-    try {
-      await expect(created.stats()).resolves.toBeUndefined();
-    } finally {
-      await created.close();
-      await pglite.close();
-    }
+    const { close, stats } = await createPgliteAdapter({ pglite, sql: 'SELECT 1' });
+    await expect(stats()).resolves.toBeUndefined();
+    close();
   });
 
   it('resetDb clears user data', async () => {

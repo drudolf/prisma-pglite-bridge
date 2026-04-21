@@ -94,10 +94,7 @@ export const createPool = async (options: CreatePoolOptions): Promise<PoolResult
   };
 
   const pool = new pg.Pool({ Client, max });
-
-  const close = async () => {
-    await pool.end();
-  };
+  const close = () => pool.end();
 
   return { pool, adapterId, close };
 };
