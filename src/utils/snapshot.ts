@@ -107,13 +107,23 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
     await pglite.exec(`DROP SCHEMA IF EXISTS "${SNAPSHOT_SCHEMA}" CASCADE`);
   };
 
+  const withReplicationRoleReplica = async (fn: () => Promise<void>) => {
+    try {
+      await pglite.exec('SET session_replication_role = replica');
+      await fn();
+    } finally {
+      await pglite.exec('SET session_replication_role = DEFAULT');
+    }
+  };
+
   const resetDb = async () => {
     const tables = await getTables();
 
-    if (hasSnapshot && tables) {
-      try {
-        await pglite.exec('SET session_replication_role = replica');
+    if (tables) {
+      await withReplicationRoleReplica(async () => {
         await pglite.exec(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
+
+        if (!hasSnapshot) return;
 
         const { rows: snapshotTables } = await pglite.query<{
           snap_name: string;
@@ -136,16 +146,7 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
         for (const { name, value } of seqs) {
           await pglite.exec(`SELECT setval(${name}, ${value})`);
         }
-      } finally {
-        await pglite.exec('SET session_replication_role = DEFAULT');
-      }
-    } else if (tables) {
-      try {
-        await pglite.exec('SET session_replication_role = replica');
-        await pglite.exec(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
-      } finally {
-        await pglite.exec('SET session_replication_role = DEFAULT');
-      }
+      });
     }
 
     await pglite.exec('DISCARD ALL');
