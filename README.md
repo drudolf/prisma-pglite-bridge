@@ -526,8 +526,8 @@ described below. That path is more flexible, but also more advanced.
   durations
 - `recentP50QueryMs`, `recentP95QueryMs`, `recentMaxQueryMs` —
   nearest-rank percentiles (no interpolation) over the most recent
-  `QUERY_DURATION_WINDOW_SIZE` (10,000) queries. On long-lived
-  adapters these describe a different population than `avgQueryMs`.
+  ~10,000 queries. On long-lived adapters these describe a different
+  population than `avgQueryMs`.
 - `resetDbCalls` — counts `resetDb()` attempts
 - `dbSizeBytes` — `pg_database_size(current_database())`, cached
   at close
