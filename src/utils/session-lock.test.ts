@@ -64,9 +64,12 @@ describe('SessionLock', () => {
     lock.updateStatus(a, 0x45); // 'E' = failed transaction
 
     let bResolved = false;
-    lock.acquire(b).then(() => {
-      bResolved = true;
-    });
+    lock.acquire(b).then(
+      () => {
+        bResolved = true;
+      },
+      () => undefined,
+    );
 
     await drainMicrotasks();
     expect(bResolved).toBe(false);
@@ -85,9 +88,12 @@ describe('SessionLock', () => {
     lock.updateStatus(a, 0x54);
 
     let bResolved = false;
-    lock.acquire(b).then(() => {
-      bResolved = true;
-    });
+    const bPromise = lock.acquire(b).then(
+      () => {
+        bResolved = true;
+      },
+      () => undefined,
+    );
 
     await drainMicrotasks();
     expect(bResolved).toBe(false);
@@ -117,6 +123,58 @@ describe('SessionLock', () => {
 
     // Bridge A is destroyed (crash) — release without COMMIT
     lock.release(bridgeA);
+
+    await bPromise;
+    expect(bResolved).toBe(true);
+  });
+
+  it('cancel() removes a destroyed waiter so the next bridge can proceed', async () => {
+    const lock = new SessionLock();
+    const a = Symbol('bridge');
+    const b = Symbol('bridge');
+    const c = Symbol('bridge');
+
+    lock.updateStatus(a, 0x54); // 'T'
+
+    let bResolved = false;
+    const bPromise = lock.acquire(b).then(
+      () => {
+        bResolved = true;
+      },
+      () => undefined,
+    );
+
+    let cResolved = false;
+    const cPromise = lock.acquire(c).then(() => {
+      cResolved = true;
+    });
+
+    await drainMicrotasks();
+    expect(bResolved).toBe(false);
+    expect(cResolved).toBe(false);
+
+    lock.cancel(b);
+    lock.updateStatus(a, 0x49); // 'I'
+
+    await bPromise;
+    await cPromise;
+    expect(bResolved).toBe(false);
+    expect(cResolved).toBe(true);
+  });
+
+  it('cancel() on the current owner drains the next waiter', async () => {
+    const lock = new SessionLock();
+    const a = Symbol('bridge');
+    const b = Symbol('bridge');
+
+    lock.updateStatus(a, 0x54); // 'T' — a owns
+
+    let bResolved = false;
+    const bPromise = lock.acquire(b).then(() => {
+      bResolved = true;
+    });
+
+    expect(lock.cancel(a)).toBe(true);
 
     await bPromise;
     expect(bResolved).toBe(true);

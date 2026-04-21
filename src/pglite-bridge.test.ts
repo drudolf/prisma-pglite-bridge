@@ -387,6 +387,52 @@ describe('PGliteBridge error paths', () => {
     const calls = vi.mocked(telemetry.recordQuery).mock.calls;
     expect(calls.some(([, succeeded]) => succeeded === false)).toBe(true);
   });
+
+  it('destroy while waiting on the session lock does not poison the next bridge', async () => {
+    const owner = Symbol('owner');
+    const lock = new SessionLock();
+    lock.updateStatus(owner, 0x54); // 'T'
+
+    let destroyedBridgeRan = false;
+    const blockedBridge = new PGliteBridge(
+      makeMockPglite({
+        runExclusive: async (fn) => {
+          destroyedBridgeRan = true;
+          await fn();
+        },
+      }),
+      lock,
+    );
+    blockedBridge.on('error', () => {});
+
+    const blockedWrite = writeAndAwait(blockedBridge, startupBytes());
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const destroyErr = new Error('gone');
+    blockedBridge.destroy(destroyErr);
+    await expect(blockedWrite).resolves.toBe(destroyErr);
+
+    lock.release(owner);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(destroyedBridgeRan).toBe(false);
+
+    let nextBridgeRan = false;
+    const nextBridge = new PGliteBridge(
+      makeMockPglite({
+        runExclusive: async (fn) => {
+          nextBridgeRan = true;
+          await fn();
+        },
+      }),
+      lock,
+    );
+    nextBridge.on('error', () => {});
+
+    await expect(writeAndAwait(nextBridge, startupBytes())).resolves.toBeUndefined();
+    expect(nextBridgeRan).toBe(true);
+
+    nextBridge.destroy();
+  });
 });
 
 describe('BackendMessageFramer', () => {
@@ -636,6 +682,31 @@ describe('BackendMessageFramer', () => {
     const { framer } = makeHarness();
     const tooLarge = new Uint8Array([0x44, 0x7f, 0xff, 0xff, 0xff]);
     expect(() => framer.write(tooLarge)).toThrow(/exceeds sanity cap/);
+  });
+
+  it('throws on a malformed length header assembled via the slow path', () => {
+    const { framer } = makeHarness();
+    framer.write(new Uint8Array([0x44]));
+    expect(() => framer.write(new Uint8Array([0x00, 0x00, 0x00, 0x03]))).toThrow(
+      /Malformed backend message length: 3/,
+    );
+  });
+
+  it('throws on an oversized length header assembled via the slow path', () => {
+    const { framer } = makeHarness();
+    framer.write(new Uint8Array([0x44]));
+    expect(() => framer.write(new Uint8Array([0x7f, 0xff, 0xff, 0xff]))).toThrow(
+      /exceeds sanity cap/,
+    );
+  });
+
+  it('finishes a zero-payload message whose header arrives split across chunks', () => {
+    const { framer, outputs } = makeHarness();
+    // CopyDone ('c') has length == 4 (header only, no payload).
+    framer.write(new Uint8Array([0x63]));
+    framer.write(new Uint8Array([0x00, 0x00, 0x00, 0x04]));
+    framer.flush();
+    expect(collect(outputs)).toEqual(new Uint8Array([0x63, 0x00, 0x00, 0x00, 0x04]));
   });
 
   it('drops a held final RFQ when flush is asked to discard it', () => {

@@ -549,7 +549,7 @@ export class PGliteBridge extends Duplex {
     this.tornDown = true;
     this.pipeline.length = 0;
     this.input.clear();
-    this.sessionLock?.release(this.bridgeId);
+    this.sessionLock?.cancel(this.bridgeId, error ?? new Error('Bridge destroyed'));
 
     // Flush pending write callbacks so pg.Client doesn't hang
     const callbacks = this.drainQueue;
