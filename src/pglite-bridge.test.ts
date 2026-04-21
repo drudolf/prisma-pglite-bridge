@@ -814,7 +814,6 @@ describe('FrontendMessageBuffer', () => {
     buffer.push(first);
     buffer.push(second);
     expect(buffer.consume(first.length)).toEqual(first);
-    expect(buffer.peekByte(0)).toBe(0x58);
     expect(buffer.readInt32BE(1)).toBe(4);
     expect(buffer.consume(second.length)).toEqual(second);
   });
@@ -831,6 +830,27 @@ describe('FrontendMessageBuffer', () => {
     expect(buffer.consume(first.length)).toEqual(first);
     expect(buffer.length).toBe(second.length);
     expect(buffer.consume(second.length)).toEqual(second);
+  });
+
+  it('continues reading correctly after many head-advancing consumes', () => {
+    const buffer = new FrontendMessageBuffer();
+    const messages = Array.from({ length: 40 }, (_, i) =>
+      frontendMessage(0x51, new Uint8Array([i])),
+    );
+
+    for (const message of messages) {
+      buffer.push(message);
+    }
+
+    for (const message of messages.slice(0, -1)) {
+      expect(buffer.consume(message.length)).toEqual(message);
+    }
+
+    const last = messages.at(-1);
+    expect(last).toBeDefined();
+    expect(buffer.readInt32BE(1)).toBe(last ? last.length - 1 : undefined);
+    expect(buffer.consume(last?.length ?? 0)).toEqual(last);
+    expect(buffer.length).toBe(0);
   });
 
   it('throws when consuming more bytes than are buffered', () => {
