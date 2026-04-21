@@ -6,6 +6,7 @@ import { createMockTelemetry } from './__tests__/mocks.ts';
 import setupPGlite from './__tests__/pglite.ts';
 import { createPool } from './create-pool.ts';
 import { BackendMessageFramer, FrontendMessageBuffer, PGliteBridge } from './pglite-bridge.ts';
+import type { TelemetrySink } from './utils/adapter-stats.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
 const pglite = await setupPGlite();
@@ -19,11 +20,11 @@ beforeEach(async () => {
   await pglite.exec('TRUNCATE TABLE conc_test RESTART IDENTITY');
 });
 
-const createClient = () =>
+const createClient = (adapterId?: symbol, telemetry?: TelemetrySink) =>
   new pg.Client({
     user: 'postgres',
     database: 'postgres',
-    stream: () => new PGliteBridge(pglite),
+    stream: () => new PGliteBridge(pglite, undefined, adapterId, telemetry),
   });
 
 describe('PGliteBridge', () => {
@@ -373,13 +374,8 @@ describe('PGliteBridge error paths', () => {
 
   it('records a failed query when an EQP pipeline returns ErrorResponse', async () => {
     const telemetry = createMockTelemetry();
-    const adapterId = Symbol('adapter');
 
-    const client = new pg.Client({
-      user: 'postgres',
-      database: 'postgres',
-      stream: () => new PGliteBridge(pglite, undefined, adapterId, telemetry),
-    });
+    const client = createClient(Symbol('adapter'), telemetry);
     await client.connect();
 
     await expect(client.query('SELECT * FROM nonexistent_eqp WHERE id = $1', [1])).rejects.toThrow(
