@@ -79,6 +79,7 @@ type BackendMessageFramerOptions = {
  */
 export class FrontendMessageBuffer {
   private chunks: Uint8Array[] = [];
+  private headIndex = 0;
   private headOffset = 0;
   private totalLength = 0;
 
@@ -94,31 +95,54 @@ export class FrontendMessageBuffer {
 
   clear(): void {
     this.chunks = [];
+    this.headIndex = 0;
     this.headOffset = 0;
     this.totalLength = 0;
   }
 
-  peekByte(offset: number): number | undefined {
-    if (offset < 0 || offset >= this.totalLength) return undefined;
-    let remaining = this.headOffset + offset;
-    for (const chunk of this.chunks) {
-      if (remaining < chunk.length) {
-        return chunk[remaining];
-      }
-      remaining -= chunk.length;
-    }
-    /* c8 ignore next 2 — unreachable given totalLength bookkeeping */
-    return undefined;
-  }
-
   readInt32BE(offset: number): number | undefined {
-    const b1 = this.peekByte(offset);
-    const b2 = this.peekByte(offset + 1);
-    const b3 = this.peekByte(offset + 2);
-    const b4 = this.peekByte(offset + 3);
-    if (b1 === undefined || b2 === undefined || b3 === undefined || b4 === undefined) {
-      return undefined;
+    if (offset < 0 || offset + 4 > this.totalLength) return undefined;
+
+    const head = this.chunks[this.headIndex];
+    /* c8 ignore next — head defined when totalLength > 0 */
+    if (head !== undefined) {
+      const start = this.headOffset + offset;
+      if (start + 4 <= head.length) {
+        /* c8 ignore start — bounds guaranteed by `start + 4 <= head.length` */
+        const b1 = head[start] ?? 0;
+        const b2 = head[start + 1] ?? 0;
+        const b3 = head[start + 2] ?? 0;
+        const b4 = head[start + 3] ?? 0;
+        /* c8 ignore stop */
+        return ((b1 << 24) | (b2 << 16) | (b3 << 8) | b4) >>> 0;
+      }
     }
+
+    let remaining = this.headOffset + offset;
+    const bytes = new Uint8Array(4);
+    let writeOffset = 0;
+
+    for (let i = this.headIndex; i < this.chunks.length && writeOffset < 4; i++) {
+      const chunk = this.chunks[i];
+      /* c8 ignore next — chunks between headIndex and end are always populated */
+      if (chunk === undefined) return undefined;
+      if (remaining >= chunk.length) {
+        remaining -= chunk.length;
+        continue;
+      }
+
+      const bytesToCopy = Math.min(4 - writeOffset, chunk.length - remaining);
+      bytes.set(chunk.subarray(remaining, remaining + bytesToCopy), writeOffset);
+      writeOffset += bytesToCopy;
+      remaining = 0;
+    }
+
+    /* c8 ignore start — bytes is a fixed 4-byte Uint8Array */
+    const b1 = bytes[0] ?? 0;
+    const b2 = bytes[1] ?? 0;
+    const b3 = bytes[2] ?? 0;
+    const b4 = bytes[3] ?? 0;
+    /* c8 ignore stop */
     return ((b1 << 24) | (b2 << 16) | (b3 << 8) | b4) >>> 0;
   }
 
@@ -128,7 +152,7 @@ export class FrontendMessageBuffer {
     }
     if (length === 0) return new Uint8Array(0);
 
-    const head = this.chunks[0];
+    const head = this.chunks[this.headIndex];
     /* c8 ignore next — head defined when totalLength > 0 */
     if (head !== undefined) {
       const headRemaining = head.length - this.headOffset;
@@ -137,8 +161,9 @@ export class FrontendMessageBuffer {
         this.headOffset += length;
         this.totalLength -= length;
         if (this.headOffset === head.length) {
-          this.chunks.shift();
+          this.headIndex++;
           this.headOffset = 0;
+          this.compactChunks();
         }
         return slice;
       }
@@ -149,7 +174,7 @@ export class FrontendMessageBuffer {
     let remaining = length;
 
     while (remaining > 0) {
-      const chunk = this.chunks[0];
+      const chunk = this.chunks[this.headIndex];
       /* c8 ignore next 3 — guarded by line-116 length check */
       if (chunk === undefined) {
         throw new Error('FrontendMessageBuffer underflow');
@@ -162,12 +187,26 @@ export class FrontendMessageBuffer {
       this.headOffset += bytesToCopy;
       this.totalLength -= bytesToCopy;
       if (this.headOffset === chunk.length) {
-        this.chunks.shift();
+        this.headIndex++;
         this.headOffset = 0;
+        this.compactChunks();
       }
     }
 
     return result;
+  }
+
+  private compactChunks(): void {
+    if (this.headIndex === this.chunks.length) {
+      this.chunks = [];
+      this.headIndex = 0;
+      return;
+    }
+
+    if (this.headIndex >= 32 && this.headIndex * 2 >= this.chunks.length) {
+      this.chunks = this.chunks.slice(this.headIndex);
+      this.headIndex = 0;
+    }
   }
 }
 
@@ -812,6 +851,7 @@ export class PGliteBridge extends Duplex {
   private async execAndPush(message: Uint8Array, detectErrors: boolean): Promise<boolean> {
     let errSeen = false;
     const framer = new BackendMessageFramer({
+      suppressIntermediateReadyForQuery: false,
       onChunk: (chunk) => {
         /* c8 ignore next — race-only: tornDown becomes true mid-stream */
         if (!this.tornDown && chunk.length > 0) {
