@@ -3,6 +3,7 @@ import pg from 'pg';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import setupPGlite from './__tests__/pglite.ts';
+import { createPool } from './create-pool.ts';
 import { BackendMessageFramer, FrontendMessageBuffer, PGliteBridge } from './pglite-bridge.ts';
 import type { TelemetrySink } from './utils/adapter-stats.ts';
 import { SessionLock } from './utils/session-lock.ts';
@@ -111,20 +112,7 @@ describe('PGliteBridge', () => {
 
 describe('PGliteBridge concurrency', () => {
   it('concurrent parameterized queries through pool do not cause portal errors', async () => {
-    const pool = new pg.Pool({
-      Client: class extends pg.Client {
-        constructor(config?: string | pg.ClientConfig) {
-          const cfg = typeof config === 'string' ? { connectionString: config } : (config ?? {});
-          super({
-            ...cfg,
-            user: 'postgres',
-            database: 'postgres',
-            stream: () => new PGliteBridge(pglite),
-          } as pg.ClientConfig);
-        }
-      } as typeof pg.Client,
-      max: 5,
-    });
+    const { pool } = await createPool({ max: 5, pglite });
 
     // Run 50 concurrent parameterized queries (EQP pipeline: P+B+D+E+S)
     const results = await Promise.all(
@@ -139,20 +127,7 @@ describe('PGliteBridge concurrency', () => {
   });
 
   it('concurrent inserts produce correct row counts', async () => {
-    const pool = new pg.Pool({
-      Client: class extends pg.Client {
-        constructor(config?: string | pg.ClientConfig) {
-          const cfg = typeof config === 'string' ? { connectionString: config } : (config ?? {});
-          super({
-            ...cfg,
-            user: 'postgres',
-            database: 'postgres',
-            stream: () => new PGliteBridge(pglite),
-          } as pg.ClientConfig);
-        }
-      } as typeof pg.Client,
-      max: 3,
-    });
+    const { pool } = await createPool({ max: 3, pglite });
 
     await Promise.all(
       Array.from({ length: 20 }, (_, i) =>
@@ -168,15 +143,12 @@ describe('PGliteBridge concurrency', () => {
 });
 
 describe('PGliteBridge error paths', () => {
-  type RunExclusive = (fn: () => Promise<unknown>) => Promise<void>;
-  type ExecProtocol = (
-    msg: Uint8Array,
-    opts: { onRawData: (chunk: Uint8Array) => void },
-  ) => Promise<void>;
-
   const makeMockPglite = (overrides: {
-    runExclusive?: RunExclusive;
-    execProtocolRawStream?: ExecProtocol;
+    runExclusive?: (fn: () => Promise<unknown>) => Promise<void>;
+    execProtocolRawStream?: (
+      msg: Uint8Array,
+      opts: { onRawData: (chunk: Uint8Array) => void },
+    ) => Promise<void>;
   }): PGlite =>
     ({
       runExclusive:
