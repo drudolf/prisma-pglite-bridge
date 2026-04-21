@@ -1,8 +1,11 @@
+import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import setupPGlite from './__tests__/pglite.ts';
 import { BackendMessageFramer, FrontendMessageBuffer, PGliteBridge } from './pglite-bridge.ts';
+import type { TelemetrySink } from './utils/adapter-stats.ts';
+import { SessionLock } from './utils/session-lock.ts';
 
 const pglite = await setupPGlite();
 
@@ -82,6 +85,28 @@ describe('PGliteBridge', () => {
     expect(rows[0]?.ok).toBe(1);
     await client.end();
   });
+
+  it('handles EQP pipeline errors without telemetry enabled', async () => {
+    const client = createClient();
+    await client.connect();
+
+    await expect(
+      client.query('SELECT * FROM nonexistent_plain WHERE id = $1', [1]),
+    ).rejects.toThrow(/does not exist/);
+
+    await client.end();
+  });
+
+  it('socket-compat no-ops return the bridge instance', () => {
+    const bridge = new PGliteBridge(pglite);
+    expect(bridge.setKeepAlive()).toBe(bridge);
+    expect(bridge.setNoDelay()).toBe(bridge);
+    expect(bridge.setTimeout()).toBe(bridge);
+    expect(bridge.ref()).toBe(bridge);
+    expect(bridge.unref()).toBe(bridge);
+    expect(bridge.connect()).toBe(bridge);
+    bridge.destroy();
+  });
 });
 
 describe('PGliteBridge concurrency', () => {
@@ -139,6 +164,266 @@ describe('PGliteBridge concurrency', () => {
     expect(rows[0]?.n).toBe(20);
 
     await pool.end();
+  });
+});
+
+describe('PGliteBridge error paths', () => {
+  type RunExclusive = (fn: () => Promise<unknown>) => Promise<void>;
+  type ExecProtocol = (
+    msg: Uint8Array,
+    opts: { onRawData: (chunk: Uint8Array) => void },
+  ) => Promise<void>;
+
+  const makeMockPglite = (overrides: {
+    runExclusive?: RunExclusive;
+    execProtocolRawStream?: ExecProtocol;
+  }): PGlite =>
+    ({
+      runExclusive:
+        overrides.runExclusive ??
+        (async (fn: () => Promise<unknown>) => {
+          await fn();
+        }),
+      execProtocolRawStream: overrides.execProtocolRawStream ?? (async () => {}),
+    }) as unknown as PGlite;
+
+  const startupBytes = (): Buffer => {
+    const buf = Buffer.alloc(8);
+    buf.writeUInt32BE(8, 0);
+    buf.writeUInt32BE(0x00030000, 4);
+    return buf;
+  };
+
+  const simpleQuery = (sql: string): Buffer => {
+    const payload = Buffer.from(`${sql}\0`);
+    const len = 4 + payload.length;
+    const buf = Buffer.alloc(1 + len);
+    buf[0] = 0x51; // 'Q'
+    buf.writeUInt32BE(len, 1);
+    payload.copy(buf, 5);
+    return buf;
+  };
+
+  const writeAndAwait = (bridge: PGliteBridge, chunk: Buffer): Promise<Error | undefined> =>
+    new Promise((resolve) => {
+      bridge.write(chunk, (err) => resolve(err ?? undefined));
+    });
+
+  it('fires pending write callbacks with the destroy error when torn down mid-drain', async () => {
+    const mock = makeMockPglite({
+      runExclusive: () => new Promise<void>(() => {}),
+    });
+    const bridge = new PGliteBridge(mock);
+    bridge.on('error', () => {});
+
+    const writeResult = writeAndAwait(bridge, startupBytes());
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const destroyErr = new Error('bridge torn down');
+    bridge.destroy(destroyErr);
+
+    await expect(writeResult).resolves.toBe(destroyErr);
+  });
+
+  it('releases the session lock and surfaces the error when runExclusive throws', async () => {
+    const mock = makeMockPglite({
+      runExclusive: async () => {
+        throw new Error('pglite kaput');
+      },
+    });
+    const lock = new SessionLock();
+    const releaseSpy = vi.spyOn(lock, 'release');
+    const bridge = new PGliteBridge(mock, lock);
+    bridge.on('error', () => {});
+
+    const err = await writeAndAwait(bridge, startupBytes());
+    expect(err?.message).toBe('pglite kaput');
+    expect(releaseSpy).toHaveBeenCalled();
+
+    bridge.destroy();
+  });
+
+  it('records a failed query and rethrows when runExclusive throws after startup', async () => {
+    let call = 0;
+    const mock = makeMockPglite({
+      runExclusive: async (fn) => {
+        call += 1;
+        if (call === 1) {
+          await fn();
+          return;
+        }
+        throw new Error('query kaput');
+      },
+    });
+
+    const telemetry: TelemetrySink = {
+      recordQuery: vi.fn(),
+      recordLockWait: vi.fn(),
+    };
+
+    const bridge = new PGliteBridge(mock, undefined, Symbol('adapter'), telemetry);
+    bridge.on('error', () => {});
+
+    const startupErr = await writeAndAwait(bridge, startupBytes());
+    expect(startupErr).toBeUndefined();
+
+    const queryErr = await writeAndAwait(bridge, simpleQuery('SELECT 1'));
+    expect(queryErr?.message).toBe('query kaput');
+    expect(telemetry.recordQuery).toHaveBeenCalledWith(expect.any(Number), false);
+
+    bridge.destroy();
+  });
+
+  it('holds processing until a partial startup message completes', async () => {
+    let runCalls = 0;
+    const mock = makeMockPglite({
+      runExclusive: async (fn) => {
+        runCalls += 1;
+        await fn();
+      },
+    });
+    const bridge = new PGliteBridge(mock);
+    bridge.on('error', () => {});
+
+    const firstHalf = startupBytes().subarray(0, 3);
+    const secondHalf = startupBytes().subarray(3);
+
+    const partialErr = await writeAndAwait(bridge, Buffer.from(firstHalf));
+    expect(partialErr).toBeUndefined();
+    expect(runCalls).toBe(0);
+
+    const restErr = await writeAndAwait(bridge, Buffer.from(secondHalf));
+    expect(restErr).toBeUndefined();
+    expect(runCalls).toBe(1);
+
+    bridge.destroy();
+  });
+
+  it('breaks out of processMessages on a malformed length header', async () => {
+    const mock = makeMockPglite({});
+    const bridge = new PGliteBridge(mock);
+    bridge.on('error', () => {});
+
+    const startupErr = await writeAndAwait(bridge, startupBytes());
+    expect(startupErr).toBeUndefined();
+
+    const malformed = Buffer.from([0x51, 0x00, 0x00, 0x00, 0x03]);
+    const err = await writeAndAwait(bridge, malformed);
+    expect(err).toBeUndefined();
+
+    bridge.destroy();
+  });
+
+  it('releases the session lock and ends the stream on TERMINATE', async () => {
+    const mock = makeMockPglite({});
+    const lock = new SessionLock();
+    const releaseSpy = vi.spyOn(lock, 'release');
+    const bridge = new PGliteBridge(mock, lock);
+    bridge.on('error', () => {});
+
+    await writeAndAwait(bridge, startupBytes());
+    releaseSpy.mockClear();
+
+    const terminate = Buffer.from([0x58, 0x00, 0x00, 0x00, 0x04]);
+    await writeAndAwait(bridge, terminate);
+
+    expect(releaseSpy).toHaveBeenCalled();
+
+    bridge.destroy();
+  });
+
+  it('wraps a non-Error throw into an Error when runExclusive rejects', async () => {
+    const mock = makeMockPglite({
+      runExclusive: async () => {
+        throw 'plain string boom';
+      },
+    });
+    const bridge = new PGliteBridge(mock);
+    bridge.on('error', () => {});
+
+    const err = await writeAndAwait(bridge, startupBytes());
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toBe('plain string boom');
+
+    bridge.destroy();
+  });
+
+  it('queues additional writes while a drain is already running', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let runCalls = 0;
+    const mock = makeMockPglite({
+      runExclusive: async (fn) => {
+        runCalls += 1;
+        if (runCalls === 1) await gate;
+        await fn();
+      },
+    });
+    const bridge = new PGliteBridge(mock);
+    bridge.on('error', () => {});
+
+    // Call _write directly twice in the same tick so the second one sees
+    // `draining === true` (Node's Writable would otherwise serialize).
+    type WriteInternal = (
+      chunk: Buffer,
+      enc: BufferEncoding,
+      cb: (err?: Error | null) => void,
+    ) => void;
+    const rawWrite = (bridge as unknown as { _write: WriteInternal })._write.bind(bridge);
+
+    let firstErr: Error | null | undefined;
+    let secondErr: Error | null | undefined;
+    const firstDone = new Promise<void>((resolve) => {
+      rawWrite(startupBytes(), 'utf-8', (e) => {
+        firstErr = e;
+        resolve();
+      });
+    });
+    const secondDone = new Promise<void>((resolve) => {
+      rawWrite(simpleQuery('SELECT 1'), 'utf-8', (e) => {
+        secondErr = e;
+        resolve();
+      });
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(runCalls).toBe(1);
+
+    release();
+
+    await firstDone;
+    await secondDone;
+    expect(firstErr ?? undefined).toBeUndefined();
+    expect(secondErr ?? undefined).toBeUndefined();
+    expect(runCalls).toBe(2);
+
+    bridge.destroy();
+  });
+
+  it('records a failed query when an EQP pipeline returns ErrorResponse', async () => {
+    const telemetry: TelemetrySink = {
+      recordQuery: vi.fn(),
+      recordLockWait: vi.fn(),
+    };
+    const adapterId = Symbol('adapter');
+
+    const client = new pg.Client({
+      user: 'postgres',
+      database: 'postgres',
+      stream: () => new PGliteBridge(pglite, undefined, adapterId, telemetry),
+    });
+    await client.connect();
+
+    await expect(client.query('SELECT * FROM nonexistent_eqp WHERE id = $1', [1])).rejects.toThrow(
+      /does not exist/,
+    );
+
+    await client.end();
+
+    const calls = (telemetry.recordQuery as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.some(([, succeeded]) => succeeded === false)).toBe(true);
   });
 });
 
@@ -334,6 +619,22 @@ describe('BackendMessageFramer', () => {
     expect(outputs[3]?.buffer).toBe(combined.buffer);
   });
 
+  it('throws on a backend message with a length header < 4', () => {
+    const { framer } = makeHarness();
+    const malformed = new Uint8Array([0x44, 0x00, 0x00, 0x00, 0x03]);
+    expect(() => framer.write(malformed)).toThrow(/Malformed backend message length: 3/);
+  });
+
+  it('drops a held final RFQ when flush is asked to discard it', () => {
+    const { framer, outputs, statuses } = makeHarness(true);
+    framer.write(DATA);
+    framer.write(RFQ_IDLE);
+    expect(outputs.some((chunk) => chunk.length === RFQ_IDLE.length)).toBe(false);
+    framer.flush({ dropHeldReadyForQuery: true });
+    expect(statuses).toEqual([0x49]);
+    expect(collect(outputs)).toEqual(DATA);
+  });
+
   it('can reset between flushPipeline-style boundaries without leaking partial state', () => {
     const { framer, outputs, statuses } = makeHarness(true);
     framer.write(RFQ_IDLE.subarray(0, 3));
@@ -432,5 +733,23 @@ describe('FrontendMessageBuffer', () => {
     expect(buffer.peekByte(0)).toBe(0x58);
     expect(buffer.readInt32BE(1)).toBe(4);
     expect(buffer.consume(second.length)).toEqual(second);
+  });
+
+  it('throws when consuming more bytes than are buffered', () => {
+    const buffer = new FrontendMessageBuffer();
+    expect(() => buffer.consume(1)).toThrow(/Cannot consume 1 bytes from 0-byte buffer/);
+    buffer.push(new Uint8Array([0x01, 0x02]));
+    expect(() => buffer.consume(3)).toThrow(/Cannot consume 3 bytes from 2-byte buffer/);
+    expect(() => buffer.consume(-1)).toThrow(/Cannot consume -1 bytes/);
+  });
+
+  it('ignores empty pushes and supports consume(0)', () => {
+    const buffer = new FrontendMessageBuffer();
+    buffer.push(new Uint8Array(0));
+    expect(buffer.length).toBe(0);
+    expect(buffer.consume(0)).toEqual(new Uint8Array(0));
+    buffer.push(new Uint8Array([0x41]));
+    expect(buffer.consume(0)).toEqual(new Uint8Array(0));
+    expect(buffer.length).toBe(1);
   });
 });

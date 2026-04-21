@@ -151,7 +151,6 @@ export const createPgliteAdapter = async (
     const isMigrationSQL = !options.sql;
 
     if (isMigrationSQL) {
-      let committed = false;
       try {
         await pglite.exec(`BEGIN;\n${sql};\n${SENTINEL_STATEMENTS}`);
 
@@ -160,9 +159,8 @@ export const createPgliteAdapter = async (
         );
         if (!isValidSentinelRow(verify)) throw new Error(SENTINAL_COLLISON_ERROR_MESSAGE);
         await pglite.exec('COMMIT');
-        committed = true;
       } catch (err) {
-        if (!committed) await pglite.exec('ROLLBACK');
+        await pglite.exec('ROLLBACK');
         if (err instanceof Error && err.message === SENTINAL_COLLISON_ERROR_MESSAGE) throw err;
         throw new Error(
           'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
@@ -195,15 +193,16 @@ export const createPgliteAdapter = async (
 
   let closing: Promise<void> | undefined;
   const close = async () => {
-    if (closing) return closing;
-    closing = (async () => {
-      const closeEntry = adapterStats ? process.hrtime.bigint() : undefined;
-      await pool.end();
-      if (adapterStats && closeEntry !== undefined) {
-        await adapterStats.freeze(pglite, closeEntry);
-      }
-      await pglite.close();
-    })();
+    if (!closing) {
+      closing = (async () => {
+        const closeEntry = adapterStats ? process.hrtime.bigint() : undefined;
+        await pool.end();
+        if (adapterStats && closeEntry !== undefined) {
+          await adapterStats.freeze(pglite, closeEntry);
+        }
+        await pglite.close();
+      })();
+    }
     return closing;
   };
 
