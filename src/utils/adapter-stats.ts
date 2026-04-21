@@ -1,7 +1,8 @@
 /**
  * Private per-adapter stats state used to power `stats()`.
  *
- * Instantiated at level 1 or 2 (level 0 means no stats object exists).
+ * Instantiated at level `'basic'` or `'full'` (level `'off'` means no stats
+ * object exists).
  * Query-level timing is recorded directly by the bridge; one-shot lifecycle
  * signals (`markSchemaSetup`, `incrementResetDb`, `freeze`) remain direct
  * method calls invoked by the adapter itself.
@@ -21,12 +22,13 @@ type DbSizeQueryable = Pick<PGlite, 'query'>;
 /**
  * Stats collection level.
  *
- * - `0` — off. `stats()` returns `undefined`. Zero hot-path overhead.
- * - `1` — timing (`durationMs`, `schemaSetupMs`), query percentiles,
- *   counters, and `dbSizeBytes`.
- * - `2` — level 1 plus `processRssPeakBytes` and session-lock waits.
+ * - `'off'` — `stats()` returns `undefined`. Zero hot-path overhead.
+ * - `'basic'` — timing (`durationMs`, `schemaSetupMs`), query
+ *   percentiles, counters, and `dbSizeBytes`.
+ * - `'full'` — `'basic'` plus `processRssPeakBytes` and session-lock
+ *   waits.
  */
-export type StatsLevel = 0 | 1 | 2;
+export type StatsLevel = 'off' | 'basic' | 'full';
 
 /** Internal bridge-facing telemetry contract. */
 export interface TelemetrySink {
@@ -70,12 +72,12 @@ interface StatsBase {
   dbSizeBytes?: number;
 }
 
-export interface Stats1 extends StatsBase {
-  statsLevel: 1;
+export interface StatsBasic extends StatsBase {
+  statsLevel: 'basic';
 }
 
-export interface Stats2 extends StatsBase {
-  statsLevel: 2;
+export interface StatsFull extends StatsBase {
+  statsLevel: 'full';
   /**
    * Process-wide RSS peak (sampled, lower bound). This value reflects the
    * entire Node process, not just this adapter — parallel test runners or
@@ -89,7 +91,7 @@ export interface Stats2 extends StatsBase {
   maxSessionLockWaitMs: number;
 }
 
-export type Stats = Stats1 | Stats2;
+export type Stats = StatsBasic | StatsFull;
 
 const RSS_SAMPLE_INTERVAL_MS = 500;
 
@@ -102,7 +104,7 @@ const percentile = (sorted: readonly number[], p: number): number => {
 };
 
 export class AdapterStats implements TelemetrySink {
-  private readonly level: 1 | 2;
+  private readonly level: 'basic' | 'full';
   private readonly createdAtHrtime: bigint;
 
   private queryDurations: number[] = [];
@@ -126,11 +128,11 @@ export class AdapterStats implements TelemetrySink {
   private cachedDbSizeBytes?: number;
   private dbSizeFrozen = false;
 
-  constructor(level: 1 | 2) {
+  constructor(level: 'basic' | 'full') {
     this.level = level;
     this.createdAtHrtime = process.hrtime.bigint();
 
-    if (level === 2) {
+    if (level === 'full') {
       this.sampleRss();
       this.rssInterval = setInterval(() => this.sampleRss(), RSS_SAMPLE_INTERVAL_MS);
       this.rssInterval.unref();
@@ -150,7 +152,7 @@ export class AdapterStats implements TelemetrySink {
 
   recordLockWait(durationMs: number): void {
     if (this.frozen) return;
-    if (this.level !== 2) return;
+    if (this.level !== 'full') return;
     this.totalSessionLockWaitMs += durationMs;
     this.sessionLockAcquisitionCount += 1;
     if (durationMs > this.maxSessionLockWaitMs) this.maxSessionLockWaitMs = durationMs;
@@ -189,14 +191,14 @@ export class AdapterStats implements TelemetrySink {
       dbSizeBytes,
     };
 
-    if (this.level === 1) {
-      return { ...base, statsLevel: 1 };
+    if (this.level === 'basic') {
+      return { ...base, statsLevel: 'basic' };
     }
 
     const count = this.sessionLockAcquisitionCount;
     return {
       ...base,
-      statsLevel: 2,
+      statsLevel: 'full',
       processRssPeakBytes: this.peakRssBytes,
       totalSessionLockWaitMs: this.totalSessionLockWaitMs,
       sessionLockAcquisitionCount: count,
@@ -214,7 +216,7 @@ export class AdapterStats implements TelemetrySink {
       this.cachedDbSizeBytes = await this.queryDbSize(pglite);
     } finally {
       this.dbSizeFrozen = true;
-      if (this.level === 2) this.sampleRss();
+      if (this.level === 'full') this.sampleRss();
       this.stop();
     }
   }

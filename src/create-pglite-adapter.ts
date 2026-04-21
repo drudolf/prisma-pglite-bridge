@@ -43,15 +43,15 @@ export interface CreatePgliteAdapterOptions extends MigrationsOptions {
   max?: number;
 
   /**
-   * Collect adapter/query telemetry. Default `0` (off, zero overhead).
+   * Collect adapter/query telemetry. Default `'off'` (zero overhead).
    *
-   * - `1` — timing (`durationMs`, `schemaSetupMs`, query percentiles) and
-   *   counters (`queryCount`, `failedQueryCount`, `resetDbCalls`), plus
+   * - `'basic'` — timing (`durationMs`, `schemaSetupMs`, query percentiles)
+   *   and counters (`queryCount`, `failedQueryCount`, `resetDbCalls`), plus
    *   `dbSizeBytes`.
-   * - `2` — everything in level 1, plus `processRssPeakBytes` (process-wide,
-   *   sampled) and session-lock wait statistics.
+   * - `'full'` — everything in `'basic'`, plus `processRssPeakBytes`
+   *   (process-wide, sampled) and session-lock wait statistics.
    *
-   * Retrieve via `await adapter.stats()` — returns `undefined` at level 0.
+   * Retrieve via `await adapter.stats()` — returns `undefined` at `'off'`.
    */
   statsLevel?: StatsLevel;
 }
@@ -90,15 +90,16 @@ export interface PgliteAdapter {
   /**
    * Shut down the pool. The caller-owned PGlite instance is not closed.
    *
-   * When `statsLevel > 0`, call `stats()` *after* `close()` to collect the
-   * frozen snapshot — `durationMs` and `dbSizeBytes` are cached at the
-   * moment `close()` is invoked, and subsequent `stats()` calls are safe.
+   * When `statsLevel` is not `'off'`, call `stats()` *after* `close()` to
+   * collect the frozen snapshot — `durationMs` and `dbSizeBytes` are cached
+   * at the moment `close()` is invoked, and subsequent `stats()` calls are
+   * safe.
    */
   close: () => Promise<void>;
 
   /**
    * Retrieve collected telemetry. Returns `undefined` when `statsLevel` was
-   * `0` (or omitted). Never throws — field-level failures surface as
+   * `'off'` (or omitted). Never throws — field-level failures surface as
    * `undefined` values (see {@link Stats}).
    */
   stats: StatsFn;
@@ -115,12 +116,12 @@ export interface PgliteAdapter {
 export const createPgliteAdapter = async (
   options: CreatePgliteAdapterOptions,
 ): Promise<PgliteAdapter> => {
-  const statsLevel = options.statsLevel ?? 0;
-  if (statsLevel < 0 || statsLevel > 2) {
-    throw new Error(`statsLevel must be 0, 1, or 2; got ${statsLevel}`);
+  const statsLevel = options.statsLevel ?? 'off';
+  if (statsLevel !== 'off' && statsLevel !== 'basic' && statsLevel !== 'full') {
+    throw new Error(`statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`);
   }
   const adapterId = Symbol('adapter');
-  const adapterStats = statsLevel === 0 ? undefined : new AdapterStats(statsLevel);
+  const adapterStats = statsLevel === 'off' ? undefined : new AdapterStats(statsLevel);
 
   const { pglite } = options;
 
