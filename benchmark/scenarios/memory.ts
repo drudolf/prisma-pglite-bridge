@@ -1,3 +1,15 @@
+/**
+ * Memory benchmark — peak and retained RSS/heap/arrayBuffers across a
+ * representative query mix, with bridge-level phase attribution.
+ *
+ * Runs heavy `findMany` + large-JSON workloads and records snapshots
+ * before/during/after each query. When the bridge attribution probe is
+ * available (it exposes `arm()`/`take()` on the PGlite instance), each
+ * query emits a {@link QueryAttribution} with per-span {@link
+ * BridgeAttributionSpan}s pinpointing where RSS peaked (before exec /
+ * before push / after push / after exec). Requires `--expose-gc` for
+ * meaningful numbers.
+ */
 import { once } from 'node:events';
 import pg from 'pg';
 import type {

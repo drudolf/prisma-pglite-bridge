@@ -1,3 +1,11 @@
+/**
+ * Adapter harness for real PostgreSQL over the `pg` driver.
+ *
+ * Connects to a caller-provided server via `BENCH_POSTGRES_URL` (or
+ * `DATABASE_URL`). Optional `BENCH_POSTGRES_SERVER_PIDS` enables
+ * server-side RSS sampling so combined client+server memory can be
+ * compared against the in-process adapters. Set those in `.env.test`.
+ */
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';

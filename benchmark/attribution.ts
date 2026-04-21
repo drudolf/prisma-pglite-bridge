@@ -1,3 +1,14 @@
+/**
+ * Stack-level memory probe shared by all benchmark adapters.
+ *
+ * Monkey-patches `pg.Client`, `pg.Connection`, and `pg.Result` (once per
+ * process) and instruments PGlite / driver-adapter entry points to record
+ * labelled memory snapshots at each stack stage: `scenario.start`,
+ * `pg.send`, `firstRow`, `resultBuilt`, `afterExec`, etc. Scenarios call
+ * `stackProbe.start(label)` before a query and `stop()` after; the
+ * recorded stages become a {@link StackAttribution} trace the runner
+ * aggregates. Exported as the singleton {@link stackProbe}.
+ */
 import { performance } from 'node:perf_hooks';
 import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';

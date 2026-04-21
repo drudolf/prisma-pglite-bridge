@@ -1,3 +1,10 @@
+/**
+ * Adapter harness for the third-party `pglite-prisma-adapter` package.
+ *
+ * Baseline for comparison against the bridge: same PGlite WASM engine
+ * but a different path from Prisma to PGlite (no pg protocol). Direct
+ * PGlite is instrumented via `stackProbe` for memory attribution.
+ */
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPGlite } from 'pglite-prisma-adapter';
