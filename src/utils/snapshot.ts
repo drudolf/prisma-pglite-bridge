@@ -1,11 +1,9 @@
 import type { PGlite } from '@electric-sql/pglite';
-import { SENTINEL_SCHEMA } from './sentinel.ts';
 
 const SNAPSHOT_SCHEMA = '_pglite_snapshot';
 
 const USER_TABLES_WHERE = `schemaname NOT IN ('pg_catalog', 'information_schema')
        AND schemaname != '${SNAPSHOT_SCHEMA}'
-       AND schemaname != '${SENTINEL_SCHEMA}'
        AND tablename NOT LIKE '_prisma%'`;
 
 const escapeLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;

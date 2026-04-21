@@ -14,19 +14,12 @@
  * beforeEach(() => resetDb());
  * ```
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createPool } from './create-pool.ts';
 import { AdapterStats, type Stats, type StatsLevel } from './utils/adapter-stats.ts';
 import { getMigrationSQL, type MigrationsOptions } from './utils/migrations.ts';
-import {
-  isDatabaseInitialized,
-  isValidSentinelRow,
-  SENTINAL_COLLISON_ERROR_MESSAGE,
-  SENTINEL_SCHEMA,
-  SENTINEL_STATEMENTS,
-  SENTINEL_TABLE,
-  writeSentinel,
-} from './utils/sentinel.ts';
 import { createSnapshotManager } from './utils/snapshot.ts';
 import { nsToMs } from './utils/time.ts';
 
@@ -134,6 +127,9 @@ export const createPgliteAdapter = async (
   const adapterId = Symbol('adapter');
   const adapterStats = statsLevel === 0 ? undefined : new AdapterStats(statsLevel);
 
+  const dataDirInitialized =
+    options.dataDir !== undefined && existsSync(join(options.dataDir, 'PG_VERSION'));
+
   const { pool, pglite, wasmInitMs } = await createPool({
     dataDir: options.dataDir,
     extensions: options.extensions,
@@ -146,37 +142,15 @@ export const createPgliteAdapter = async (
   }
 
   const schemaStart = adapterStats ? process.hrtime.bigint() : undefined;
-  if (!options.dataDir || !(await isDatabaseInitialized(pglite))) {
+  if (!dataDirInitialized) {
     const sql = await getMigrationSQL(options);
-    const isMigrationSQL = !options.sql;
-
-    if (isMigrationSQL) {
-      try {
-        await pglite.exec(`BEGIN;\n${sql};\n${SENTINEL_STATEMENTS}`);
-
-        const { rows: verify } = await pglite.query<{ marker: string; version: number }>(
-          `SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`,
-        );
-        if (!isValidSentinelRow(verify)) throw new Error(SENTINAL_COLLISON_ERROR_MESSAGE);
-        await pglite.exec('COMMIT');
-      } catch (err) {
-        await pglite.exec('ROLLBACK');
-        if (err instanceof Error && err.message === SENTINAL_COLLISON_ERROR_MESSAGE) throw err;
-        throw new Error(
-          'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
-          { cause: err },
-        );
-      }
-    } else {
-      try {
-        await pglite.exec(sql);
-      } catch (err) {
-        throw new Error(
-          'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
-          { cause: err },
-        );
-      }
-      await writeSentinel(pglite);
+    try {
+      await pglite.exec(sql);
+    } catch (err) {
+      throw new Error(
+        'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
+        { cause: err },
+      );
     }
   }
   if (adapterStats && schemaStart !== undefined) {

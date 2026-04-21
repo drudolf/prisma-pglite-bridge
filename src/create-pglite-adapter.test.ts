@@ -4,13 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import setupTestSuite from './__tests__/adapter.ts';
 import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
 import { createPgliteAdapter } from './create-pglite-adapter.ts';
-import {
-  SENTINAL_COLLISON_ERROR_MESSAGE,
-  SENTINEL_MARKER,
-  SENTINEL_SCHEMA,
-  SENTINEL_STATEMENTS,
-  SENTINEL_TABLE,
-} from './utils/sentinel.ts';
 
 const { prisma, adapter } = await setupTestSuite({
   options: { statsLevel: 1 },
@@ -156,66 +149,31 @@ describe('createPgliteAdapter', () => {
     await expect(prisma.tenant.count()).resolves.toBe(0);
   });
 
-  it('wraps migration transaction failures and rolls back', async () => {
-    const exec = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('migration failed'))
-      .mockResolvedValueOnce(undefined);
+  it('wraps migration failures with a descriptive error', async () => {
+    const exec = vi.fn().mockRejectedValueOnce(new Error('migration failed'));
     const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks({ exec });
 
     await expect(createPgliteAdapter({ migrationsPath: '/tmp/migrations' })).rejects.toThrow(
       'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
     );
-    expect(exec.mock.calls[0]?.[0]).toBe(`BEGIN;\nBROKEN SQL;\n${SENTINEL_STATEMENTS}`);
-    expect(exec.mock.calls[1]).toEqual(['ROLLBACK']);
+    expect(exec.mock.calls).toEqual([['BROKEN SQL']]);
   });
 
-  it('commits a successful migration transaction after sentinel verification', async () => {
+  it('applies migration SQL on a fresh in-memory database', async () => {
     const exec = vi.fn().mockResolvedValue(undefined);
-    const query = vi.fn().mockImplementation(async (sql: string) => {
-      if (sql.includes('FROM pg_tables') && sql.includes("tablename = '__initialized'")) {
-        return { rows: [{ found: false }] };
-      }
-      if (sql.includes('FROM pg_namespace WHERE nspname =')) {
-        return { rows: [{ found: false }] };
-      }
-      if (sql.includes('AS initialized')) {
-        return { rows: [{ initialized: false }] };
-      }
-      if (sql.includes(`SELECT marker, version FROM "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}"`)) {
-        return { rows: [{ marker: SENTINEL_MARKER, version: 1 }] };
-      }
-      return { rows: [] };
-    });
     const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks({
       exec,
-      query,
       getMigrationSQL: vi.fn().mockResolvedValue('SELECT 1'),
     });
 
     const created = await createPgliteAdapter({ migrationsPath: '/tmp/migrations' });
 
-    expect(exec.mock.calls[0]?.[0]).toBe(`BEGIN;\nSELECT 1;\n${SENTINEL_STATEMENTS}`);
-    expect(exec.mock.calls[1]).toEqual(['COMMIT']);
+    expect(exec.mock.calls).toEqual([['SELECT 1']]);
 
     await created.close();
   });
 
-  it('rethrows sentinel collisions from the migration transaction path', async () => {
-    const exec = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
-    const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks({
-      exec,
-      getMigrationSQL: vi.fn().mockResolvedValue('SELECT 1'),
-    });
-
-    await expect(createPgliteAdapter({ migrationsPath: '/tmp/migrations' })).rejects.toThrow(
-      SENTINAL_COLLISON_ERROR_MESSAGE,
-    );
-    expect(exec.mock.calls[0]?.[0]).toBe(`BEGIN;\nSELECT 1;\n${SENTINEL_STATEMENTS}`);
-    expect(exec.mock.calls[1]).toEqual(['ROLLBACK']);
-  });
-
-  it('wraps explicit sql failures before writing the sentinel', async () => {
+  it('wraps explicit sql failures with a descriptive error', async () => {
     const exec = vi.fn().mockRejectedValueOnce(new Error('bad sql'));
     const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks({ exec });
 
@@ -236,7 +194,6 @@ describe('createPgliteAdapter', () => {
     const pgliteClose = vi.fn().mockResolvedValue(undefined);
     const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks({
       exec: vi.fn().mockResolvedValue(undefined),
-      query: vi.fn().mockResolvedValue({ rows: [{ marker: SENTINEL_MARKER, version: 1 }] }),
       poolEnd,
       pgliteClose,
     });
