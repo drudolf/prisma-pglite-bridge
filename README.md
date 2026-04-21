@@ -42,14 +42,14 @@ pnpm why @electric-sql/pglite
 If you are also setting up `prisma-pglite-bridge`, install it
 separately as usual.
 
-2. Install `prisma-pglite-bridge` so the patch file is available in
+1. Install `prisma-pglite-bridge` so the patch file is available in
    `node_modules`:
 
 ```sh
 pnpm add -D prisma-pglite-bridge
 ```
 
-3. Copy the shipped patch file into your own repo:
+1. Copy the shipped patch file into your own repo:
 
 ```sh
 mkdir -p patches
@@ -57,7 +57,7 @@ cp node_modules/prisma-pglite-bridge/patches/@electric-sql__pglite@0.4.4.patch \
   patches/@electric-sql__pglite@0.4.4.patch
 ```
 
-4. Add this to your project's `package.json`:
+1. Add this to your project's `package.json`:
 
 ```json
 {
@@ -69,15 +69,16 @@ cp node_modules/prisma-pglite-bridge/patches/@electric-sql__pglite@0.4.4.patch \
 }
 ```
 
-5. Reinstall so `pnpm` applies the patch:
+1. Reinstall so `pnpm` applies the patch:
 
 ```sh
 pnpm install
 ```
 
-6. Verify that the patch is active in `pnpm-lock.yaml`.
+1. Verify that the patch is active in `pnpm-lock.yaml`.
 
 You should see:
+
 - a top-level `patchedDependencies` entry for `@electric-sql/pglite@0.4.4`
 - patched package keys that include `patch_hash=...`
 
