@@ -11,7 +11,7 @@ Retrieve via `await adapter.stats()` — returns `undefined` at
   counters (`queryCount`, `failedQueryCount`, `resetDbCalls`),
   `dbSizeBytes`, and a sliding-window query percentile set
   (`recentP50QueryMs`, `recentP95QueryMs`, `recentMaxQueryMs`) over
-  the most recent `QUERY_DURATION_WINDOW_SIZE` (10,000) queries.
+  the most recent ~10,000 queries.
   Lifetime totals (`queryCount`, `totalQueryMs`, `avgQueryMs`) are
   not windowed.
 - `'full'` adds `processRssPeakBytes` (process-wide, sampled) and
