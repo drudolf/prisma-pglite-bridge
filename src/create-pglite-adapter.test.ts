@@ -4,6 +4,7 @@ import type { Mock } from 'vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import setupTestSuite from './__tests__/adapter.ts';
 import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
+import { createMockPglite } from './__tests__/mocks.ts';
 import { createPgliteAdapter } from './create-pglite-adapter.ts';
 
 const { pglite, prisma, adapter } = await setupTestSuite({
@@ -11,24 +12,6 @@ const { pglite, prisma, adapter } = await setupTestSuite({
 });
 
 type CreatePgliteAdapterModule = typeof import('./create-pglite-adapter.ts');
-
-interface MockPglite {
-  exec: Mock;
-  query: Mock;
-  waitReady: Promise<void>;
-}
-
-const createMockPglite = ({
-  exec,
-  query = vi.fn().mockResolvedValue({ rows: [] }),
-}: {
-  exec: Mock;
-  query?: Mock;
-}): MockPglite => ({
-  exec,
-  query,
-  waitReady: Promise.resolve(),
-});
 
 const loadCreatePgliteAdapterWithMocks = async ({
   poolEnd = vi.fn().mockResolvedValue(undefined),
@@ -175,7 +158,7 @@ describe('createPgliteAdapter', () => {
 
     await expect(
       createPgliteAdapter({
-        pglite: pglite as unknown as PGlite,
+        pglite,
         migrationsPath: '/tmp/migrations',
       }),
     ).rejects.toThrow(
@@ -192,7 +175,7 @@ describe('createPgliteAdapter', () => {
     });
 
     const created = await createPgliteAdapter({
-      pglite: pglite as unknown as PGlite,
+      pglite,
       migrationsPath: '/tmp/migrations',
     });
 
@@ -206,7 +189,7 @@ describe('createPgliteAdapter', () => {
     const pglite = createMockPglite({ exec });
     const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks();
 
-    const created = await createPgliteAdapter({ pglite: pglite as unknown as PGlite });
+    const created = await createPgliteAdapter({ pglite });
 
     expect(exec.mock.calls).toEqual([]);
 
@@ -218,9 +201,7 @@ describe('createPgliteAdapter', () => {
     const pglite = createMockPglite({ exec });
     const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks();
 
-    await expect(
-      createPgliteAdapter({ pglite: pglite as unknown as PGlite, sql: 'SELECT 1' }),
-    ).rejects.toThrow(
+    await expect(createPgliteAdapter({ pglite, sql: 'SELECT 1' })).rejects.toThrow(
       'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
     );
     expect(exec.mock.calls).toEqual([['SELECT 1']]);
@@ -238,7 +219,7 @@ describe('createPgliteAdapter', () => {
     const pglite = createMockPglite({ exec });
     const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks({ poolEnd });
     const created = await createPgliteAdapter({
-      pglite: pglite as unknown as PGlite,
+      pglite,
       sql: 'SELECT 1',
     });
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMockPglite } from '../__tests__/mocks.ts';
 import { AdapterStats, QUERY_DURATION_WINDOW_SIZE } from './adapter-stats.ts';
 
 let pglite: Parameters<AdapterStats['snapshot']>[0];
@@ -13,7 +14,11 @@ const withStats = async (level: 'basic' | 'full', fn: (c: AdapterStats) => Promi
 };
 
 beforeEach(() => {
-  pglite = { query: vi.fn().mockResolvedValue({ rows: [{ size: 12345n }] }) };
+  pglite = createMockPglite({ query: vi.fn().mockResolvedValue({ rows: [{ size: 12345n }] }) });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('AdapterStats — percentile math', () => {
@@ -62,7 +67,6 @@ describe('AdapterStats — percentile math', () => {
       expect(s.recentMaxQueryMs).toBe(0);
       expect(s.durationMs).toBeGreaterThan(0);
     } finally {
-      hrtimeSpy.mockRestore();
       c.stop();
     }
   });
@@ -213,7 +217,6 @@ describe('AdapterStats — freeze()', () => {
       const s = await c.snapshot(pglite);
       expect(s.durationMs).toBe(10);
     } finally {
-      hrtimeSpy.mockRestore();
       c.stop();
     }
   });
@@ -281,18 +284,13 @@ describe('AdapterStats — freeze()', () => {
 });
 
 describe(`AdapterStats — 'full' RSS sampler`, () => {
-  let memSpy: ReturnType<typeof vi.spyOn> | undefined;
+  let memSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    memSpy = undefined;
-  });
-
-  afterEach(() => {
-    memSpy?.mockRestore();
+    memSpy = vi.spyOn(process, 'memoryUsage');
   });
 
   it('short-run: memoryUsage is called exactly twice (construct + freeze) and peak > 0', async () => {
-    memSpy = vi.spyOn(process, 'memoryUsage');
     const c = new AdapterStats('full');
     try {
       await c.freeze(pglite, process.hrtime.bigint());
@@ -305,10 +303,11 @@ describe(`AdapterStats — 'full' RSS sampler`, () => {
     }
   });
 
-  it('interval sampler fires on schedule (fake timers)', async () => {
-    vi.useFakeTimers();
-    try {
-      memSpy = vi.spyOn(process, 'memoryUsage');
+  describe('interval sampler', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('fires on schedule', () => {
       const c = new AdapterStats('full');
       try {
         const afterCtor = memSpy.mock.calls.length;
@@ -323,9 +322,7 @@ describe(`AdapterStats — 'full' RSS sampler`, () => {
         vi.advanceTimersByTime(10_000);
         expect(memSpy.mock.calls.length).toBe(afterStop);
       }
-    } finally {
-      vi.useRealTimers();
-    }
+    });
   });
 });
 

@@ -1,6 +1,6 @@
-import type { PGlite } from '@electric-sql/pglite';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createMockPglite } from '../__tests__/mocks.ts';
 import setupPGlite from '../__tests__/pglite.ts';
 import { createSnapshotManager } from './snapshot.ts';
 
@@ -9,10 +9,7 @@ const pglite = await setupPGlite();
 describe('snapshot manager', () => {
   it('rolls back and drops the snapshot schema if snapshot creation fails', async () => {
     const error = new Error('boom');
-    const pglite = {
-      exec: vi.fn().mockResolvedValue(undefined),
-      query: vi.fn().mockRejectedValue(error),
-    } as unknown as PGlite;
+    const pglite = createMockPglite({ query: vi.fn().mockRejectedValue(error) });
 
     const snapshot = createSnapshotManager(pglite);
 
@@ -76,10 +73,7 @@ describe('snapshot manager', () => {
   });
 
   it('skips truncation work when no user tables exist', async () => {
-    const pglite = {
-      exec: vi.fn().mockResolvedValue(undefined),
-      query: vi.fn().mockResolvedValue({ rows: [] }),
-    } as unknown as PGlite;
+    const pglite = createMockPglite();
 
     const snapshot = createSnapshotManager(pglite);
 
