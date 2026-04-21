@@ -563,7 +563,7 @@ describe('BackendMessageFramer', () => {
     expect(outputs.length).toBeGreaterThan(4);
   });
 
-  it('reuses owning chunk storage for partial payload slices', () => {
+  it('emits whole in-chunk messages as a single zero-copy slice', () => {
     const combined = collect([DATA, encodeMessage(0x43, new Uint8Array([0xaa]))]);
     const outputs: Uint8Array[] = [];
     const framer = new BackendMessageFramer({
@@ -574,11 +574,26 @@ describe('BackendMessageFramer', () => {
     framer.flush();
 
     expect(collect(outputs)).toEqual(combined);
-    expect(outputs).toHaveLength(4);
-    expect(outputs[1]).toBeDefined();
+    expect(outputs).toHaveLength(2);
+    expect(outputs[0]?.buffer).toBe(combined.buffer);
     expect(outputs[1]?.buffer).toBe(combined.buffer);
-    expect(outputs[3]).toBeDefined();
-    expect(outputs[3]?.buffer).toBe(combined.buffer);
+  });
+
+  it('copies whole-message slices when the chunk is a view into a larger buffer', () => {
+    const padded = new Uint8Array(DATA.length + 4);
+    padded.set(DATA, 2);
+    const viewChunk = padded.subarray(2, 2 + DATA.length);
+    const outputs: Uint8Array[] = [];
+    const framer = new BackendMessageFramer({
+      onChunk: (chunk) => outputs.push(chunk),
+    });
+
+    framer.write(viewChunk);
+    framer.flush();
+
+    expect(collect(outputs)).toEqual(DATA);
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]?.buffer).not.toBe(padded.buffer);
   });
 
   it('copies when the chunk is backed by a SharedArrayBuffer', () => {

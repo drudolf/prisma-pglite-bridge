@@ -205,6 +205,60 @@ export class BackendMessageFramer {
     let offset = 0;
     while (offset < chunk.length) {
       if (this.messageType === undefined) {
+        // Fast path: if type + 4-byte header + full payload are all in this
+        // chunk, emit the whole message as one slice. Avoids the per-message
+        // prefix allocation + two downstream pushes that the byte-state-machine
+        // path below performs. Falls through to the slow path when the message
+        // spans chunks.
+        const available = chunk.length - offset;
+        if (available >= 5) {
+          /* c8 ignore start — bounds guaranteed by `available >= 5` */
+          const msgType = chunk[offset] ?? 0;
+          const b1 = chunk[offset + 1] ?? 0;
+          const b2 = chunk[offset + 2] ?? 0;
+          const b3 = chunk[offset + 3] ?? 0;
+          const b4 = chunk[offset + 4] ?? 0;
+          /* c8 ignore stop */
+          const messageLength = ((b1 << 24) | (b2 << 16) | (b3 << 8) | b4) >>> 0;
+          if (messageLength < 4) {
+            throw new Error(`Malformed backend message length: ${messageLength}`);
+          }
+          if (messageLength > MAX_BACKEND_MESSAGE_LENGTH) {
+            throw new Error(
+              `Backend message length ${messageLength} exceeds sanity cap ${MAX_BACKEND_MESSAGE_LENGTH}`,
+            );
+          }
+          const totalLen = 1 + messageLength;
+          if (available >= totalLen) {
+            if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
+              this.dropHeldReadyForQuery();
+            }
+            if (msgType === ERROR_RESPONSE) {
+              this.onErrorResponse?.();
+            }
+            if (msgType === READY_FOR_QUERY) {
+              /* c8 ignore next — messageLength === 5 for RFQ; payload is 1 byte */
+              const status = chunk[offset + 5] ?? 0;
+              this.heldRfq[0] = msgType;
+              this.heldRfq[1] = b1;
+              this.heldRfq[2] = b2;
+              this.heldRfq[3] = b3;
+              this.heldRfq[4] = b4;
+              this.heldRfq[5] = status;
+              this.rfqBytesRead = 6;
+              this.onReadyForQuery?.(status);
+              if (!this.suppressIntermediateReadyForQuery) {
+                this.emitReadyForQuery();
+                this.rfqBytesRead = 0;
+              }
+            } else {
+              this.emitChunkSlice(chunk, offset, offset + totalLen);
+            }
+            offset += totalLen;
+            continue;
+          }
+        }
+
         if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
           this.dropHeldReadyForQuery();
         }
