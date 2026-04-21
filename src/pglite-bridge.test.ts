@@ -2,10 +2,10 @@ import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createMockTelemetry } from './__tests__/mocks.ts';
 import setupPGlite from './__tests__/pglite.ts';
 import { createPool } from './create-pool.ts';
 import { BackendMessageFramer, FrontendMessageBuffer, PGliteBridge } from './pglite-bridge.ts';
-import type { TelemetrySink } from './utils/adapter-stats.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
 const pglite = await setupPGlite();
@@ -228,10 +228,7 @@ describe('PGliteBridge error paths', () => {
       },
     });
 
-    const telemetry: TelemetrySink = {
-      recordQuery: vi.fn(),
-      recordLockWait: vi.fn(),
-    };
+    const telemetry = createMockTelemetry();
 
     const bridge = new PGliteBridge(mock, undefined, Symbol('adapter'), telemetry);
     bridge.on('error', () => {});
@@ -375,10 +372,7 @@ describe('PGliteBridge error paths', () => {
   });
 
   it('records a failed query when an EQP pipeline returns ErrorResponse', async () => {
-    const telemetry: TelemetrySink = {
-      recordQuery: vi.fn(),
-      recordLockWait: vi.fn(),
-    };
+    const telemetry = createMockTelemetry();
     const adapterId = Symbol('adapter');
 
     const client = new pg.Client({
@@ -394,7 +388,7 @@ describe('PGliteBridge error paths', () => {
 
     await client.end();
 
-    const calls = (telemetry.recordQuery as ReturnType<typeof vi.fn>).mock.calls;
+    const calls = vi.mocked(telemetry.recordQuery).mock.calls;
     expect(calls.some(([, succeeded]) => succeeded === false)).toBe(true);
   });
 });
