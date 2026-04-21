@@ -1,8 +1,8 @@
-import pg from 'pg';
+import type pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import setupPGlite from '../__tests__/pglite.ts';
-import { PGliteBridge } from '../pglite-bridge.ts';
+import { createPool } from '../create-pool.ts';
 import { SessionLock } from './session-lock.ts';
 
 const drainMicrotasks = async () => {
@@ -127,6 +127,7 @@ describe('SessionLock', () => {
 
 describe('session lock integration', async () => {
   let pool: pg.Pool;
+  let close: () => Promise<void>;
   const pglite = await setupPGlite();
 
   beforeAll(async () => {
@@ -134,22 +135,7 @@ describe('session lock integration', async () => {
       CREATE TABLE session_test (id serial PRIMARY KEY, val text);
     `);
 
-    const sessionLock = new SessionLock();
-
-    pool = new pg.Pool({
-      Client: class extends pg.Client {
-        constructor(config?: string | pg.ClientConfig) {
-          const cfg = typeof config === 'string' ? { connectionString: config } : (config ?? {});
-          super({
-            ...cfg,
-            user: 'postgres',
-            database: 'postgres',
-            stream: () => new PGliteBridge(pglite, sessionLock),
-          });
-        }
-      } as typeof pg.Client,
-      max: 2,
-    });
+    ({ pool, close } = await createPool({ pglite, max: 2 }));
   });
 
   beforeEach(async () => {
@@ -157,7 +143,7 @@ describe('session lock integration', async () => {
   });
 
   afterAll(async () => {
-    await pool.end();
+    await close();
   });
 
   it('concurrent transactions do not interleave', async () => {
