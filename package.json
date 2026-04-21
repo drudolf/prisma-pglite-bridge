@@ -61,7 +61,13 @@
   "peerDependencies": {
     "@electric-sql/pglite": "^0.4.0",
     "@prisma/adapter-pg": "^7.0.0",
+    "@prisma/config": "^7.0.0",
     "pg": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@prisma/config": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.2",
