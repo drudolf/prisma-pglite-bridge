@@ -3,7 +3,7 @@ import { AdapterStats, QUERY_DURATION_WINDOW_SIZE } from './adapter-stats.ts';
 
 let pglite: Parameters<AdapterStats['snapshot']>[0];
 
-const withStats = async (level: 1 | 2, fn: (c: AdapterStats) => Promise<void>) => {
+const withStats = async (level: 'basic' | 'full', fn: (c: AdapterStats) => Promise<void>) => {
   const c = new AdapterStats(level);
   try {
     await fn(c);
@@ -18,7 +18,7 @@ beforeEach(() => {
 
 describe('AdapterStats — percentile math', () => {
   it('computes p50/p95/max for [10,20,30,40,50]', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       for (const d of [10, 20, 30, 40, 50]) c.recordQuery(d, true);
       const s = await c.snapshot(pglite);
       expect(s.recentP50QueryMs).toBe(30);
@@ -28,7 +28,7 @@ describe('AdapterStats — percentile math', () => {
   });
 
   it('computes p50/p95/max for [1..100]', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       for (let i = 1; i <= 100; i++) c.recordQuery(i, true);
       const s = await c.snapshot(pglite);
       expect(s.recentP50QueryMs).toBe(50);
@@ -38,7 +38,7 @@ describe('AdapterStats — percentile math', () => {
   });
 
   it('sorts unsorted input before computing percentiles', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       for (const d of [50, 10, 40, 20, 30]) c.recordQuery(d, true);
       const s = await c.snapshot(pglite);
       expect(s.recentP50QueryMs).toBe(30);
@@ -51,7 +51,7 @@ describe('AdapterStats — percentile math', () => {
     const hrtimeSpy = vi.spyOn(process.hrtime, 'bigint');
     hrtimeSpy.mockReturnValueOnce(1_000_000_000n);
 
-    const c = new AdapterStats(1);
+    const c = new AdapterStats('basic');
     try {
       hrtimeSpy.mockReturnValueOnce(1_005_000_000n);
       const s = await c.snapshot(pglite);
@@ -68,7 +68,7 @@ describe('AdapterStats — percentile math', () => {
   });
 
   it('n === 1: p50 === p95 === max === the single duration', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       c.recordQuery(42, true);
       const s = await c.snapshot(pglite);
       expect(s.recentP50QueryMs).toBe(42);
@@ -78,7 +78,7 @@ describe('AdapterStats — percentile math', () => {
   });
 
   it('ring buffer: recent window reflects only last QUERY_DURATION_WINDOW_SIZE entries; lifetime counters stay complete', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       const trimThreshold = QUERY_DURATION_WINDOW_SIZE * 2;
       for (let i = 0; i < trimThreshold; i++) c.recordQuery(1, true);
       for (let i = 0; i < trimThreshold; i++) c.recordQuery(999, true);
@@ -93,7 +93,7 @@ describe('AdapterStats — percentile math', () => {
 
 describe('AdapterStats — counters', () => {
   it('recordQuery is additive across calls', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       c.recordQuery(10, true);
       c.recordQuery(20, true);
       c.recordQuery(30, true);
@@ -106,7 +106,7 @@ describe('AdapterStats — counters', () => {
   });
 
   it('failed query increments queryCount AND failedQueryCount, adds to totalQueryMs', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       c.recordQuery(5, false);
       const s = await c.snapshot(pglite);
       expect(s.queryCount).toBe(1);
@@ -116,7 +116,7 @@ describe('AdapterStats — counters', () => {
   });
 
   it('markSchemaSetup: first call wins', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       c.markSchemaSetup(42);
       c.markSchemaSetup(777);
       const s = await c.snapshot(pglite);
@@ -125,7 +125,7 @@ describe('AdapterStats — counters', () => {
   });
 
   it('incrementResetDb counts each call', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       c.incrementResetDb();
       c.incrementResetDb();
       c.incrementResetDb();
@@ -136,10 +136,10 @@ describe('AdapterStats — counters', () => {
 });
 
 describe('AdapterStats — snapshot level gating', () => {
-  it('level 1: statsLevel === 1 and level-2 fields are undefined', async () => {
-    await withStats(1, async (c) => {
+  it(`'basic': statsLevel === 'basic' and 'full'-only fields are undefined`, async () => {
+    await withStats('basic', async (c) => {
       const s = await c.snapshot(pglite);
-      expect(s.statsLevel).toBe(1);
+      expect(s.statsLevel).toBe('basic');
       expect(s).not.toHaveProperty('processRssPeakBytes');
       expect(s).not.toHaveProperty('totalSessionLockWaitMs');
       expect(s).not.toHaveProperty('sessionLockAcquisitionCount');
@@ -148,10 +148,10 @@ describe('AdapterStats — snapshot level gating', () => {
     });
   });
 
-  it('level 2: statsLevel === 2 and level-2 fields are defined with session-lock defaults', async () => {
-    await withStats(2, async (c) => {
+  it(`'full': statsLevel === 'full' and 'full'-only fields are defined with session-lock defaults`, async () => {
+    await withStats('full', async (c) => {
       const s = await c.snapshot(pglite);
-      if (s.statsLevel !== 2) throw new Error('expected level 2');
+      if (s.statsLevel !== 'full') throw new Error("expected level 'full'");
       expect(s.processRssPeakBytes).toBeGreaterThan(0);
       expect(s.totalSessionLockWaitMs).toBe(0);
       expect(s.sessionLockAcquisitionCount).toBe(0);
@@ -163,7 +163,7 @@ describe('AdapterStats — snapshot level gating', () => {
 
 describe('AdapterStats — pglite query robustness', () => {
   it('snapshot parses dbSizeBytes from the single column of rows[0]', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 54321n }] });
       const s = await c.snapshot(pglite);
       expect(s.dbSizeBytes).toBe(54321);
@@ -171,21 +171,21 @@ describe('AdapterStats — pglite query robustness', () => {
   });
 
   it('snapshot tolerates a rejecting pglite.query: dbSizeBytes undefined, rest returns', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       c.recordQuery(10, true);
       vi.mocked(pglite.query).mockRejectedValueOnce(new Error('broken'));
       const s = await c.snapshot(pglite);
       expect(s.dbSizeBytes).toBeUndefined();
       expect(s.queryCount).toBe(1);
       expect(s.totalQueryMs).toBe(10);
-      expect(s.statsLevel).toBe(1);
+      expect(s.statsLevel).toBe('basic');
     });
   });
 });
 
 describe('AdapterStats — freeze()', () => {
   it('post-freeze snapshots use cached values and do not call pglite.query', async () => {
-    const c = new AdapterStats(1);
+    const c = new AdapterStats('basic');
     try {
       vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 99999n }] });
       await c.freeze(pglite, process.hrtime.bigint());
@@ -206,7 +206,7 @@ describe('AdapterStats — freeze()', () => {
     const hrtimeSpy = vi.spyOn(process.hrtime, 'bigint');
     hrtimeSpy.mockReturnValueOnce(1_000_000_000n);
 
-    const c = new AdapterStats(1);
+    const c = new AdapterStats('basic');
     try {
       const earlyTimestamp = 1_010_000_000n;
       await c.freeze(pglite, earlyTimestamp);
@@ -219,7 +219,7 @@ describe('AdapterStats — freeze()', () => {
   });
 
   it('seals dbSizeFrozen even when queryDbSize rejects', async () => {
-    const c = new AdapterStats(1);
+    const c = new AdapterStats('basic');
     try {
       vi.mocked(pglite.query).mockRejectedValue(new Error('boom'));
 
@@ -236,7 +236,7 @@ describe('AdapterStats — freeze()', () => {
   });
 
   it('freeze is idempotent after the instance is already frozen', async () => {
-    const c = new AdapterStats(1);
+    const c = new AdapterStats('basic');
     try {
       vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 123n }] });
 
@@ -255,20 +255,20 @@ describe('AdapterStats — freeze()', () => {
   });
 
   it('ignores recordQuery / recordLockWait / incrementResetDb after freeze', async () => {
-    const c = new AdapterStats(2);
+    const c = new AdapterStats('full');
     try {
       c.recordQuery(10, true);
       c.recordLockWait(5);
       c.incrementResetDb();
       await c.freeze(pglite, process.hrtime.bigint());
       const before = await c.snapshot(pglite);
-      if (before.statsLevel !== 2) throw new Error('expected level 2');
+      if (before.statsLevel !== 'full') throw new Error("expected level 'full'");
 
       c.recordQuery(999, false);
       c.recordLockWait(999);
       c.incrementResetDb();
       const after = await c.snapshot(pglite);
-      if (after.statsLevel !== 2) throw new Error('expected level 2');
+      if (after.statsLevel !== 'full') throw new Error("expected level 'full'");
 
       expect(after.queryCount).toBe(before.queryCount);
       expect(after.failedQueryCount).toBe(before.failedQueryCount);
@@ -280,7 +280,7 @@ describe('AdapterStats — freeze()', () => {
   });
 });
 
-describe('AdapterStats — level 2 RSS sampler', () => {
+describe(`AdapterStats — 'full' RSS sampler`, () => {
   let memSpy: ReturnType<typeof vi.spyOn> | undefined;
 
   beforeEach(() => {
@@ -293,12 +293,12 @@ describe('AdapterStats — level 2 RSS sampler', () => {
 
   it('short-run: memoryUsage is called exactly twice (construct + freeze) and peak > 0', async () => {
     memSpy = vi.spyOn(process, 'memoryUsage');
-    const c = new AdapterStats(2);
+    const c = new AdapterStats('full');
     try {
       await c.freeze(pglite, process.hrtime.bigint());
       expect(memSpy.mock.calls.length).toBe(2);
       const s = await c.snapshot(pglite);
-      if (s.statsLevel !== 2) throw new Error('expected level 2');
+      if (s.statsLevel !== 'full') throw new Error("expected level 'full'");
       expect(s.processRssPeakBytes).toBeGreaterThan(0);
     } finally {
       c.stop();
@@ -309,7 +309,7 @@ describe('AdapterStats — level 2 RSS sampler', () => {
     vi.useFakeTimers();
     try {
       memSpy = vi.spyOn(process, 'memoryUsage');
-      const c = new AdapterStats(2);
+      const c = new AdapterStats('full');
       try {
         const afterCtor = memSpy.mock.calls.length;
         vi.advanceTimersByTime(500);
@@ -331,7 +331,7 @@ describe('AdapterStats — level 2 RSS sampler', () => {
 
 describe('AdapterStats — queryDbSize robustness', () => {
   it('returns undefined when pg_database_size yields a non-numeric value', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       vi.mocked(pglite.query).mockResolvedValueOnce({
         fields: [],
         rows: [{ size: 'not-a-number' }],
@@ -342,7 +342,7 @@ describe('AdapterStats — queryDbSize robustness', () => {
   });
 
   it('returns undefined when the single column is null', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: null }] });
       const s = await c.snapshot(pglite);
       expect(s.dbSizeBytes).toBeUndefined();
@@ -350,7 +350,7 @@ describe('AdapterStats — queryDbSize robustness', () => {
   });
 
   it('returns undefined when rows is empty', async () => {
-    await withStats(1, async (c) => {
+    await withStats('basic', async (c) => {
       vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [] });
       const s = await c.snapshot(pglite);
       expect(s.dbSizeBytes).toBeUndefined();
@@ -358,14 +358,14 @@ describe('AdapterStats — queryDbSize robustness', () => {
   });
 });
 
-describe('AdapterStats — level 2 session-lock accumulation', () => {
+describe(`AdapterStats — 'full' session-lock accumulation`, () => {
   it('recordLockWait(5), (15), (10) produces total=30, max=15, count=3, avg=10', async () => {
-    await withStats(2, async (c) => {
+    await withStats('full', async (c) => {
       c.recordLockWait(5);
       c.recordLockWait(15);
       c.recordLockWait(10);
       const s = await c.snapshot(pglite);
-      if (s.statsLevel !== 2) throw new Error('expected level 2');
+      if (s.statsLevel !== 'full') throw new Error("expected level 'full'");
       expect(s.totalSessionLockWaitMs).toBe(30);
       expect(s.maxSessionLockWaitMs).toBe(15);
       expect(s.sessionLockAcquisitionCount).toBe(3);
@@ -373,8 +373,8 @@ describe('AdapterStats — level 2 session-lock accumulation', () => {
     });
   });
 
-  it('level 1 recordLockWait is a no-op and level-2 fields remain undefined', async () => {
-    await withStats(1, async (c) => {
+  it(`'basic' recordLockWait is a no-op and 'full'-only fields remain undefined`, async () => {
+    await withStats('basic', async (c) => {
       c.recordLockWait(100);
       c.recordLockWait(200);
       const s = await c.snapshot(pglite);
@@ -387,19 +387,19 @@ describe('AdapterStats — level 2 session-lock accumulation', () => {
 });
 
 describe('AdapterStats — lifecycle stop', () => {
-  it('stop() is a no-op for level 1 state beyond cleanup safety', () => {
-    const c = new AdapterStats(1);
+  it(`stop() is a no-op for 'basic' state beyond cleanup safety`, () => {
+    const c = new AdapterStats('basic');
     c.stop();
     c.stop();
   });
 
-  it('freeze() retains cached level-2 state after stop() cleanup', async () => {
-    const c = new AdapterStats(2);
+  it(`freeze() retains cached 'full' state after stop() cleanup`, async () => {
+    const c = new AdapterStats('full');
     c.recordQuery(11, true);
     c.recordLockWait(7);
     await c.freeze(pglite, process.hrtime.bigint());
     const s = await c.snapshot(pglite);
-    if (s.statsLevel !== 2) throw new Error('expected level 2');
+    if (s.statsLevel !== 'full') throw new Error("expected level 'full'");
     expect(s.queryCount).toBe(1);
     expect(s.totalSessionLockWaitMs).toBe(7);
   });

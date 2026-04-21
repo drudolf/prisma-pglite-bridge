@@ -142,7 +142,7 @@ const { adapter, resetDb, close, stats } = await createPgliteAdapter({
   sql: 'CREATE TABLE ...',              // (first match wins, see Schema Resolution)
   configRoot: '../..',        // monorepo: where to find prisma.config.ts
   max: 1,                     // pool connections (default: 1, see "Pool sizing" below)
-  statsLevel: 0,              // telemetry level (default: 0 = off)
+  statsLevel: 'off',          // 'off' | 'basic' | 'full' (default: 'off')
 });
 ```
 
@@ -159,8 +159,8 @@ Returns:
   instance is not closed — you own its lifecycle. Not needed in
   tests (process exit handles it); use in long-running scripts
   or dev servers.
-- `stats()` — returns telemetry when `statsLevel > 0`, else
-  `undefined`. See [Stats collection](#stats-collection).
+- `stats()` — returns telemetry when `statsLevel` is `'basic'` or
+  `'full'`, else `undefined`. See [Stats collection](#stats-collection).
 - `adapterId` — a unique `symbol` identifying this adapter. Use it
   to filter events from the public
   [diagnostics channels](#diagnostics-channels) when multiple
@@ -473,7 +473,7 @@ performed in tests.
 Enable `statsLevel` when creating the adapter, run your tests, then
 call `await stats()` at the end. You get one snapshot with the main
 things you usually care about: query counts, timing percentiles,
-database size, and, at level 2, process RSS and session-lock wait
+database size, and, at `'full'`, process RSS and session-lock wait
 times.
 
 This is the built-in, low-friction path for test diagnostics. It is
@@ -490,7 +490,7 @@ const pglite = new PGlite();
 const { adapter, stats, close } = await createPgliteAdapter({
   pglite,
   migrationsPath: './prisma/migrations',
-  statsLevel: 1, // or 2
+  statsLevel: 'basic', // or 'full'
 });
 const prisma = new PrismaClient({ adapter });
 
@@ -504,7 +504,7 @@ afterAll(async () => {
 ```
 
 `stats()` returns `Promise<Stats | undefined>` — `undefined` when
-`statsLevel` is `0` (or omitted). Safe to call before or after
+`statsLevel` is `'off'` (or omitted). Safe to call before or after
 `close()`; post-close reads return frozen values from the moment
 `close()` was invoked.
 
@@ -514,7 +514,7 @@ described below. That path is more flexible, but also more advanced.
 
 ### Levels
 
-**Level 1** — timing and counters:
+**`'basic'`** — timing and counters:
 
 - `durationMs` — adapter lifetime (frozen at `close()`, drain
   excluded)
@@ -532,7 +532,7 @@ described below. That path is more flexible, but also more advanced.
 - `dbSizeBytes` — `pg_database_size(current_database())`, cached
   at close
 
-**Level 2** — adds:
+**`'full'`** — adds:
 
 - `processRssPeakBytes` — process-wide RSS peak (sampled at 500ms,
   a lower bound on true peak — short-lived allocations between
@@ -543,8 +543,8 @@ described below. That path is more flexible, but also more advanced.
   contention across pool connections
 
 `statsLevel` is echoed on the returned object. When
-`statsLevel === 2`, all level-2 fields are guaranteed defined.
-`dbSizeBytes` is the only field that can be `undefined` — if the
+`statsLevel === 'full'`, all `'full'`-only fields are guaranteed
+defined. `dbSizeBytes` is the only field that can be `undefined` — if the
 `pg_database_size` query rejects (broken pglite state), the rest of
 the object still returns.
 
@@ -553,7 +553,7 @@ the object still returns.
 The bridge publishes per-query and per-lock-wait events to
 [`node:diagnostics_channel`](https://nodejs.org/api/diagnostics_channel.html)
 channels. Built-in adapter stats are updated directly by the bridge
-when `statsLevel > 0`; external consumers (OpenTelemetry, APM,
+when `statsLevel` is `'basic'` or `'full'`; external consumers (OpenTelemetry, APM,
 custom loggers) can subscribe directly without touching the bridge
 API.
 

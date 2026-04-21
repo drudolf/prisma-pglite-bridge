@@ -7,7 +7,7 @@ import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
 import { createPgliteAdapter } from './create-pglite-adapter.ts';
 
 const { pglite, prisma, adapter } = await setupTestSuite({
-  options: { statsLevel: 1 },
+  options: { statsLevel: 'basic' },
 });
 
 type CreatePgliteAdapterModule = typeof import('./create-pglite-adapter.ts');
@@ -64,19 +64,23 @@ afterEach(() => {
 describe('createPgliteAdapter', () => {
   it('rejects invalid stats levels', async () => {
     await expect(
-      createPgliteAdapter({ pglite, sql: 'SELECT 1', statsLevel: 3 as 2 }),
-    ).rejects.toThrow('statsLevel must be 0, 1, or 2; got 3');
+      createPgliteAdapter({
+        pglite,
+        sql: 'SELECT 1',
+        statsLevel: 'invalid' as 'basic',
+      }),
+    ).rejects.toThrow(`statsLevel must be 'off', 'basic', or 'full'; got invalid`);
   });
 
   it('returns telemetry when stats are enabled', async () => {
     const stats = await adapter.stats();
 
     expect(stats).toBeDefined();
-    expect(stats?.statsLevel).toBe(1);
+    expect(stats?.statsLevel).toBe('basic');
     expect(stats?.schemaSetupMs).toBeDefined();
   });
 
-  it('returns undefined stats when statsLevel is 0', async () => {
+  it(`returns undefined stats when statsLevel is 'off'`, async () => {
     const { close, stats } = await createPgliteAdapter({ pglite, sql: 'SELECT 1' });
     await expect(stats()).resolves.toBeUndefined();
     close();
@@ -99,7 +103,7 @@ describe('createPgliteAdapter', () => {
     const first = await createPgliteAdapter({
       pglite: firstPglite,
       sql: 'CREATE TABLE IF NOT EXISTS "Tenant" ("id" TEXT PRIMARY KEY, "name" TEXT NOT NULL, "slug" TEXT NOT NULL)',
-      statsLevel: 1,
+      statsLevel: 'basic',
     });
     const firstPrisma = new PrismaClient({ adapter: first.adapter });
 
@@ -112,7 +116,7 @@ describe('createPgliteAdapter', () => {
     await firstPglite.close();
 
     const secondPglite = new PGlite(dataDir);
-    const second = await createPgliteAdapter({ pglite: secondPglite, statsLevel: 1 });
+    const second = await createPgliteAdapter({ pglite: secondPglite, statsLevel: 'basic' });
     const secondPrisma = new PrismaClient({ adapter: second.adapter });
 
     try {
