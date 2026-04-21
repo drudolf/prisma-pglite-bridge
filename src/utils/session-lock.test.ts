@@ -145,7 +145,7 @@ describe('session lock integration', async () => {
             user: 'postgres',
             database: 'postgres',
             stream: () => new PGliteBridge(pglite, sessionLock),
-          } as pg.ClientConfig);
+          });
         }
       } as typeof pg.Client,
       max: 2,

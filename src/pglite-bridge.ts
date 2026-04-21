@@ -660,7 +660,6 @@ export class PGliteBridge extends Duplex {
       return;
     }
 
-    const adapterId = this.adapterId;
     const lockStart = process.hrtime.bigint();
     await this.acquireSession();
     const queryStart = process.hrtime.bigint();
@@ -670,7 +669,7 @@ export class PGliteBridge extends Duplex {
     }
     if (publishLockWait) {
       lockWaitChannel.publish({
-        adapterId: adapterId as symbol,
+        adapterId: this.adapterId,
         durationMs: lockWaitMs,
       });
     }
@@ -690,7 +689,7 @@ export class PGliteBridge extends Duplex {
       }
       if (publishQuery) {
         queryChannel.publish({
-          adapterId: adapterId as symbol,
+          adapterId: this.adapterId,
           durationMs: queryMs,
           succeeded,
         });
