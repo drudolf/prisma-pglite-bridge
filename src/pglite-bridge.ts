@@ -236,7 +236,7 @@ export class BackendMessageFramer {
             if (msgType === ERROR_RESPONSE) {
               this.onErrorResponse?.();
             }
-            if (msgType === READY_FOR_QUERY) {
+            if (msgType === READY_FOR_QUERY && messageLength === 5) {
               /* c8 ignore next — messageLength === 5 for RFQ; payload is 1 byte */
               const status = chunk[offset + 5] ?? 0;
               this.heldRfq[0] = msgType;
