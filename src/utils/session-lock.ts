@@ -34,7 +34,8 @@ export type BridgeId = symbol;
  */
 export class SessionLock {
   private owner?: BridgeId;
-  private waitQueue: Array<{ id: BridgeId; resolve: () => void }> = [];
+  private waitQueue: Array<{ id: BridgeId; resolve: () => void; reject: (error: Error) => void }> =
+    [];
 
   /**
    * Acquire access to PGlite. Resolves immediately if no transaction is
@@ -45,8 +46,12 @@ export class SessionLock {
     if (this.owner === undefined || this.owner === id) return;
 
     // Another bridge owns the session — wait
-    return new Promise<void>((resolve) => {
-      this.waitQueue.push({ id, resolve });
+    return new Promise<void>((resolve, reject) => {
+      this.waitQueue.push({
+        id,
+        resolve,
+        reject,
+      });
     });
   }
 
@@ -89,6 +94,35 @@ export class SessionLock {
     }
 
     return false;
+  }
+
+  /**
+   * Cancel this bridge's pending or active claim on the session.
+   *
+   * Used when a bridge is torn down while blocked in `acquire()` so it cannot
+   * later be granted ownership after destruction.
+   */
+  cancel(id: BridgeId, error: Error = new Error('Session lock acquire cancelled')): boolean {
+    let cancelled = false;
+
+    if (this.owner === id) {
+      this.owner = undefined;
+      this.drainWaitQueue();
+      cancelled = true;
+    }
+
+    const remaining: typeof this.waitQueue = [];
+    for (const waiter of this.waitQueue) {
+      if (waiter.id === id) {
+        waiter.reject(error);
+        cancelled = true;
+      } else {
+        remaining.push(waiter);
+      }
+    }
+    this.waitQueue = remaining;
+
+    return cancelled;
   }
 
   /**
