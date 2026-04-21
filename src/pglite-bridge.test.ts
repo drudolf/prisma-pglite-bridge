@@ -819,6 +819,20 @@ describe('FrontendMessageBuffer', () => {
     expect(buffer.consume(second.length)).toEqual(second);
   });
 
+  it('leaves the tail of a chunk queued when consume ends mid-chunk', () => {
+    const buffer = new FrontendMessageBuffer();
+    const first = frontendMessage(0x53, new Uint8Array(0));
+    const second = frontendMessage(0x58, new Uint8Array(0));
+    buffer.push(first.subarray(0, 3));
+    const tail = new Uint8Array(first.length - 3 + second.length);
+    tail.set(first.subarray(3), 0);
+    tail.set(second, first.length - 3);
+    buffer.push(tail);
+    expect(buffer.consume(first.length)).toEqual(first);
+    expect(buffer.length).toBe(second.length);
+    expect(buffer.consume(second.length)).toEqual(second);
+  });
+
   it('throws when consuming more bytes than are buffered', () => {
     const buffer = new FrontendMessageBuffer();
     expect(() => buffer.consume(1)).toThrow(/Cannot consume 1 bytes from 0-byte buffer/);
