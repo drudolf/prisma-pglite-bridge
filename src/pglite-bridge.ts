@@ -390,6 +390,16 @@ export class PGliteBridge extends Duplex {
   /** Buffered EQP messages awaiting Sync */
   private pipeline: Uint8Array[] = [];
 
+  /**
+   * @param pglite       PGlite instance to bridge to. The caller owns its lifecycle.
+   * @param sessionLock  Shared lock that serialises access to the PGlite runtime
+   *                     across multiple bridges. Omit for a standalone bridge.
+   * @param adapterId    Identity tag published with diagnostics-channel events.
+   *                     Omit to disable channel publication for this bridge.
+   * @param telemetry    Internal sink used by `createPgliteAdapter` for built-in
+   *                     stats. Not a public extension point — subscribe via
+   *                     `node:diagnostics_channel` instead.
+   */
   constructor(
     pglite: PGlite,
     sessionLock?: SessionLock,

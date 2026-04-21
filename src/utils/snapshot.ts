@@ -9,11 +9,28 @@ const USER_TABLES_WHERE = `schemaname NOT IN ('pg_catalog', 'information_schema'
 const escapeLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
 interface SnapshotManager {
+  /**
+   * Truncate all user tables. If a snapshot exists, restore its contents and
+   * sequence values afterwards; otherwise just truncate and `DISCARD ALL`.
+   */
   resetDb: () => Promise<void>;
+  /** Drop the saved snapshot, reverting `resetDb` to plain truncation. */
   resetSnapshot: () => Promise<void>;
+  /**
+   * Capture the current state of all user tables plus sequence values into
+   * the `_pglite_snapshot` schema. Replaces any previous snapshot.
+   */
   snapshotDb: () => Promise<void>;
 }
 
+/**
+ * Snapshot helpers backing `createPgliteAdapter`'s `snapshotDb` / `resetDb` /
+ * `resetSnapshot` functions. Stores a copy of user tables and sequence
+ * values in a dedicated `_pglite_snapshot` schema so tests can reset to a
+ * known seed state without re-running migrations.
+ *
+ * @internal
+ */
 export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
   let hasSnapshot = false;
 

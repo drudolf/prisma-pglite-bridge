@@ -48,7 +48,7 @@ export interface CreatePgliteAdapterOptions extends MigrationsOptions {
    * - `1` — timing (`durationMs`, `schemaSetupMs`, query percentiles) and
    *   counters (`queryCount`, `failedQueryCount`, `resetDbCalls`), plus
    *   `dbSizeBytes`.
-   * - `2` — everything in level 1, plus `processPeakRssBytes` (process-wide,
+   * - `2` — everything in level 1, plus `processRssPeakBytes` (process-wide,
    *   sampled) and session-lock wait statistics.
    *
    * Retrieve via `await adapter.stats()` — returns `undefined` at level 0.
