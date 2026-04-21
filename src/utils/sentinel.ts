@@ -31,11 +31,6 @@ const querySentinelRows = async (pglite: PGlite): Promise<Array<SentinelRow>> =>
   return rows;
 };
 
-export const querySentinel = async (pglite: PGlite): Promise<SentinelRow | undefined> => {
-  const rows = await querySentinelRows(pglite);
-  return rows[0];
-};
-
 export const writeSentinel = async (pglite: PGlite): Promise<void> => {
   try {
     await pglite.exec(`BEGIN;\n${SENTINEL_STATEMENTS}`);

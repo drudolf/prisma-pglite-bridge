@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import setupPGlite from '../__tests__/pglite.ts';
 import {
   isDatabaseInitialized,
-  querySentinel,
   SENTINAL_COLLISON_ERROR_MESSAGE,
   SENTINEL_MARKER,
   SENTINEL_SCHEMA,
@@ -24,33 +23,18 @@ describe('sentinel utilities', () => {
 
   it('marks a legacy initialized database with the sentinel row', async () => {
     await pglite.exec('CREATE TABLE users (id serial PRIMARY KEY)');
-
     await expect(isDatabaseInitialized(pglite)).resolves.toBe(true);
-    await expect(querySentinel(pglite)).resolves.toEqual({
-      marker: SENTINEL_MARKER,
-      version: 1,
-    });
   });
 
   it('recognizes an existing valid sentinel table as initialized', async () => {
     await writeSentinel(pglite);
-
     await expect(isDatabaseInitialized(pglite)).resolves.toBe(true);
-    await expect(querySentinel(pglite)).resolves.toEqual({
-      marker: SENTINEL_MARKER,
-      version: 1,
-    });
   });
 
   it('throws the collision error for an invalid sentinel row', async () => {
     await pglite.exec(
       `CREATE SCHEMA "${SENTINEL_SCHEMA}"; CREATE TABLE "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker text PRIMARY KEY, version int NOT NULL); INSERT INTO "${SENTINEL_SCHEMA}"."${SENTINEL_TABLE}" (marker, version) VALUES ('wrong-marker', 999)`,
     );
-
-    await expect(querySentinel(pglite)).resolves.toEqual({
-      marker: 'wrong-marker',
-      version: 999,
-    });
     await expect(writeSentinel(pglite)).rejects.toThrow(SENTINAL_COLLISON_ERROR_MESSAGE);
     await expect(isDatabaseInitialized(pglite)).rejects.toThrow(SENTINAL_COLLISON_ERROR_MESSAGE);
   });

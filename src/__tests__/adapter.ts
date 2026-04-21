@@ -32,7 +32,7 @@ const createTestPgliteAdapter = (
 type SetupTestSuiteFn = ({
   options,
   reset,
-}?: {
+}: {
   options?: CreatePgliteAdapterOptions;
   reset?: boolean;
 }) => Promise<{
