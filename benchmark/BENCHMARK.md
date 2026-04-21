@@ -31,15 +31,18 @@ The `postgres-pg` adapter requires connection info — see
 
 ## Scenarios
 
-| Flag value         | Measures                                                     | Needs `--expose-gc` |
-| ------------------ | ------------------------------------------------------------ | :-----------------: |
-| `micro` (default)  | Latency of common Prisma ops (create, findMany, tx, nested…) |                     |
-| `stress`           | Contention, throughput, bridge-specific concurrency          |                     |
-| `memory`           | Peak & retained RSS/heap with per-bridge-span attribution    |         yes         |
-| `single-query`     | One large-result query in isolation                          |         yes         |
-| `stack-breakdown`  | Attributes peak RSS to stages (`pg.send` → `firstRow` → …)   |         yes         |
+| Flag value          | Measures                                                     | Needs `--expose-gc` |
+| ------------------- | ------------------------------------------------------------ | :-----------------: |
+| `micro` (default)   | Latency of common Prisma ops (create, findMany, tx, nested…) |                     |
+| `stress`            | Contention, throughput, bridge-specific concurrency          |                     |
+| `memory`            | Peak & retained RSS/heap with per-bridge-span attribution    |         yes         |
+| `single-query`      | One large-result query in isolation                          |         yes         |
+| `stack-breakdown`   | Attributes peak RSS to stages (`pg.send` → `firstRow` → …)   |         yes         |
+| `findmany-focused`  | `findMany({ take: 100 })` in isolation — tail-latency probe  |    recommended      |
 
 Pick one with `--scenario <name>`, or `--scenario all` for the full set.
+`findmany-focused` is explicit-only — it is not included in `all`; target
+it with `--scenario findmany-focused` when hunting read-path regressions.
 
 ## CLI flags
 
@@ -48,6 +51,7 @@ Pick one with `--scenario <name>`, or `--scenario all` for the full set.
 | `--adapter <name>`        | all     | Filter adapters (matches friendly aliases like `bridge`) |
 | `--scenario <name>`       | `micro` | Filter scenarios, or `all`                               |
 | `-n <N>` / `--n <N>`      |  `5`    | Iterations per operation                                 |
+| `-w <N>` / `--warmup <N>` |  `1`    | Warmup iterations (discarded) before each real run       |
 | `-r <N>` / `--repeat <N>` |  `1`    | Whole-run repeats (aggregated per repeat)                |
 | `--json`                  |  off    | Emit structured JSON to stdout instead of a table        |
 
@@ -150,3 +154,28 @@ For memory regressions, compare `combinedPeakDelta.rss.median` and
 `combinedRetainedDelta.rss.median` between runs; those are the bottom
 lines. For stage attribution, look at `operations[].stackAttribution.peakStageCounts`
 to see whether the peak moved between stages.
+
+### Hunting read-path latency regressions
+
+The aggregate `micro` suite can mask tail-latency regressions on a single
+operation behind setup, cross-operation GC noise, and statistical churn.
+For targeted read-path investigations, use `findmany-focused` with a high
+iteration count and meaningful warmup:
+
+```bash
+NODE_OPTIONS="--expose-gc" pnpm bench \
+  --scenario findmany-focused -n 1000 -w 100
+```
+
+To compare against another revision, check it out into a git worktree and
+run the same command in both trees back-to-back:
+
+```bash
+git worktree add ../bridge-0.4.1 v0.4.1
+cd ../bridge-0.4.1 && pnpm install && pnpm prisma generate
+NODE_OPTIONS="--expose-gc" pnpm bench --scenario findmany-focused -n 1000 -w 100
+```
+
+Diff the reported `findMany 100` p50/p95/p99 medians between the two
+trees — 1000 iterations keep the noise band tight enough that a few
+percent regression shows up reliably.

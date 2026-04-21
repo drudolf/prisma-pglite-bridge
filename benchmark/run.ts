@@ -7,6 +7,7 @@
  *   pnpm bench --adapter prisma-pglite-bridge            # single adapter
  *   pnpm bench --scenario stress                         # single scenario
  *   pnpm bench --adapter pglite-prisma-adapter --scenario stress -n 3
+ *   pnpm bench --scenario findmany-focused -n 1000 -w 100 # custom warmup
  *   pnpm bench --json                                    # structured JSON to stdout
  *   pnpm bench --scenario all                            # all scenarios
  */
@@ -70,6 +71,7 @@ const hasFlag = (name: string) => args.includes(`--${name}`);
 const adapterFilter = getArg('adapter');
 const scenarioFilter = getArg('scenario') ?? 'micro';
 const iterations = Number(getArg('n', 'n') ?? '5');
+const warmup = Number(getArg('warmup', 'w') ?? '1');
 const repeat = Number(getArg('repeat', 'r') ?? '1');
 const jsonOutput = hasFlag('json');
 
@@ -123,6 +125,10 @@ const loadScenarios = async (): Promise<[string, Scenario][]> => {
   if (scenarioFilter === 'all' || scenarioFilter === 'stack-breakdown') {
     const { stackBreakdown } = await import('./scenarios/stack-breakdown.ts');
     all.push(['stack-breakdown', stackBreakdown]);
+  }
+  if (scenarioFilter === 'findmany-focused') {
+    const { findManyFocused } = await import('./scenarios/findmany-focused.ts');
+    all.push(['findmany-focused', findManyFocused]);
   }
 
   return all;
@@ -261,12 +267,14 @@ const runAdapterScenario = async (
     const ctx = await harness.setup(schemaSql);
     const setupTime = performance.now() - setupStart;
 
-    // Warmup iteration (discarded)
-    try {
-      await scenario(ctx.prisma, 1);
-      await harness.truncate(ctx);
-    } catch {
-      // Warmup failure is non-fatal — truncate might fail if scenario errored
+    // Warmup iterations (discarded)
+    if (warmup > 0) {
+      try {
+        await scenario(ctx.prisma, warmup);
+        await harness.truncate(ctx);
+      } catch {
+        // Warmup failure is non-fatal — truncate might fail if scenario errored
+      }
     }
 
     await settleMemory();
@@ -840,7 +848,7 @@ const main = async () => {
     console.log(' prisma-pglite-bridge benchmark');
     console.log(` Adapters: ${adapters.map((a) => a.name).join(', ')}`);
     console.log(` Scenarios: ${scenarios.map(([n]) => n).join(', ')}`);
-    console.log(` Iterations: ${iterations} (+1 warmup)`);
+    console.log(` Iterations: ${iterations} (+${warmup} warmup)`);
     console.log(` Whole-run repeats: ${repeat}`);
     if (typeof globalThis.gc !== 'function') {
       console.log(' ⚠ Run with --expose-gc for accurate memory tracking');
