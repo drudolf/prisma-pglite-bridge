@@ -596,6 +596,17 @@ describe('BackendMessageFramer', () => {
     expect(outputs[0]?.buffer).not.toBe(padded.buffer);
   });
 
+  it('does not treat a non-RFQ 0x5a frame as ReadyForQuery in the fast path', () => {
+    const malformedZ = encodeMessage(0x5a, new Uint8Array([0x49, 0xaa]));
+    const { framer, outputs, statuses } = makeHarness();
+
+    framer.write(malformedZ);
+    framer.flush();
+
+    expect(statuses).toEqual([]);
+    expect(collect(outputs)).toEqual(malformedZ);
+  });
+
   it('copies when the chunk is backed by a SharedArrayBuffer', () => {
     const shared = new SharedArrayBuffer(DATA.length);
     const sharedChunk = new Uint8Array(shared);
