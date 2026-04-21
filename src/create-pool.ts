@@ -82,10 +82,9 @@ export const createPool = async (options: CreatePoolOptions): Promise<PoolResult
 
   // Subclass pg.Client to inject PGliteBridge as the stream
   const Client = class extends pg.Client {
-    constructor(config?: string | pg.ClientConfig) {
-      const cfg = typeof config === 'string' ? { connectionString: config } : (config ?? {});
+    constructor(config: pg.ClientConfig = {}) {
       super({
-        ...cfg,
+        ...config,
         user: 'postgres',
         database: 'postgres',
         stream: () => new PGliteBridge(pglite, sessionLock, adapterId, telemetry),
