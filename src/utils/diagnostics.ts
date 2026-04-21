@@ -17,17 +17,34 @@
  */
 import diagnostics_channel from 'node:diagnostics_channel';
 
+/**
+ * `node:diagnostics_channel` name for per-query events. Subscribers receive
+ * a {@link QueryEvent} each time the bridge completes a query.
+ */
 export const QUERY_CHANNEL = 'prisma-pglite-bridge:query';
+
+/**
+ * `node:diagnostics_channel` name for per-acquisition session-lock wait
+ * events. Subscribers receive a {@link LockWaitEvent} after each
+ * acquisition completes.
+ */
 export const LOCK_WAIT_CHANNEL = 'prisma-pglite-bridge:lock-wait';
 
+/** Payload published to {@link QUERY_CHANNEL}. */
 export interface QueryEvent {
+  /** Adapter identity tag — filter on this to isolate one adapter's events. */
   adapterId: symbol;
+  /** Wall-clock duration of the query in milliseconds. */
   durationMs: number;
+  /** `false` when the query rejected (protocol or SQL error). */
   succeeded: boolean;
 }
 
+/** Payload published to {@link LOCK_WAIT_CHANNEL}. */
 export interface LockWaitEvent {
+  /** Adapter identity tag — filter on this to isolate one adapter's events. */
   adapterId: symbol;
+  /** Time spent waiting to acquire the session lock, in milliseconds. */
   durationMs: number;
 }
 

@@ -37,7 +37,25 @@ import {
 } from './create-pool.ts';
 
 export type { PoolResult };
+
+/**
+ * Options for {@link createPool}. Identical to the internal pool options,
+ * minus the library-private `telemetry` sink (consumers subscribe via
+ * `node:diagnostics_channel` instead — see {@link QUERY_CHANNEL} and
+ * {@link LOCK_WAIT_CHANNEL}).
+ */
 export type CreatePoolOptions = Omit<CreateBasePoolOptions, 'telemetry'>;
+
+/**
+ * Build a `pg.Pool` backed by a caller-supplied PGlite instance. Each pool
+ * connection bridges through its own {@link PGliteBridge} stream while
+ * sharing one PGlite WASM runtime and session lock.
+ *
+ * Use this low-level entry point when you want a raw `pg.Pool` (for example
+ * to wire into `@prisma/adapter-pg` yourself). Most users should prefer
+ * {@link createPgliteAdapter}, which layers schema setup and reset helpers
+ * on top.
+ */
 export const createPool = async (options: CreatePoolOptions): Promise<PoolResult> =>
   createBasePool(options);
 export { PGliteBridge } from './pglite-bridge.ts';
