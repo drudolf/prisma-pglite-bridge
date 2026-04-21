@@ -581,10 +581,35 @@ describe('BackendMessageFramer', () => {
     expect(outputs[3]?.buffer).toBe(combined.buffer);
   });
 
+  it('copies when the chunk is backed by a SharedArrayBuffer', () => {
+    const shared = new SharedArrayBuffer(DATA.length);
+    const sharedChunk = new Uint8Array(shared);
+    sharedChunk.set(DATA);
+    const outputs: Uint8Array[] = [];
+    const framer = new BackendMessageFramer({
+      onChunk: (chunk) => outputs.push(chunk),
+    });
+
+    framer.write(sharedChunk);
+    framer.flush();
+
+    expect(collect(outputs)).toEqual(DATA);
+    for (const chunk of outputs) {
+      expect(chunk.buffer).not.toBe(shared);
+      expect(chunk.buffer instanceof SharedArrayBuffer).toBe(false);
+    }
+  });
+
   it('throws on a backend message with a length header < 4', () => {
     const { framer } = makeHarness();
     const malformed = new Uint8Array([0x44, 0x00, 0x00, 0x00, 0x03]);
     expect(() => framer.write(malformed)).toThrow(/Malformed backend message length: 3/);
+  });
+
+  it('throws when the backend message length header exceeds the 1 GiB sanity cap', () => {
+    const { framer } = makeHarness();
+    const tooLarge = new Uint8Array([0x44, 0x7f, 0xff, 0xff, 0xff]);
+    expect(() => framer.write(tooLarge)).toThrow(/exceeds sanity cap/);
   });
 
   it('drops a held final RFQ when flush is asked to discard it', () => {
@@ -671,7 +696,7 @@ describe('FrontendMessageBuffer', () => {
     expect(buffer.length).toBe(0);
   });
 
-  it('copies exact bytes when consuming only part of a larger head chunk', () => {
+  it('returns a zero-copy view when consuming only part of a larger head chunk', () => {
     const buffer = new FrontendMessageBuffer();
     const first = frontendMessage(0x53, new Uint8Array(0));
     const second = frontendMessage(0x58, new Uint8Array(0));
@@ -681,7 +706,7 @@ describe('FrontendMessageBuffer', () => {
     buffer.push(combined);
     const consumed = buffer.consume(first.length);
     expect(consumed).toEqual(first);
-    expect(consumed.buffer).not.toBe(combined.buffer);
+    expect(consumed.buffer).toBe(combined.buffer);
     expect(buffer.consume(second.length)).toEqual(second);
   });
 

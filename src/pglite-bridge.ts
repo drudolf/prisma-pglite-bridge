@@ -41,6 +41,14 @@ const ERROR_RESPONSE = 0x45; // E — signals in-band SQL error (not a JS throw)
 const EQP_MESSAGES = new Set([PARSE, BIND, DESCRIBE, EXECUTE, CLOSE, FLUSH]);
 
 /**
+ * Upper bound on a single backend message length declared in its 4-byte
+ * header. PostgreSQL's own wire protocol maxes out around 1 GiB per
+ * message; anything larger indicates a corrupted or hostile stream and
+ * must not be allocated against.
+ */
+const MAX_BACKEND_MESSAGE_LENGTH = 1_073_741_824;
+
+/**
  * Concatenates multiple Uint8Array views into one contiguous buffer.
  */
 const concat = (parts: Uint8Array[]): Uint8Array => {
@@ -124,7 +132,7 @@ export class FrontendMessageBuffer {
     /* c8 ignore next — head defined when totalLength > 0 */
     if (head !== undefined) {
       const headRemaining = head.length - this.headOffset;
-      if (headRemaining >= length && length === headRemaining) {
+      if (headRemaining >= length) {
         const slice = head.subarray(this.headOffset, this.headOffset + length);
         this.headOffset += length;
         this.totalLength -= length;
@@ -234,6 +242,11 @@ export class BackendMessageFramer {
         if (messageLength < 4) {
           throw new Error(`Malformed backend message length: ${messageLength}`);
         }
+        if (messageLength > MAX_BACKEND_MESSAGE_LENGTH) {
+          throw new Error(
+            `Backend message length ${messageLength} exceeds sanity cap ${MAX_BACKEND_MESSAGE_LENGTH}`,
+          );
+        }
 
         this.payloadBytesRemaining = messageLength - 4;
 
@@ -338,9 +351,14 @@ export class BackendMessageFramer {
     // PGlite already hands us standalone Uint8Array chunks copied out of the
     // WASM heap, so when this chunk owns its full backing store we can hand pg
     // zero-copy Buffer views for arbitrary subranges. We still copy when the
-    // chunk itself is only a view into a larger backing buffer to avoid
-    // pinning unrelated trailing bytes.
-    if (chunk.byteOffset === 0 && chunk.byteLength === chunk.buffer.byteLength) {
+    // chunk is a view into a larger backing buffer (to avoid pinning unrelated
+    // trailing bytes) or when the backing store is shared (to prevent the WASM
+    // runtime from mutating bytes pg is still consuming).
+    if (
+      chunk.byteOffset === 0 &&
+      chunk.byteLength === chunk.buffer.byteLength &&
+      !(chunk.buffer instanceof SharedArrayBuffer)
+    ) {
       this.onChunk(Buffer.from(chunk.buffer, start, length));
       return;
     }

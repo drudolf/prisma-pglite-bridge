@@ -52,10 +52,10 @@
     "lint": "biome lint .",
     "lint:fix": "biome check --write .",
     "check": "biome check . && markdownlint-cli2 '**/*.md' '#node_modules' '#.claude' && knip",
-    "check:exports": "attw --pack --profile node16",
+    "check:exports": "attw --pack --profile strict",
     "changeset": "changeset",
     "bench": "tsx benchmark/run.ts",
-    "prepublishOnly": "pnpm build && pnpm check:exports",
+    "prepublishOnly": "pnpm test && pnpm build && pnpm check:exports",
     "prepare": "husky"
   },
   "peerDependencies": {

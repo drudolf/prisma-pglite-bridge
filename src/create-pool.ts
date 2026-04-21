@@ -20,9 +20,12 @@ export interface CreatePoolOptions {
   /**
    * Maximum pool connections (default: 1).
    *
-   * PGlite's WASM runtime executes queries serially, so multiple pool
-   * connections add memory overhead without enabling parallelism. The
-   * default of 1 matches that reality and minimises RSS.
+   * PGlite's WASM runtime executes queries serially behind a single mutex,
+   * and every bridge connection shares the same {@link SessionLock}. Raising
+   * `max` above 1 therefore does not add parallelism — queries still run
+   * one at a time — and each extra connection costs a full `PGliteBridge`
+   * (its framers and scratch buffers) in memory. Leave this at `1` unless
+   * you are deliberately exercising wait-queue behaviour in a test.
    */
   max?: number;
 

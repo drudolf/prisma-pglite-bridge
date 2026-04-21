@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import setupTestSuite from './__tests__/adapter.ts';
 import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
 import { createMockPglite } from './__tests__/mocks.ts';
-import { createPgliteAdapter } from './create-pglite-adapter.ts';
+import { createPgliteAdapter, emitAdapterLeakWarning } from './create-pglite-adapter.ts';
 
 const { pglite, prisma, adapter } = await setupTestSuite({
   options: { statsLevel: 'basic' },
@@ -162,9 +162,25 @@ describe('createPgliteAdapter', () => {
         migrationsPath: '/tmp/migrations',
       }),
     ).rejects.toThrow(
-      'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
+      'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
     );
     expect(exec.mock.calls).toEqual([['BROKEN SQL']]);
+  });
+
+  it('includes the dataDir path in schema failures for persistent instances', async () => {
+    const exec = vi.fn().mockRejectedValueOnce(new Error('migration failed'));
+    const pglite = createMockPglite({ exec });
+    Object.assign(pglite, { dataDir: '/var/data/test-db' });
+    const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks();
+
+    await expect(
+      createPgliteAdapter({
+        pglite,
+        sql: 'SELECT 1',
+      }),
+    ).rejects.toThrow(
+      'Failed to apply schema SQL to PGlite(dataDir=/var/data/test-db). Check your schema or migration files.',
+    );
   });
 
   it('applies migration SQL when a migrationsPath is provided', async () => {
@@ -202,9 +218,35 @@ describe('createPgliteAdapter', () => {
     const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks();
 
     await expect(createPgliteAdapter({ pglite, sql: 'SELECT 1' })).rejects.toThrow(
-      'Failed to apply schema SQL to PGlite. Check your schema or migration files.',
+      'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
     );
     expect(exec.mock.calls).toEqual([['SELECT 1']]);
+  });
+
+  it('preserves the PGlite cause when a multi-statement migration fails partway', async () => {
+    const livePglite = new PGlite();
+    try {
+      const sql = [
+        'CREATE TABLE "Ok" ("id" TEXT PRIMARY KEY);',
+        'CREATE TABLE "Broken" ("id" TEXT REFERENCES "Missing"("id"));',
+        'CREATE TABLE "Unreached" ("id" TEXT PRIMARY KEY);',
+      ].join('\n');
+
+      const error = await createPgliteAdapter({ pglite: livePglite, sql }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
+      );
+      const cause = (error as Error).cause;
+      expect(cause).toBeInstanceOf(Error);
+      expect(String((cause as Error).message).toLowerCase()).toContain('missing');
+    } finally {
+      await livePglite.close();
+    }
   });
 
   it('close is idempotent while shutdown is already in progress', async () => {
@@ -230,5 +272,41 @@ describe('createPgliteAdapter', () => {
     await Promise.all([closingA, closingB]);
 
     expect(poolEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('emitAdapterLeakWarning emits a typed process warning', () => {
+    const spy = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
+    try {
+      emitAdapterLeakWarning('adapter-xyz');
+      expect(spy).toHaveBeenCalledTimes(1);
+      const [message, options] = spy.mock.calls[0] ?? [];
+      expect(String(message)).toContain('adapter-xyz');
+      expect(String(message)).toContain('close()');
+      expect(options).toEqual({ type: 'PgliteAdapterLeakWarning' });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('registers the adapter for leak detection and unregisters on close', async () => {
+    const registerSpy = vi.spyOn(FinalizationRegistry.prototype, 'register');
+    const unregisterSpy = vi.spyOn(FinalizationRegistry.prototype, 'unregister');
+    try {
+      const exec = vi.fn().mockResolvedValue(undefined);
+      const pglite = createMockPglite({ exec });
+      const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks();
+      const created = await createPgliteAdapter({ pglite, sql: 'SELECT 1' });
+
+      expect(registerSpy).toHaveBeenCalled();
+      const registeredToken = registerSpy.mock.calls.at(-1)?.[2];
+      expect(registeredToken).toBeDefined();
+
+      await created.close();
+
+      expect(unregisterSpy).toHaveBeenCalledWith(registeredToken);
+    } finally {
+      registerSpy.mockRestore();
+      unregisterSpy.mockRestore();
+    }
   });
 });

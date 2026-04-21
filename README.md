@@ -18,73 +18,12 @@ TypeScript users also need `@types/pg`.
 ### Optional PGlite 0.4.4 memory patch
 
 `@electric-sql/pglite@0.4.4` retains parsed raw-protocol messages
-across `execProtocolRaw()` / `execProtocolRawStream()` calls. That
-shows up as large memory growth on the bridge path because this
-package uses PGlite's raw wire-protocol API.
-
-This repo ships a version-pinned patch for `@electric-sql/pglite@0.4.4`
-in [patches/@electric-sql__pglite@0.4.4.patch](patches/@electric-sql__pglite@0.4.4.patch).
-We apply it in development via `pnpm.patchedDependencies`.
-
-If your project also uses `@electric-sql/pglite@0.4.4`, you can opt
-into the same fix. This workflow is `pnpm`-specific.
-
-#### How To Apply It In Your Project
-
-1. Make sure your project is actually using
-   `@electric-sql/pglite@0.4.4`.
-
-```sh
-pnpm add -D @electric-sql/pglite@0.4.4
-pnpm why @electric-sql/pglite
-```
-
-If you are also setting up `prisma-pglite-bridge`, install it
-separately as usual.
-
-1. Install `prisma-pglite-bridge` so the patch file is available in
-   `node_modules`:
-
-```sh
-pnpm add -D prisma-pglite-bridge
-```
-
-1. Copy the shipped patch file into your own repo:
-
-```sh
-mkdir -p patches
-cp node_modules/prisma-pglite-bridge/patches/@electric-sql__pglite@0.4.4.patch \
-  patches/@electric-sql__pglite@0.4.4.patch
-```
-
-1. Add this to your project's `package.json`:
-
-```json
-{
-  "pnpm": {
-    "patchedDependencies": {
-      "@electric-sql/pglite@0.4.4": "patches/@electric-sql__pglite@0.4.4.patch"
-    }
-  }
-}
-```
-
-1. Reinstall so `pnpm` applies the patch:
-
-```sh
-pnpm install
-```
-
-1. Verify that the patch is active in `pnpm-lock.yaml`.
-
-You should see:
-
-- a top-level `patchedDependencies` entry for `@electric-sql/pglite@0.4.4`
-- patched package keys that include `patch_hash=...`
-
-This patch is intentionally version-specific. Do not apply it to
-other PGlite versions unless the patch has been validated for that
-exact release.
+across the wire-protocol calls this bridge uses, which can show up
+as memory growth on long-lived adapters. An optional, `pnpm`-only
+patch fixes it — see
+[docs/pglite-044-memory-patch.md](docs/pglite-044-memory-patch.md)
+for the opt-in instructions. The bridge works correctly without the
+patch; adopt it only if memory growth is measurably hurting you.
 
 ## Quickstart
 
@@ -100,9 +39,12 @@ const { adapter, resetDb } = await createPgliteAdapter({
 });
 const prisma = new PrismaClient({ adapter });
 
-// Per-test isolation (optional)
 beforeEach(() => resetDb());
 ```
+
+Call `resetDb()` in `beforeEach` to wipe all data between tests.
+Skip it if your tests are read-only or you want state to carry
+over.
 
 That's it. Run `prisma migrate dev` first to generate migration
 files. No Docker, no database server — works in GitHub Actions,
@@ -125,6 +67,13 @@ When you pass any of `sql`, `migrationsPath`, or `configRoot`,
 When none of these options is provided, no SQL is applied — the
 PGlite instance is assumed to already hold the schema (useful
 for reopening a persistent `dataDir`).
+
+Schema SQL — whether inline via `sql` or loaded from `migrationsPath`
+— is executed verbatim with no checksum or signature verification.
+Ensure the source is trusted and version-controlled. Do not compose
+it from environment variables, network input, or any value that
+crosses a trust boundary, and keep the migrations directory
+writable only by trusted processes.
 
 ## API
 
@@ -398,6 +347,12 @@ for the full list.
 
 ### Pre-generated SQL (fastest)
 
+The `sql` option runs verbatim with no sandbox or checksum. Compose
+it from trusted, version-controlled source only — never from
+environment variables, network input, or values that cross a trust
+boundary. See [Schema Resolution](#schema-resolution) for the
+full source-of-trust guidance.
+
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
 
@@ -534,19 +489,21 @@ described below. That path is more flexible, but also more advanced.
 
 **`'full'`** — adds:
 
-- `processRssPeakBytes` — process-wide RSS peak (sampled at 500ms,
-  a lower bound on true peak — short-lived allocations between
-  samples are missed; contaminated if unrelated work shares the
-  process)
+- `processRssPeakBytes` — process-wide RSS peak, read from
+  `process.resourceUsage().maxRSS` (kernel-tracked, lossless) at
+  the moment `stats()` is called. Contaminated if unrelated work
+  shares the process — use as an ordering signal, not an absolute
+  measurement. `undefined` on runtimes without
+  `process.resourceUsage` (Bun, Deno, edge workers).
 - `totalSessionLockWaitMs`, `sessionLockAcquisitionCount`,
   `avgSessionLockWaitMs`, `maxSessionLockWaitMs` — session-lock
   contention across pool connections
 
-`statsLevel` is echoed on the returned object. When
-`statsLevel === 'full'`, all `'full'`-only fields are guaranteed
-defined. `dbSizeBytes` is the only field that can be `undefined` — if the
-`pg_database_size` query rejects (broken pglite state), the rest of
-the object still returns.
+`statsLevel` is echoed on the returned object. Any field typed
+`T | undefined` in the returned `Stats` is the exhaustive list of
+fields that can be missing — `dbSizeBytes` if `pg_database_size`
+rejects, `processRssPeakBytes` on runtimes without
+`process.resourceUsage`. Every other field is always defined.
 
 ## Diagnostics channels
 

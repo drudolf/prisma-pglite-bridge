@@ -47,6 +47,22 @@ describe('snapshot manager', () => {
     await pglite.exec('DROP TABLE users');
   });
 
+  it('survives a table name containing a double quote', async () => {
+    await pglite.exec(
+      `CREATE TABLE "odd""name" (id serial PRIMARY KEY, v text); INSERT INTO "odd""name" (v) VALUES ('seed')`,
+    );
+
+    const snapshot = createSnapshotManager(pglite);
+    await snapshot.snapshotDb();
+    await pglite.exec(`INSERT INTO "odd""name" (v) VALUES ('extra')`);
+    await snapshot.resetDb();
+
+    const { rows } = await pglite.query<{ v: string }>(`SELECT v FROM "odd""name" ORDER BY id`);
+    expect(rows).toEqual([{ v: 'seed' }]);
+
+    await pglite.exec(`DROP TABLE "odd""name"`);
+  });
+
   it('drops the stored snapshot so resetDb truncates to empty again', async () => {
     await pglite.exec(
       "CREATE TABLE users (id serial PRIMARY KEY, name text NOT NULL); INSERT INTO users (name) VALUES ('alice')",

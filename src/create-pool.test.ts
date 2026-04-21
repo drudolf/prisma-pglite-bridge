@@ -29,3 +29,23 @@ describe('createPool — adapterId', async () => {
     }
   });
 });
+
+describe('createPool — max default', () => {
+  it(`defaults max to 1 when the option is omitted`, async () => {
+    const { pool, close } = await createPool({ pglite });
+    try {
+      expect(pool.options.max).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
+  it('honors an explicit max override', async () => {
+    const { pool, close } = await createPool({ pglite, max: 3 });
+    try {
+      expect(pool.options.max).toBe(3);
+    } finally {
+      await close();
+    }
+  });
+});
