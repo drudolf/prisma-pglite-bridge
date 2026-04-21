@@ -1,3 +1,10 @@
+/**
+ * Micro benchmark — latency of common Prisma operations.
+ *
+ * Covers single/bulk create, findMany, nested create, deep include,
+ * interactive transaction, and update+find. Timing only (no memory
+ * tracking). The default scenario for quick adapter comparisons.
+ */
 import type { Scenario, ScenarioResult } from '../adapters/types.ts';
 
 const timeOp = async (fn: () => Promise<unknown>): Promise<number> => {

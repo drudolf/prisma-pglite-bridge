@@ -1,3 +1,11 @@
+/**
+ * Adapter harness for `prisma-pglite-bridge` — this package under test.
+ *
+ * Spins up a PGlite instance, wraps it with `createPool` (our bridge),
+ * and hands the resulting `pg.Pool` to `PrismaPg`. Instruments the
+ * bridge-side PGlite and the driver adapter with `stackProbe` so
+ * stack-breakdown scenarios can attribute memory.
+ */
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
@@ -33,18 +41,18 @@ export const bridge: AdapterHarness = {
 
   teardown: async (ctx) => {
     await ctx.prisma.$disconnect();
-    const driverAdapter = (ctx.prisma as Record<string, unknown>).__driverAdapter as
+    const driverAdapter = (ctx.prisma as unknown as Record<string, unknown>).__driverAdapter as
       | { dispose: () => Promise<void> }
       | undefined;
     await driverAdapter?.dispose();
-    const close = (ctx.prisma as Record<string, unknown>).__close as () => Promise<void>;
+    const close = (ctx.prisma as unknown as Record<string, unknown>).__close as () => Promise<void>;
     await close();
-    const pglite = (ctx.prisma as Record<string, unknown>).__pglite as PGlite;
+    const pglite = (ctx.prisma as unknown as Record<string, unknown>).__pglite as PGlite;
     await pglite.close();
   },
 
   truncate: async (ctx) => {
-    const pglite = (ctx.prisma as Record<string, unknown>).__pglite as {
+    const pglite = (ctx.prisma as unknown as Record<string, unknown>).__pglite as {
       query: <T>(sql: string) => Promise<{ rows: T[] }>;
       exec: (sql: string) => Promise<void>;
     };

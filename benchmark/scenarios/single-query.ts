@@ -1,3 +1,13 @@
+/**
+ * Single-query benchmark — measures a single large-result query in
+ * isolation to expose per-query allocation patterns.
+ *
+ * Forces GC between steps, snapshots RSS/heap/arrayBuffers before and
+ * after, and emits a {@link StackAttribution} trace if the adapter's
+ * stack probe is armed. Useful for catching regressions in per-query
+ * memory overhead that micro benchmarks average away. Requires
+ * `--expose-gc`.
+ */
 import { performance } from 'node:perf_hooks';
 import type {
   MemoryDelta,

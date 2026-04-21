@@ -1,3 +1,12 @@
+/**
+ * Stack-breakdown benchmark — attributes peak RSS to specific stages of
+ * the query stack (`pg.send` → `firstRow` → `resultBuilt` → …).
+ *
+ * Runs the same large-JSON read pattern against each adapter with
+ * `stackProbe` armed so the runner can aggregate which stage drove the
+ * peak most often. The primary tool for answering "where does the
+ * bridge's memory overhead actually come from?" Requires `--expose-gc`.
+ */
 import { performance } from 'node:perf_hooks';
 import type { Pool } from 'pg';
 import type { MemoryDelta, MemorySnapshot, Scenario, StackAttribution } from '../adapters/types.ts';
