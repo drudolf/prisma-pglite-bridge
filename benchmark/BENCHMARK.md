@@ -31,19 +31,21 @@ The `postgres-pg` adapter requires connection info — see
 
 ## Scenarios
 
-| Flag value          | Measures                                                     | Needs `--expose-gc` |
-| ------------------- | ------------------------------------------------------------ | :-----------------: |
-| `micro` (default)   | Latency of common Prisma ops (create, findMany, tx, nested…) |                     |
-| `stress`            | Contention, throughput, bridge-specific concurrency          |                     |
-| `memory`            | Peak & retained RSS/heap with per-bridge-span attribution    |         yes         |
-| `single-query`      | One large-result query in isolation                          |         yes         |
-| `stack-breakdown`   | Attributes peak RSS to stages (`pg.send` → `firstRow` → …)   |         yes         |
-| `path-split`        | Separates raw PGlite, adapter, Prisma, and maintenance paths |         yes         |
-| `findmany-focused`  | `findMany({ take: 100 })` in isolation — tail-latency probe  |    recommended      |
+| Flag value             | Measures                                                                | Needs `--expose-gc` |
+| ---------------------- | ----------------------------------------------------------------------- | :-----------------: |
+| `micro` (default)      | Latency of common Prisma ops (create, findMany, tx, nested…)            |                     |
+| `stress`               | Contention, throughput, bridge-specific concurrency                     |                     |
+| `memory`               | Peak & retained RSS/heap with per-bridge-span attribution               |         yes         |
+| `single-query`         | One large-result query in isolation                                     |         yes         |
+| `stack-breakdown`      | Attributes peak RSS to stages (`pg.send` → `firstRow` → …)              |         yes         |
+| `path-split`           | Separates raw PGlite, adapter, Prisma, and maintenance paths            |         yes         |
+| `findmany-focused`     | `findMany({ take: 100 })` in isolation — tail-latency probe             |    recommended      |
+| `repeated-large-reads` | Repeated Prisma reads over one 1MB JSON row (`$queryRaw`, `findUnique`) |                     |
 
 Pick one with `--scenario <name>`, or `--scenario all` for the full set.
-`findmany-focused` and `path-split` are explicit-only — neither is
-included in `all`; target them with `--scenario findmany-focused` or
+`findmany-focused`, `repeated-large-reads`, and `path-split` are
+explicit-only — none are included in `all`; target them with
+`--scenario findmany-focused`, `--scenario repeated-large-reads`, or
 `--scenario path-split` when hunting read-path or path-attribution
 regressions.
 
@@ -182,3 +184,13 @@ NODE_OPTIONS="--expose-gc" pnpm bench --scenario findmany-focused -n 1000 -w 100
 Diff the reported `findMany 100` p50/p95/p99 medians between the two
 trees — 1000 iterations keep the noise band tight enough that a few
 percent regression shows up reliably.
+
+For repeated large-row Prisma reads, use `repeated-large-reads`:
+
+```bash
+pnpm bench --scenario repeated-large-reads -n 100 -w 10
+```
+
+That isolates the specific path exercised by repeated 1MB-row
+`prisma.$queryRaw()` and `prisma.findUnique()` calls without the
+stack-probe overhead of `stack-breakdown`.

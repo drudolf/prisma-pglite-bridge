@@ -242,6 +242,13 @@ export class BackendMessageFramer {
     if (chunk.length === 0) return;
 
     let offset = 0;
+    let passthroughStart = -1;
+    const flushPassthrough = (end: number): void => {
+      if (passthroughStart >= 0 && end > passthroughStart) {
+        this.emitChunkSlice(chunk, passthroughStart, end);
+        passthroughStart = -1;
+      }
+    };
     while (offset < chunk.length) {
       if (this.messageType === undefined) {
         // Fast path: if type + 4-byte header + full payload are all in this
@@ -269,13 +276,14 @@ export class BackendMessageFramer {
           }
           const totalLen = 1 + messageLength;
           if (available >= totalLen) {
-            if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
-              this.dropHeldReadyForQuery();
-            }
             if (msgType === ERROR_RESPONSE) {
               this.onErrorResponse?.();
             }
             if (msgType === READY_FOR_QUERY && messageLength === 5) {
+              flushPassthrough(offset);
+              if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
+                this.dropHeldReadyForQuery();
+              }
               /* c8 ignore next — messageLength === 5 for RFQ; payload is 1 byte */
               const status = chunk[offset + 5] ?? 0;
               this.heldRfq[0] = msgType;
@@ -291,13 +299,19 @@ export class BackendMessageFramer {
                 this.rfqBytesRead = 0;
               }
             } else {
-              this.emitChunkSlice(chunk, offset, offset + totalLen);
+              if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
+                this.dropHeldReadyForQuery();
+              }
+              if (passthroughStart < 0) {
+                passthroughStart = offset;
+              }
             }
             offset += totalLen;
             continue;
           }
         }
 
+        flushPassthrough(offset);
         if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
           this.dropHeldReadyForQuery();
         }
@@ -384,6 +398,8 @@ export class BackendMessageFramer {
         this.finishMessage();
       }
     }
+
+    flushPassthrough(offset);
   }
 
   flush(options?: { dropHeldReadyForQuery?: boolean }): void {
