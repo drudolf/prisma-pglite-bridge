@@ -18,16 +18,23 @@ const loadCreatePgliteAdapterWithMocks = async ({
   getMigrationSQL = vi
     .fn()
     .mockImplementation(async (options: { sql?: string }) => options.sql ?? 'BROKEN SQL'),
+  prismaPg = vi.fn().mockImplementation(function MockPrismaPg() {
+    return { mocked: true };
+  }),
 }: {
   poolEnd?: Mock;
   getMigrationSQL?: Mock;
+  prismaPg?: Mock;
 } = {}): Promise<{
   createPool: Mock;
   module: CreatePgliteAdapterModule;
+  pool: { end: Mock };
+  prismaPg: Mock;
 }> => {
   vi.resetModules();
+  const pool = { end: poolEnd };
   const createPool = vi.fn().mockResolvedValue({
-    pool: { end: poolEnd },
+    pool,
     adapterId: Symbol('mock'),
     close: vi.fn().mockResolvedValue(undefined),
   });
@@ -39,12 +46,16 @@ const loadCreatePgliteAdapterWithMocks = async ({
       await vi.importActual<typeof import('./utils/migrations.ts')>('./utils/migrations.ts');
     return { ...actual, getMigrationSQL };
   });
-  return { createPool, module: await import('./create-pglite-adapter.ts') };
+  vi.doMock('@prisma/adapter-pg', () => ({
+    PrismaPg: prismaPg,
+  }));
+  return { createPool, module: await import('./create-pglite-adapter.ts'), pool, prismaPg };
 };
 
 afterEach(() => {
   vi.doUnmock('./create-pool.ts');
   vi.doUnmock('./utils/migrations.ts');
+  vi.doUnmock('@prisma/adapter-pg');
   vi.resetModules();
 });
 
@@ -286,7 +297,7 @@ describe('createPgliteAdapter', () => {
 
   it('forwards syncToFs to createPool', async () => {
     const pglite = createMockPglite();
-    const { createPool, module } = await loadCreatePgliteAdapterWithMocks();
+    const { createPool, module, pool, prismaPg } = await loadCreatePgliteAdapterWithMocks();
     const { createPgliteAdapter } = module;
 
     const created = await createPgliteAdapter({ pglite, syncToFs: false });
@@ -297,6 +308,8 @@ describe('createPgliteAdapter', () => {
         syncToFs: false,
       }),
     );
+    expect(prismaPg).toHaveBeenCalledWith(pool);
+    expect(created.adapter).toEqual({ mocked: true });
 
     await created.close();
   });

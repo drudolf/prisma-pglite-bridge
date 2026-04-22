@@ -8,6 +8,7 @@
  *   pnpm bench --scenario stress                         # single scenario
  *   pnpm bench --adapter pglite-prisma-adapter --scenario stress -n 3
  *   pnpm bench --scenario findmany-focused -n 1000 -w 100 # custom warmup
+ *   pnpm bench --scenario repeated-large-reads -n 100 -w 10
  *   pnpm bench --json                                    # structured JSON to stdout
  *   pnpm bench --scenario all                            # all scenarios
  */
@@ -133,6 +134,10 @@ const loadScenarios = async (): Promise<[string, Scenario][]> => {
   if (scenarioFilter === 'findmany-focused') {
     const { findManyFocused } = await import('./scenarios/findmany-focused.ts');
     all.push(['findmany-focused', findManyFocused]);
+  }
+  if (scenarioFilter === 'repeated-large-reads') {
+    const { repeatedLargeReads } = await import('./scenarios/repeated-large-reads.ts');
+    all.push(['repeated-large-reads', repeatedLargeReads]);
   }
 
   return all;
