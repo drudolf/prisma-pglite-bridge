@@ -21,7 +21,7 @@
  */
 import type { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { createPool } from './create-pool.ts';
+import { createPool, type SyncToFsMode } from './create-pool.ts';
 import { AdapterStats, type Stats, type StatsLevel } from './utils/adapter-stats.ts';
 import { getMigrationSQL, type MigrationsOptions } from './utils/migrations.ts';
 import { createSnapshotManager } from './utils/snapshot.ts';
@@ -65,6 +65,18 @@ export interface CreatePgliteAdapterOptions extends MigrationsOptions {
    * Retrieve via `await adapter.stats()` — returns `undefined` at `'off'`.
    */
   statsLevel?: StatsLevel;
+
+  /**
+   * Filesystem sync policy for bridge-driven wire-protocol calls.
+   *
+   * Default `'auto'`: disables per-query sync for clearly in-memory PGlite
+   * instances and keeps it enabled otherwise. Set `true` to prefer durability
+   * on persistent stores, or `false` to prefer lower RSS / higher throughput.
+   *
+   * If you provide a custom persistent PGlite `fs` without a meaningful
+   * `dataDir`, pass `true` explicitly.
+   */
+  syncToFs?: SyncToFsMode;
 }
 
 /** Snapshot of adapter/query telemetry. See {@link CreatePgliteAdapterOptions.statsLevel}. */
@@ -153,6 +165,7 @@ export const createPgliteAdapter = async (
     pglite,
     max: options.max,
     adapterId,
+    syncToFs: options.syncToFs,
     telemetry: adapterStats,
   });
 

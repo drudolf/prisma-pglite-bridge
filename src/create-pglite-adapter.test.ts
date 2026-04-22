@@ -21,21 +21,25 @@ const loadCreatePgliteAdapterWithMocks = async ({
 }: {
   poolEnd?: Mock;
   getMigrationSQL?: Mock;
-} = {}): Promise<CreatePgliteAdapterModule> => {
+} = {}): Promise<{
+  createPool: Mock;
+  module: CreatePgliteAdapterModule;
+}> => {
   vi.resetModules();
+  const createPool = vi.fn().mockResolvedValue({
+    pool: { end: poolEnd },
+    adapterId: Symbol('mock'),
+    close: vi.fn().mockResolvedValue(undefined),
+  });
   vi.doMock('./create-pool.ts', () => ({
-    createPool: vi.fn().mockResolvedValue({
-      pool: { end: poolEnd },
-      adapterId: Symbol('mock'),
-      close: vi.fn().mockResolvedValue(undefined),
-    }),
+    createPool,
   }));
   vi.doMock('./utils/migrations.ts', async () => {
     const actual =
       await vi.importActual<typeof import('./utils/migrations.ts')>('./utils/migrations.ts');
     return { ...actual, getMigrationSQL };
   });
-  return import('./create-pglite-adapter.ts');
+  return { createPool, module: await import('./create-pglite-adapter.ts') };
 };
 
 afterEach(() => {
@@ -154,7 +158,8 @@ describe('createPgliteAdapter', () => {
   it('wraps migration failures with a descriptive error', async () => {
     const exec = vi.fn().mockRejectedValueOnce(new Error('migration failed'));
     const pglite = createMockPglite({ exec });
-    const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks();
+    const { module } = await loadCreatePgliteAdapterWithMocks();
+    const { createPgliteAdapter } = module;
 
     await expect(
       createPgliteAdapter({
@@ -171,7 +176,8 @@ describe('createPgliteAdapter', () => {
     const exec = vi.fn().mockRejectedValueOnce(new Error('migration failed'));
     const pglite = createMockPglite({ exec });
     Object.assign(pglite, { dataDir: '/var/data/test-db' });
-    const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks();
+    const { module } = await loadCreatePgliteAdapterWithMocks();
+    const { createPgliteAdapter } = module;
 
     await expect(
       createPgliteAdapter({
@@ -186,9 +192,10 @@ describe('createPgliteAdapter', () => {
   it('applies migration SQL when a migrationsPath is provided', async () => {
     const exec = vi.fn().mockResolvedValue(undefined);
     const pglite = createMockPglite({ exec });
-    const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks({
+    const { module } = await loadCreatePgliteAdapterWithMocks({
       getMigrationSQL: vi.fn().mockResolvedValue('SELECT 1'),
     });
+    const { createPgliteAdapter } = module;
 
     const created = await createPgliteAdapter({
       pglite,
@@ -203,7 +210,8 @@ describe('createPgliteAdapter', () => {
   it('skips migration application when no migration config is provided', async () => {
     const exec = vi.fn().mockResolvedValue(undefined);
     const pglite = createMockPglite({ exec });
-    const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks();
+    const { module } = await loadCreatePgliteAdapterWithMocks();
+    const { createPgliteAdapter } = module;
 
     const created = await createPgliteAdapter({ pglite });
 
@@ -215,7 +223,8 @@ describe('createPgliteAdapter', () => {
   it('wraps explicit sql failures with a descriptive error', async () => {
     const exec = vi.fn().mockRejectedValueOnce(new Error('bad sql'));
     const pglite = createMockPglite({ exec });
-    const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks();
+    const { module } = await loadCreatePgliteAdapterWithMocks();
+    const { createPgliteAdapter } = module;
 
     await expect(createPgliteAdapter({ pglite, sql: 'SELECT 1' })).rejects.toThrow(
       'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
@@ -259,7 +268,8 @@ describe('createPgliteAdapter', () => {
     );
     const exec = vi.fn().mockResolvedValue(undefined);
     const pglite = createMockPglite({ exec });
-    const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks({ poolEnd });
+    const { module } = await loadCreatePgliteAdapterWithMocks({ poolEnd });
+    const { createPgliteAdapter } = module;
     const created = await createPgliteAdapter({
       pglite,
       sql: 'SELECT 1',
@@ -272,6 +282,23 @@ describe('createPgliteAdapter', () => {
     await Promise.all([closingA, closingB]);
 
     expect(poolEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards syncToFs to createPool', async () => {
+    const pglite = createMockPglite();
+    const { createPool, module } = await loadCreatePgliteAdapterWithMocks();
+    const { createPgliteAdapter } = module;
+
+    const created = await createPgliteAdapter({ pglite, syncToFs: false });
+
+    expect(createPool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pglite,
+        syncToFs: false,
+      }),
+    );
+
+    await created.close();
   });
 
   it('emitAdapterLeakWarning emits a typed process warning', () => {
@@ -294,7 +321,8 @@ describe('createPgliteAdapter', () => {
     try {
       const exec = vi.fn().mockResolvedValue(undefined);
       const pglite = createMockPglite({ exec });
-      const { createPgliteAdapter } = await loadCreatePgliteAdapterWithMocks();
+      const { module } = await loadCreatePgliteAdapterWithMocks();
+      const { createPgliteAdapter } = module;
       const created = await createPgliteAdapter({ pglite, sql: 'SELECT 1' });
 
       expect(registerSpy).toHaveBeenCalled();

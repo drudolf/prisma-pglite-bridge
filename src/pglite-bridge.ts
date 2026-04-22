@@ -490,6 +490,7 @@ export class PGliteBridge extends Duplex {
   private readonly sessionLock?: SessionLock;
   private readonly adapterId?: symbol;
   private readonly telemetry?: TelemetrySink;
+  private readonly syncToFs: boolean;
   private readonly bridgeId: BridgeId;
   /** Incoming bytes framed directly from a queued chunk buffer */
   private readonly input = new FrontendMessageBuffer();
@@ -510,18 +511,23 @@ export class PGliteBridge extends Duplex {
    * @param telemetry    Internal sink used by `createPgliteAdapter` for built-in
    *                     stats. Not a public extension point — subscribe via
    *                     `node:diagnostics_channel` instead.
+   * @param syncToFs     Whether each bridged wire-protocol call should force a
+   *                     filesystem sync before returning. Disable only when
+   *                     higher throughput / lower RSS is worth weaker durability.
    */
   constructor(
     pglite: PGlite,
     sessionLock?: SessionLock,
     adapterId?: symbol,
     telemetry?: TelemetrySink,
+    syncToFs = true,
   ) {
     super();
     this.pglite = pglite;
     this.sessionLock = sessionLock;
     this.adapterId = adapterId;
     this.telemetry = telemetry;
+    this.syncToFs = syncToFs;
     this.bridgeId = Symbol('bridge');
   }
 
@@ -829,6 +835,7 @@ export class PGliteBridge extends Duplex {
     });
 
     await this.pglite.execProtocolRawStream(batch, {
+      syncToFs: this.syncToFs,
       onRawData: (chunk: Uint8Array) => {
         /* c8 ignore next — race-only: tornDown becomes true mid-stream */
         if (!this.tornDown) {
@@ -869,6 +876,7 @@ export class PGliteBridge extends Duplex {
     });
 
     await this.pglite.execProtocolRawStream(message, {
+      syncToFs: this.syncToFs,
       onRawData: (chunk: Uint8Array) => {
         /* c8 ignore next — race-only: tornDown becomes true mid-stream */
         if (!this.tornDown) {

@@ -13,6 +13,15 @@ import { PGliteBridge } from './pglite-bridge.ts';
 import type { TelemetrySink } from './utils/adapter-stats.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
+export type SyncToFsMode = 'auto' | boolean;
+
+const resolveSyncToFs = (pglite: PGlite, mode: SyncToFsMode | undefined): boolean => {
+  if (mode === true || mode === false) return mode;
+
+  const dataDir = pglite.dataDir;
+  return !(dataDir === undefined || dataDir === '' || dataDir.startsWith('memory://'));
+};
+
 export interface CreatePoolOptions {
   /** PGlite instance to bridge to. The caller owns its lifecycle. */
   pglite: PGlite;
@@ -35,6 +44,19 @@ export interface CreatePoolOptions {
    * same process. A fresh `Symbol('adapter')` is generated if omitted.
    */
   adapterId?: symbol;
+
+  /**
+   * Filesystem sync policy for bridge-driven wire-protocol calls.
+   *
+   * - `'auto'` (default): disable per-query sync for clearly in-memory PGlite
+   *   instances, keep it enabled otherwise.
+   * - `true`: always sync before the bridge returns a query result.
+   * - `false`: never sync on bridge protocol calls; fastest, but weaker durability.
+   *
+   * `auto` uses `pglite.dataDir` as a heuristic. If you provide a custom
+   * persistent `fs` without a meaningful `dataDir`, pass `true` explicitly.
+   */
+  syncToFs?: SyncToFsMode;
 
   telemetry?: TelemetrySink;
 }
@@ -78,6 +100,7 @@ export interface PoolResult {
 export const createPool = async (options: CreatePoolOptions): Promise<PoolResult> => {
   const { pglite, max = 1, telemetry } = options;
   const adapterId = options.adapterId ?? Symbol('adapter');
+  const syncToFs = resolveSyncToFs(pglite, options.syncToFs);
 
   await pglite.waitReady;
 
@@ -90,7 +113,7 @@ export const createPool = async (options: CreatePoolOptions): Promise<PoolResult
         ...config,
         user: 'postgres',
         database: 'postgres',
-        stream: () => new PGliteBridge(pglite, sessionLock, adapterId, telemetry),
+        stream: () => new PGliteBridge(pglite, sessionLock, adapterId, telemetry, syncToFs),
       });
     }
   };

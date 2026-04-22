@@ -126,6 +126,10 @@ const loadScenarios = async (): Promise<[string, Scenario][]> => {
     const { stackBreakdown } = await import('./scenarios/stack-breakdown.ts');
     all.push(['stack-breakdown', stackBreakdown]);
   }
+  if (scenarioFilter === 'path-split') {
+    const { pathSplit } = await import('./scenarios/path-split.ts');
+    all.push(['path-split', pathSplit]);
+  }
   if (scenarioFilter === 'findmany-focused') {
     const { findManyFocused } = await import('./scenarios/findmany-focused.ts');
     all.push(['findmany-focused', findManyFocused]);
