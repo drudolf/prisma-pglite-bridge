@@ -15,18 +15,6 @@ pnpm add -D prisma-pglite-bridge @electric-sql/pglite @prisma/adapter-pg pg
 The last three are peer dependencies you may already have.
 TypeScript users also need `@types/pg`.
 
-### Bridge fs-sync policy
-
-The adapter defaults `syncToFs` to `'auto'`:
-
-- in-memory PGlite (`new PGlite()` or `memory://...`) resolves to `false`
-- persistent `dataDir` usage resolves to `true`
-
-That keeps bridge-heavy test workloads on the lower-memory fast path
-without changing durability defaults for persistent databases.
-If you use a custom `fs`, set `syncToFs` explicitly because the
-adapter cannot infer whether that storage is durable.
-
 ## Quickstart
 
 ```typescript
@@ -76,6 +64,18 @@ Ensure the source is trusted and version-controlled. Do not compose
 it from environment variables, network input, or any value that
 crosses a trust boundary, and keep the migrations directory
 writable only by trusted processes.
+
+## Bridge fs-sync policy
+
+The adapter defaults `syncToFs` to `'auto'`:
+
+- in-memory PGlite (`new PGlite()` or `memory://...`) resolves to `false`
+- persistent `dataDir` usage resolves to `true`
+
+That keeps bridge-heavy test workloads on the lower-memory fast path
+without changing durability defaults for persistent databases.
+If you use a custom `fs`, set `syncToFs` explicitly because the
+adapter cannot infer whether that storage is durable.
 
 ## API
 
