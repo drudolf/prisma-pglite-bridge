@@ -28,15 +28,15 @@ import { createSnapshotManager } from './utils/snapshot.ts';
 import { nsToMs } from './utils/time.ts';
 
 /** @internal Exported for testing. */
-export const emitAdapterLeakWarning = (adapterId: symbol): void => {
+export const emitAdapterLeakWarning = (): void => {
   process.emitWarning(
-    `PGlite adapter "${String(adapterId)}" was garbage-collected before close() was called. ` +
+    'PGlite adapter was garbage-collected before close() was called. ' +
       'Call adapter.close() to release the pool and finalize stats().',
     { type: 'PgliteAdapterLeakWarning' },
   );
 };
 
-const leakRegistry = new FinalizationRegistry(emitAdapterLeakWarning);
+const leakRegistry = new FinalizationRegistry<void>(emitAdapterLeakWarning);
 
 export interface CreatePgliteAdapterOptions extends MigrationsOptions {
   /**
@@ -226,7 +226,12 @@ export const createPgliteAdapter = async (
     stats: async () => (adapterStats ? adapterStats.snapshot(pglite) : undefined),
   };
 
-  leakRegistry.register(result, adapterId, leakToken);
+  // Track the lifetime of the Prisma adapter instance users actually retain.
+  // The wrapper object returned by createPgliteAdapter() is often ephemeral
+  // (`const adapter = (await createPgliteAdapter(...)).adapter`), so
+  // registering that wrapper causes false leak warnings while Prisma still
+  // holds the live adapter and pool.
+  leakRegistry.register(adapter, undefined, leakToken);
 
   return result;
 };

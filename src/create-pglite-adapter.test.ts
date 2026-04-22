@@ -317,10 +317,10 @@ describe('createPgliteAdapter', () => {
   it('emitAdapterLeakWarning emits a typed process warning', () => {
     const spy = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
     try {
-      emitAdapterLeakWarning(Symbol('adapter-xyz'));
+      emitAdapterLeakWarning();
       expect(spy).toHaveBeenCalledTimes(1);
       const [message, options] = spy.mock.calls[0] ?? [];
-      expect(String(message)).toContain('adapter-xyz');
+      expect(String(message)).toContain('garbage-collected');
       expect(String(message)).toContain('close()');
       expect(options).toEqual({ type: 'PgliteAdapterLeakWarning' });
     } finally {
