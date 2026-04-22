@@ -88,7 +88,7 @@ describe('SessionLock', () => {
     lock.updateStatus(a, 0x54);
 
     let bResolved = false;
-    const bPromise = lock.acquire(b).then(
+    lock.acquire(b).then(
       () => {
         bResolved = true;
       },
