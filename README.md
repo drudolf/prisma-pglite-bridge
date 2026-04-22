@@ -15,15 +15,17 @@ pnpm add -D prisma-pglite-bridge @electric-sql/pglite @prisma/adapter-pg pg
 The last three are peer dependencies you may already have.
 TypeScript users also need `@types/pg`.
 
-### Optional PGlite 0.4.4 memory patch
+### Bridge fs-sync policy
 
-`@electric-sql/pglite@0.4.4` retains parsed raw-protocol messages
-across the wire-protocol calls this bridge uses, which can show up
-as memory growth on long-lived adapters. An optional, `pnpm`-only
-patch fixes it — see
-[docs/pglite-044-memory-patch.md](docs/pglite-044-memory-patch.md)
-for the opt-in instructions. The bridge works correctly without the
-patch; adopt it only if memory growth is measurably hurting you.
+The adapter defaults `syncToFs` to `'auto'`:
+
+- in-memory PGlite (`new PGlite()` or `memory://...`) resolves to `false`
+- persistent `dataDir` usage resolves to `true`
+
+That keeps bridge-heavy test workloads on the lower-memory fast path
+without changing durability defaults for persistent databases.
+If you use a custom `fs`, set `syncToFs` explicitly because the
+adapter cannot infer whether that storage is durable.
 
 ## Quickstart
 

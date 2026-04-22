@@ -38,11 +38,14 @@ The `postgres-pg` adapter requires connection info — see
 | `memory`            | Peak & retained RSS/heap with per-bridge-span attribution    |         yes         |
 | `single-query`      | One large-result query in isolation                          |         yes         |
 | `stack-breakdown`   | Attributes peak RSS to stages (`pg.send` → `firstRow` → …)   |         yes         |
+| `path-split`        | Separates raw PGlite, adapter, Prisma, and maintenance paths |         yes         |
 | `findmany-focused`  | `findMany({ take: 100 })` in isolation — tail-latency probe  |    recommended      |
 
 Pick one with `--scenario <name>`, or `--scenario all` for the full set.
-`findmany-focused` is explicit-only — it is not included in `all`; target
-it with `--scenario findmany-focused` when hunting read-path regressions.
+`findmany-focused` and `path-split` are explicit-only — neither is
+included in `all`; target them with `--scenario findmany-focused` or
+`--scenario path-split` when hunting read-path or path-attribution
+regressions.
 
 ## CLI flags
 
