@@ -1,5 +1,17 @@
 # prisma-pglite-bridge
 
+## 0.5.1
+
+### Patch Changes
+
+- [`fc1eb84`](https://github.com/drudolf/prisma-pglite-bridge/commit/fc1eb840c4a4c643e58c904937ff1135951b84c5) Thanks [@drudolf](https://github.com/drudolf)! - Fix false-positive `PgliteAdapterLeakWarning` when consumers
+  destructure the return value of `createPgliteAdapter()` and keep only
+  `adapter` (e.g. via `new PrismaClient({ adapter })`). The
+  `FinalizationRegistry` now tracks the Prisma adapter instance itself
+  rather than the wrapper object returned by `createPgliteAdapter()`, so
+  the warning fires only when the adapter — and therefore the pool — is
+  genuinely unreachable.
+
 ## 0.5.0
 
 ### Minor Changes
