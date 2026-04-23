@@ -14,7 +14,7 @@ export interface BridgeClientOptions {
   syncToFs: boolean;
 }
 
-export type BridgeClientConfig = pg.ClientConfig & {
+type BridgeClientConfig = pg.ClientConfig & {
   [bridgeClientOptionsKey]: BridgeClientOptions;
 };
 
