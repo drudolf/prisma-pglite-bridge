@@ -191,6 +191,7 @@ the in-memory PGlite version:
 import { PGlite } from '@electric-sql/pglite';
 import { createPgliteAdapter } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
+import { beforeEach, vi } from 'vitest';
 
 const pglite = new PGlite();
 const { adapter, resetDb } = await createPgliteAdapter({
