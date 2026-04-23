@@ -1,5 +1,17 @@
 # prisma-pglite-bridge
 
+## 0.5.2
+
+### Patch Changes
+
+- [`6c54b38`](https://github.com/drudolf/prisma-pglite-bridge/commit/6c54b38355292050b70f6513c65f3d6c6de97224) Thanks [@drudolf](https://github.com/drudolf)! - Serialize `pg.Client.query` submissions in the bridge's Client subclass so
+  upstream fan-out (notably Prisma's readback phase on `create` with multi-
+  relation `include`, or `Promise.all` inside an interactive `$transaction`)
+  never trips pg's "client.query() while another query is executing"
+  deprecation warning. Promise- and callback-form queries are chained through
+  a per-Client submission queue; the Submittable form (pg.Query, cursors,
+  streaming) is passed through unserialized to preserve its event contract.
+
 ## 0.5.1
 
 ### Patch Changes
