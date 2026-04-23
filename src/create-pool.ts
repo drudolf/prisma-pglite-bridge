@@ -9,7 +9,7 @@
  */
 import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
-import { PGliteBridge } from './pglite-bridge.ts';
+import { BridgeClient, type BridgePoolConfig, bridgeClientOptionsKey } from './bridge-client.ts';
 import type { TelemetrySink } from './utils/adapter-stats.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
@@ -106,19 +106,18 @@ export const createPool = async (options: CreatePoolOptions): Promise<PoolResult
 
   const sessionLock = new SessionLock();
 
-  // Subclass pg.Client to inject PGliteBridge as the stream
-  const Client = class extends pg.Client {
-    constructor(config: pg.ClientConfig = {}) {
-      super({
-        ...config,
-        user: 'postgres',
-        database: 'postgres',
-        stream: () => new PGliteBridge(pglite, sessionLock, adapterId, telemetry, syncToFs),
-      });
-    }
+  const poolConfig: BridgePoolConfig = {
+    Client: BridgeClient,
+    max,
+    [bridgeClientOptionsKey]: {
+      pglite,
+      sessionLock,
+      adapterId,
+      telemetry,
+      syncToFs,
+    },
   };
-
-  const pool = new pg.Pool({ Client, max });
+  const pool = new pg.Pool(poolConfig);
   const close = () => pool.end();
 
   return { pool, adapterId, close };
