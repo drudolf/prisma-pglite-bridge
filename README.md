@@ -107,15 +107,20 @@ Returns:
   Note: this clears all data including seed data — re-seed after
   reset if needed.
 - `close()` — shuts down the pool. The caller-supplied PGlite
-  instance is not closed — you own its lifecycle. Not needed in
-  tests (process exit handles it); use in long-running scripts
-  or dev servers.
+  instance is not closed — you own its lifecycle. Recommended in
+  explicit test teardown, long-running scripts, and dev servers so
+  the pool is released promptly and leak warnings do not fire.
 - `stats()` — returns telemetry when `statsLevel` is `'basic'` or
   `'full'`, else `undefined`. See [Stats collection](#stats-collection).
 - `adapterId` — a unique `symbol` identifying this adapter. Use it
   to filter events from the public
   [diagnostics channels](#diagnostics-channels) when multiple
   adapters share a process.
+- `snapshotDb()` — captures the current DB contents into an internal
+  snapshot so later `resetDb()` calls restore to that state instead of
+  truncating to empty.
+- `resetSnapshot()` — discards the current snapshot so later
+  `resetDb()` calls truncate back to empty again.
 
 ### `createPool(options)`
 
@@ -137,7 +142,7 @@ Returns `pool` (pg.Pool), `adapterId` (a unique `symbol` for
 [diagnostics channel](#diagnostics-channels) filtering), and
 `close()` (which shuts down the pool only — the caller-supplied
 PGlite instance is not closed). Accepts `pglite` (required),
-`max`, and `adapterId`.
+`max`, `adapterId`, and `syncToFs`.
 
 ### `PGliteBridge`
 
