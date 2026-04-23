@@ -70,7 +70,7 @@ type ProbeResult = InstanceType<typeof Result> & {
   [resultLabelSymbol]?: string;
 };
 
-export class StackProbe {
+class StackProbe {
   private currentLabel: string | null = null;
   private currentAdapter: string | null = null;
   private readonly records = new Map<string, RecordState>();

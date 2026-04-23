@@ -2,7 +2,7 @@ import type { PGlite } from '@electric-sql/pglite';
 import { type Mock, vi } from 'vitest';
 import type { TelemetrySink } from '../utils/adapter-stats.ts';
 
-export interface MockPglite {
+interface MockPglite {
   exec: Mock;
   query: Mock;
   waitReady: Promise<void>;

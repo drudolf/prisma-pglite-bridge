@@ -36,9 +36,7 @@ export const loadBenchEnv = (): Record<string, string> => {
   return parsed;
 };
 
-export const getEnvTest = (name: string): string | undefined => loadEnvTest()[name];
+const getEnvTest = (name: string): string | undefined => loadEnvTest()[name];
 
 export const getBenchEnv = (name: string): string | undefined =>
   getEnvTest(name) ?? process.env[name];
-
-export const envTestPath = ENV_TEST_PATH;
