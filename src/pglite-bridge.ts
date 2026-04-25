@@ -699,7 +699,7 @@ export class PGliteBridge extends Duplex {
 
     await this.acquireSession();
     await this.pglite.runExclusive(async () => {
-      await this.execAndPush(message, false);
+      await this.streamProtocol(message, { detectErrors: false, suppressIntermediateRfq: false });
     });
 
     this.phase = 'ready';
@@ -745,7 +745,9 @@ export class PGliteBridge extends Duplex {
       }
 
       // SimpleQuery or other standalone message
-      await this.runWithTiming((detectErrors) => this.execAndPush(message, detectErrors));
+      await this.runWithTiming((detectErrors) =>
+        this.streamProtocol(message, { detectErrors, suppressIntermediateRfq: false }),
+      );
     }
   }
 
@@ -763,7 +765,9 @@ export class PGliteBridge extends Duplex {
     const messages = this.pipeline;
     this.pipeline = [];
     const batch = concat(messages);
-    await this.runWithTiming((detectErrors) => this.runPipelineBatch(batch, detectErrors));
+    await this.runWithTiming((detectErrors) =>
+      this.streamProtocol(batch, { detectErrors, suppressIntermediateRfq: true }),
+    );
   }
 
   /**
@@ -830,51 +834,25 @@ export class PGliteBridge extends Duplex {
     }
   }
 
-  private async runPipelineBatch(batch: Uint8Array, detectErrors: boolean): Promise<boolean> {
-    let errSeen = false;
-    const framer = new BackendMessageFramer({
-      suppressIntermediateReadyForQuery: true,
-      onChunk: (chunk) => {
-        /* c8 ignore next — race-only: tornDown becomes true mid-stream */
-        if (!this.tornDown && chunk.length > 0) {
-          this.push(chunk);
-        }
-      },
-      onErrorResponse: () => {
-        if (detectErrors) errSeen = true;
-      },
-      onReadyForQuery: (status) => {
-        if (this.sessionLock) {
-          this.sessionLock.updateStatus(this.bridgeId, status);
-        }
-      },
-    });
-
-    await this.pglite.execProtocolRawStream(batch, {
-      syncToFs: this.syncToFs,
-      onRawData: (chunk: Uint8Array) => {
-        /* c8 ignore next — race-only: tornDown becomes true mid-stream */
-        if (!this.tornDown) {
-          framer.write(chunk);
-        }
-      },
-    });
-
-    framer.flush({ dropHeldReadyForQuery: this.tornDown });
-    return !errSeen;
-  }
-
   /**
-   * Sends a message to PGlite and pushes response chunks directly to the
-   * stream as they arrive. Avoids collecting and concatenating for large
-   * multi-row responses (e.g., findMany 500 rows = ~503 onRawData chunks).
+   * Sends a message (or pipelined batch) to PGlite and pushes response
+   * chunks directly to the stream as they arrive. Avoids collecting and
+   * concatenating for large multi-row responses (e.g., findMany 500 rows
+   * = ~503 onRawData chunks).
+   *
+   * For pipelined Extended Query batches, pass `suppressIntermediateRfq`
+   * so only the final ReadyForQuery reaches the client.
    *
    * Must be called inside runExclusive.
    */
-  private async execAndPush(message: Uint8Array, detectErrors: boolean): Promise<boolean> {
+  private async streamProtocol(
+    message: Uint8Array,
+    options: { detectErrors: boolean; suppressIntermediateRfq: boolean },
+  ): Promise<boolean> {
+    const { detectErrors, suppressIntermediateRfq } = options;
     let errSeen = false;
     const framer = new BackendMessageFramer({
-      suppressIntermediateReadyForQuery: false,
+      suppressIntermediateReadyForQuery: suppressIntermediateRfq,
       onChunk: (chunk) => {
         /* c8 ignore next — race-only: tornDown becomes true mid-stream */
         if (!this.tornDown && chunk.length > 0) {
@@ -900,6 +878,7 @@ export class PGliteBridge extends Duplex {
         }
       },
     });
+
     framer.flush({ dropHeldReadyForQuery: this.tornDown });
     return !errSeen;
   }
