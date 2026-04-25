@@ -1,5 +1,11 @@
 # prisma-pglite-bridge
 
+## 0.5.3
+
+### Patch Changes
+
+- [`633421c`](https://github.com/drudolf/prisma-pglite-bridge/commit/633421c330229bd19a6ec43f1728880c9a5b7acb) Thanks [@drudolf](https://github.com/drudolf)! - Internal refactor: unify `runPipelineBatch` and `execAndPush` into a single `streamProtocol` method. The two methods were byte-identical except for one boolean (`suppressIntermediateReadyForQuery`). No behavior change.
+
 ## 0.5.2
 
 ### Patch Changes
