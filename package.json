@@ -1,7 +1,7 @@
 {
   "name": "prisma-pglite-bridge",
   "packageManager": "pnpm@10.33.0",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "In-process PGlite bridge for Prisma — zero-TCP, zero-Docker PostgreSQL",
   "keywords": [
     "prisma",
