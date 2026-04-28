@@ -567,10 +567,11 @@ share a process. Obtain it from the `createPgliteAdapter()` or
   ~2s for PGlite WASM compilation. Subsequent calls in the same
   process reuse the compiled module.
 - **Single PostgreSQL session** — PGlite runs in single-user mode.
-  All pool connections share one session. A `SessionLock` serializes
-  transactions (one at a time), but `SET` variables leak between
-  connections within a single test. `resetDb()` clears more of this
-  between tests via `DISCARD ALL`.
+  All pool connections share one session. With `max > 1`, a
+  `SessionLock` serializes transactions (one at a time), but `SET`
+  variables leak between connections within a single test. `resetDb()`
+  clears more of this between tests via `DISCARD ALL`. The default
+  `max: 1` avoids extra bridge connections and session-lock overhead.
 - **Migration files required** — run `prisma migrate dev` once to
   generate migration files, or pass schema SQL directly via the
   `sql` option.

@@ -8,7 +8,7 @@ export const bridgeClientOptionsKey: unique symbol = Symbol('bridgeClientOptions
 
 interface BridgeClientOptions {
   pglite: PGlite;
-  sessionLock: SessionLock;
+  sessionLock?: SessionLock;
   adapterId: symbol;
   telemetry?: TelemetrySink;
   syncToFs: boolean;

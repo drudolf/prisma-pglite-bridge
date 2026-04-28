@@ -46,10 +46,13 @@ export interface CreatePgliteAdapterOptions extends MigrationsOptions {
   pglite: PGlite;
 
   /**
-   * Maximum pool connections (default: 1).
+   * Maximum pool connections (default: 1). Compatibility knob, not a
+   * throughput knob.
    *
-   * PGlite serialises queries inside its WASM runtime, so extra pool
-   * connections cost memory without adding throughput.
+   * PGlite serialises queries inside its WASM runtime. Extra pool connections
+   * do not add parallelism; they only add bridge/client memory and
+   * session-lock coordination. Leave this at `1` unless the code under test
+   * specifically needs multiple checked-out `pg` clients.
    */
   max?: number;
 
