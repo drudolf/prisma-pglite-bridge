@@ -2,10 +2,11 @@
  * Pool factory — creates a pg.Pool backed by a caller-supplied PGlite instance.
  *
  * Each pool connection gets its own PGliteBridge stream, all sharing the
- * same PGlite WASM instance and SessionLock. The session lock ensures
- * transaction isolation: when one bridge starts a transaction (BEGIN),
- * it gets exclusive PGlite access until COMMIT/ROLLBACK. Non-transactional
- * operations from any bridge serialize through PGlite's runExclusive mutex.
+ * same PGlite WASM instance. Pools with multiple connections also share a
+ * SessionLock. The session lock ensures transaction isolation: when one
+ * bridge starts a transaction (BEGIN), it gets exclusive PGlite access until
+ * COMMIT/ROLLBACK. Non-transactional operations from any bridge serialize
+ * through PGlite's runExclusive mutex.
  */
 import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
@@ -27,14 +28,16 @@ export interface CreatePoolOptions {
   pglite: PGlite;
 
   /**
-   * Maximum pool connections (default: 1).
+   * Maximum pool connections (default: 1). Compatibility knob, not a
+   * throughput knob.
    *
-   * PGlite's WASM runtime executes queries serially behind a single mutex,
-   * and every bridge connection shares the same {@link SessionLock}. Raising
-   * `max` above 1 therefore does not add parallelism — queries still run
-   * one at a time — and each extra connection costs a full `PGliteBridge`
-   * (its framers and scratch buffers) in memory. Leave this at `1` unless
-   * you are deliberately exercising wait-queue behaviour in a test.
+   * PGlite's WASM runtime executes queries serially behind a single mutex.
+   * Raising `max` above 1 therefore does not add parallelism — queries still
+   * run one at a time — and each extra connection costs a full `PGliteBridge`
+   * (its framers and scratch buffers) plus shared session-lock coordination
+   * in memory. Leave this at `1` unless your code specifically needs to check
+   * out multiple `pg` clients or you are deliberately exercising wait-queue
+   * behaviour in a test.
    */
   max?: number;
 
@@ -104,7 +107,7 @@ export const createPool = async (options: CreatePoolOptions): Promise<PoolResult
 
   await pglite.waitReady;
 
-  const sessionLock = new SessionLock();
+  const sessionLock = max > 1 ? new SessionLock() : undefined;
 
   const poolConfig: BridgePoolConfig = {
     Client: BridgeClient,

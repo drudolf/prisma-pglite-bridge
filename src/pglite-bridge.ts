@@ -697,7 +697,8 @@ export class PGliteBridge extends Duplex {
 
     const message = this.input.consume(len);
 
-    await this.acquireSession();
+    const session = this.acquireSession();
+    if (session) await session;
     await this.pglite.runExclusive(async () => {
       await this.streamProtocol(message, { detectErrors: false, suppressIntermediateRfq: false });
     });
@@ -790,7 +791,8 @@ export class PGliteBridge extends Duplex {
     const detectErrors = wantTelemetry || publishQuery;
 
     if (!wantTiming) {
-      await this.acquireSession();
+      const session = this.acquireSession();
+      if (session) await session;
       await this.pglite.runExclusive(async () => {
         await op(false);
       });
@@ -798,7 +800,8 @@ export class PGliteBridge extends Duplex {
     }
 
     const lockStart = process.hrtime.bigint();
-    await this.acquireSession();
+    const session = this.acquireSession();
+    if (session) await session;
     const queryStart = process.hrtime.bigint();
     const lockWaitMs = nsToMs(queryStart - lockStart);
     if (wantTelemetry) {
@@ -885,7 +888,7 @@ export class PGliteBridge extends Duplex {
 
   // ── Session lock helpers ──
 
-  private async acquireSession(): Promise<void> {
-    await this.sessionLock?.acquire(this.bridgeId);
+  private acquireSession(): Promise<void> | undefined {
+    return this.sessionLock?.acquire(this.bridgeId);
   }
 }
