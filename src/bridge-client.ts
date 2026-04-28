@@ -6,7 +6,7 @@ import type { SessionLock } from './utils/session-lock.ts';
 
 export const bridgeClientOptionsKey: unique symbol = Symbol('bridgeClientOptions');
 
-export interface BridgeClientOptions {
+interface BridgeClientOptions {
   pglite: PGlite;
   sessionLock: SessionLock;
   adapterId: symbol;
