@@ -68,9 +68,14 @@
       "optional": true
     }
   },
+  "bin": {
+    "ppb": "./dist/ppb.mjs"
+  },
   "dependencies": {
     "@prisma/driver-adapter-utils": "^7.8.0",
-    "@prisma/schema-engine-wasm": "7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a"
+    "@prisma/schema-engine-wasm": "7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a",
+    "citty": "^0.1.6",
+    "dotenv": "^17.4.2"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.2",
@@ -86,7 +91,6 @@
     "@types/node": "^25.6.0",
     "@types/pg": "^8.20.0",
     "@vitest/coverage-v8": "^4.1.5",
-    "dotenv": "^17.4.2",
     "husky": "^9.1.7",
     "knip": "^6.7.0",
     "lint-staged": "^16.4.0",
