@@ -83,6 +83,10 @@ const quoteIdent = (name: string): string => `"${name.replace(/"/g, '""')}"`;
  * through the adapter rather than `engine.reset(...)` because the engine only
  * clears schemas declared in its datamodel — anything outside that (`base`,
  * test fixtures, etc.) would otherwise leak between resets.
+ *
+ * Each DROP runs through `executeRaw` rather than a single `executeScript`,
+ * because `executeScript` splits on `;` and would mis-parse schema names that
+ * contain a semicolon.
  */
 const dropAllUserSchemas = async (target: SchemaTarget): Promise<void> => {
   const factory = unwrap(target);
@@ -96,10 +100,28 @@ const dropAllUserSchemas = async (target: SchemaTarget): Promise<void> => {
     });
     const idx = result.columnNames.indexOf('nspname');
     const names = result.rows.map((row) => String(row[idx]));
-    const drops = names.map((n) => `DROP SCHEMA IF EXISTS ${quoteIdent(n)} CASCADE;`).join('\n');
-    await conn.executeScript(`${drops}\nCREATE SCHEMA IF NOT EXISTS "public";\n`);
+    for (const name of names) {
+      await conn.executeRaw({
+        sql: `DROP SCHEMA IF EXISTS ${quoteIdent(name)} CASCADE`,
+        args: [],
+        argTypes: [],
+      });
+    }
+    await conn.executeRaw({
+      sql: `CREATE SCHEMA IF NOT EXISTS "public"`,
+      args: [],
+      argTypes: [],
+    });
   } finally {
     await conn.dispose();
+  }
+  // The wrapper's snapshot manager keeps in-memory state about whether
+  // `_pglite_snapshot` exists. Dropping the schema out from under it would
+  // leave `hasSnapshot = true` and the next `resetDb()` call would query a
+  // missing schema. `resetSnapshot()` is idempotent — safe to call when no
+  // snapshot was ever taken.
+  if ('resetSnapshot' in target) {
+    await target.resetSnapshot();
   }
 };
 

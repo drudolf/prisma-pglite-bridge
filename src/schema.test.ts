@@ -114,6 +114,30 @@ describe('pushSchema', () => {
     expect(tables).not.toContain('legacy');
   });
 
+  it('forceReset clears snapshot manager state', async () => {
+    const { pglite, adapter } = await makeAdapter();
+    await pushSchema(adapter, { schema: SCHEMA_BASE });
+    await pglite.exec(`INSERT INTO "Widget" ("name") VALUES ('seed')`);
+    await adapter.snapshotDb();
+
+    await pushSchema(adapter, { schema: SCHEMA_BASE, forceReset: true });
+
+    await expect(adapter.resetDb()).resolves.toBeUndefined();
+  });
+
+  it('forceReset handles schema names containing semicolons', async () => {
+    const { pglite, adapter } = await makeAdapter();
+    await pglite.exec(`CREATE SCHEMA "semi;name"`);
+    await pglite.exec(`CREATE TABLE "semi;name"."t" ("id" INT PRIMARY KEY)`);
+
+    await pushSchema(adapter, { schema: SCHEMA_BASE, forceReset: true });
+
+    const left = await pglite.query<{ schemaname: string }>(`
+      SELECT schemaname FROM pg_tables WHERE schemaname = 'semi;name'
+    `);
+    expect(left.rows).toEqual([]);
+  });
+
   it('forceReset drops tables in non-public user schemas', async () => {
     const { pglite, adapter } = await makeAdapter();
     await pglite.exec(`
