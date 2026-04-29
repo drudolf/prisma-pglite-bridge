@@ -76,11 +76,41 @@ const emptyFilter = (): { externalTables: string[]; externalEnums: string[] } =>
   externalEnums: [],
 });
 
+const quoteIdent = (name: string): string => `"${name.replace(/"/g, '""')}"`;
+
+/**
+ * Drop every non-system schema (and recreate `public`). Issued as raw SQL
+ * through the adapter rather than `engine.reset(...)` because the engine only
+ * clears schemas declared in its datamodel — anything outside that (`base`,
+ * test fixtures, etc.) would otherwise leak between resets.
+ */
+const dropAllUserSchemas = async (target: SchemaTarget): Promise<void> => {
+  const factory = unwrap(target);
+  const conn = await factory.connect();
+  try {
+    const result = await conn.queryRaw({
+      sql: `SELECT nspname FROM pg_namespace
+            WHERE nspname NOT LIKE 'pg_%' AND nspname <> 'information_schema'`,
+      args: [],
+      argTypes: [],
+    });
+    const idx = result.columnNames.indexOf('nspname');
+    const names = result.rows.map((row) => String(row[idx]));
+    const drops = names.map((n) => `DROP SCHEMA IF EXISTS ${quoteIdent(n)} CASCADE;`).join('\n');
+    await conn.executeScript(`${drops}\nCREATE SCHEMA IF NOT EXISTS "public";\n`);
+  } finally {
+    await conn.dispose();
+  }
+};
+
 export const pushSchema = async (
   target: SchemaTarget,
   options: PushSchemaOptions,
 ): Promise<PushSchemaResult> => {
   const filename = options.filename ?? 'schema.prisma';
+  if (options.forceReset) {
+    await dropAllUserSchemas(target);
+  }
   const { SchemaEngine } = await import('@prisma/schema-engine-wasm');
   const bound = await bindAdapter(target);
 
@@ -90,9 +120,6 @@ export const pushSchema = async (
     bound,
   );
   try {
-    if (options.forceReset) {
-      await engine.reset({ filter: emptyFilter() });
-    }
     const result = await engine.schemaPush({
       force: options.acceptDataLoss ?? false,
       schema: { files: [{ path: filename, content: options.schema }] },
@@ -109,13 +136,5 @@ export const pushSchema = async (
 };
 
 export const resetSchema = async (target: SchemaTarget): Promise<void> => {
-  const { SchemaEngine } = await import('@prisma/schema-engine-wasm');
-  const bound = await bindAdapter(target);
-  const stub = `datasource db { provider = "postgresql" }\n`;
-  const engine = await SchemaEngine.new({ datamodels: [['schema.prisma', stub]] }, () => {}, bound);
-  try {
-    await engine.reset({ filter: emptyFilter() });
-  } finally {
-    engine.free();
-  }
+  await dropAllUserSchemas(target);
 };

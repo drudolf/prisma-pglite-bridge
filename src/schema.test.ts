@@ -114,6 +114,23 @@ describe('pushSchema', () => {
     expect(tables).not.toContain('legacy');
   });
 
+  it('forceReset drops tables in non-public user schemas', async () => {
+    const { pglite, adapter } = await makeAdapter();
+    await pglite.exec(`
+      CREATE SCHEMA base;
+      CREATE TABLE base."A" ("id" INT PRIMARY KEY);
+    `);
+
+    await pushSchema(adapter, { schema: SCHEMA_BASE, forceReset: true });
+
+    const left = await pglite.query<{ schemaname: string; tablename: string }>(`
+      SELECT schemaname, tablename FROM pg_tables
+      WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+    `);
+    const inBase = left.rows.filter((r) => r.schemaname === 'base');
+    expect(inBase).toEqual([]);
+  });
+
   it('returns warnings without throwing for destructive change when acceptDataLoss is false', async () => {
     const { pglite, adapter } = await makeAdapter();
     await pushSchema(adapter, { schema: SCHEMA_BASE });
@@ -154,6 +171,30 @@ describe('pushSchema', () => {
 });
 
 describe('resetSchema', () => {
+  it('drops tables in non-public user schemas', async () => {
+    const pglite = new PGlite();
+    await pglite.waitReady;
+    const adapter = await createPgliteAdapter({ pglite });
+    try {
+      await pglite.exec(`
+        CREATE SCHEMA base;
+        CREATE TABLE base."A" ("id" INT PRIMARY KEY);
+        CREATE TABLE public."B" ("id" INT PRIMARY KEY);
+      `);
+
+      await resetSchema(adapter);
+
+      const left = await pglite.query<{ schemaname: string; tablename: string }>(`
+        SELECT schemaname, tablename FROM pg_tables
+        WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+      `);
+      expect(left.rows).toEqual([]);
+    } finally {
+      await adapter.close();
+      await pglite.close();
+    }
+  });
+
   it('drops all user tables', async () => {
     const pglite = new PGlite();
     await pglite.waitReady;
