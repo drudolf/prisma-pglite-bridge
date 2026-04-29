@@ -7,6 +7,13 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@prisma/driver-adapter-utils':
+        specifier: ^7.8.0
+        version: 7.8.0
+      '@prisma/schema-engine-wasm':
+        specifier: 7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a
+        version: 7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a
     devDependencies:
       '@arethetypeswrong/cli':
         specifier: ^0.18.2
@@ -38,12 +45,6 @@ importers:
       '@prisma/config':
         specifier: ^7.8.0
         version: 7.8.0(magicast@0.5.2)
-      '@prisma/driver-adapter-utils':
-        specifier: ^7.8.0
-        version: 7.8.0
-      '@prisma/schema-engine-wasm':
-        specifier: 7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a
-        version: 7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0

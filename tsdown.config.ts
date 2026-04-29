@@ -13,6 +13,8 @@ export default defineConfig({
       '@prisma/adapter-pg',
       '@prisma/client',
       '@prisma/config',
+      '@prisma/driver-adapter-utils',
+      '@prisma/schema-engine-wasm',
     ],
   },
 });
