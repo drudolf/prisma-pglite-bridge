@@ -786,7 +786,7 @@ describe('BackendMessageFramer', () => {
   };
 
   it('rewrites a single oid-18 column to oid 25 with size -1', () => {
-    const frame = encodeRowDescription([{ name: 'contype', oid: 18, size: 1 }]);
+    const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
     const { framer, outputs } = makeHarness();
     framer.write(frame);
     framer.flush();
@@ -799,9 +799,9 @@ describe('BackendMessageFramer', () => {
   it('rewrites only oid-18 fields and leaves others untouched', () => {
     const frame = encodeRowDescription([
       { name: 'id', oid: 23, size: 4 }, // int4 — keep
-      { name: 'kind', oid: 18, size: 1 }, // char — rewrite
+      { name: 'kind', tableOID: 1259, oid: 18, size: 1 }, // pg_class.relkind — rewrite
       { name: 'name', oid: 25, size: -1 }, // text — keep
-      { name: 'flag', oid: 18, size: 1 }, // char — rewrite
+      { name: 'flag', tableOID: 2606, oid: 18, size: 1 }, // pg_constraint.contype — rewrite
     ]);
     const { framer, outputs } = makeHarness();
     framer.write(frame);
@@ -823,8 +823,8 @@ describe('BackendMessageFramer', () => {
 
   it('preserves frame length when rewriting (no length header changes)', () => {
     const frame = encodeRowDescription([
-      { name: 'a', oid: 18, size: 1 },
-      { name: 'longer_name', oid: 18, size: 1 },
+      { name: 'a', tableOID: 2606, oid: 18, size: 1 },
+      { name: 'longer_name', tableOID: 2606, oid: 18, size: 1 },
     ]);
     const originalLength = Buffer.from(frame).readUInt32BE(1);
     const { framer, outputs } = makeHarness();
@@ -836,7 +836,7 @@ describe('BackendMessageFramer', () => {
   });
 
   it('rewrites a RowDescription that arrives mid-passthrough alongside other messages', () => {
-    const frame = encodeRowDescription([{ name: 'contype', oid: 18, size: 1 }]);
+    const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
     const combined = collect([DATA, frame, DATA]);
     const { framer, outputs } = makeHarness();
     framer.write(combined);
@@ -850,7 +850,7 @@ describe('BackendMessageFramer', () => {
   });
 
   it('rewrites a RowDescription split across two chunks (slow path)', () => {
-    const frame = encodeRowDescription([{ name: 'contype', oid: 18, size: 1 }]);
+    const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
     // Split mid-payload so the slow path drives both header decode and payload accumulation.
     const splitAt = Math.floor(frame.length / 2);
     expect(splitAt).toBeGreaterThan(5); // ensure we split inside the payload
@@ -865,9 +865,9 @@ describe('BackendMessageFramer', () => {
 
   it('rewrites a RowDescription delivered byte-by-byte', () => {
     const frame = encodeRowDescription([
-      { name: 'k', oid: 18, size: 1 },
+      { name: 'k', tableOID: 2606, oid: 18, size: 1 },
       { name: 'v', oid: 25, size: -1 },
-      { name: 'flag', oid: 18, size: 1 },
+      { name: 'flag', tableOID: 2606, oid: 18, size: 1 },
     ]);
     const { framer, outputs } = makeHarness();
     for (let i = 0; i < frame.length; i++) {
@@ -882,7 +882,7 @@ describe('BackendMessageFramer', () => {
   });
 
   it('rewrites a RowDescription whose 5-byte header is split across chunks', () => {
-    const frame = encodeRowDescription([{ name: 'contype', oid: 18, size: 1 }]);
+    const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
     const { framer, outputs } = makeHarness();
     framer.write(frame.subarray(0, 3)); // type byte + 2 bytes of length header
     framer.write(frame.subarray(3));
@@ -893,7 +893,7 @@ describe('BackendMessageFramer', () => {
   });
 
   it('reset clears a partially buffered RowDescription', () => {
-    const frame = encodeRowDescription([{ name: 'contype', oid: 18, size: 1 }]);
+    const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
     const { framer, outputs } = makeHarness();
     framer.write(frame.subarray(0, 8)); // start buffering
     framer.reset();
@@ -905,8 +905,28 @@ describe('BackendMessageFramer', () => {
     expect(readField(emitted, 0)).toEqual({ name: 'contype', oid: 25, size: -1 });
   });
 
+  it('leaves an oid-18 field with tableOID 0 untouched (computed expression)', () => {
+    const frame = encodeRowDescription([{ name: 'expr', tableOID: 0, oid: 18, size: 1 }]);
+    const { framer, outputs } = makeHarness();
+    framer.write(frame);
+    framer.flush();
+    const emitted = collect(outputs);
+    expect(emitted.length).toBe(frame.length);
+    expect(readField(emitted, 0)).toEqual({ name: 'expr', oid: 18, size: 1 });
+  });
+
+  it('leaves an oid-18 field from a user table untouched (tableOID >= 16384)', () => {
+    const frame = encodeRowDescription([{ name: 'flag', tableOID: 16384, oid: 18, size: 1 }]);
+    const { framer, outputs } = makeHarness();
+    framer.write(frame);
+    framer.flush();
+    const emitted = collect(outputs);
+    expect(emitted.length).toBe(frame.length);
+    expect(readField(emitted, 0)).toEqual({ name: 'flag', oid: 18, size: 1 });
+  });
+
   it('drops a held intermediate RFQ before emitting a rewritten RowDescription', () => {
-    const frame = encodeRowDescription([{ name: 'contype', oid: 18, size: 1 }]);
+    const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
     const { framer, outputs, statuses } = makeHarness(true);
     framer.write(RFQ_IDLE);
     framer.write(frame);

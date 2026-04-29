@@ -42,10 +42,17 @@ const ROW_DESCRIPTION = 0x54; // T — column metadata; rewritten to widen oid 1
 // etc.) report type oid 18 ("char", 1-byte). @prisma/adapter-pg's fieldToColumnType
 // has no case for oid 18 and throws UnsupportedNativeDataType. The bytes on the wire
 // for these single-ASCII-char values decode identically as text, so we widen oid 18
-// to oid 25 (text) in RowDescription frames before pg.Client sees them. Remove this
-// rewrite once https://github.com/prisma/prisma/<TBD> lands the missing case upstream.
+// to oid 25 (text) in RowDescription frames before pg.Client sees them — but only
+// when the field originates from a pg_catalog relation (tableOID below
+// FirstNormalObjectId). User-defined "char" columns are left untouched so the
+// upstream type-mapping gap surfaces instead of being silently papered over with a
+// possibly-lossy text decode. Remove this rewrite once @prisma/adapter-pg gains a
+// fieldToColumnType case for oid 18.
 const PG_TYPE_OID_CHAR = 18;
 const PG_TYPE_OID_TEXT = 25;
+// Mirrors PostgreSQL's FirstNormalObjectId (src/include/access/transam.h): every
+// system catalog relation has an OID below this; user-created objects start at it.
+const PG_FIRST_USER_OID = 16384;
 
 // Extended Query Protocol message types — must be batched until Sync
 const EQP_MESSAGES = new Set([PARSE, BIND, DESCRIBE, EXECUTE, CLOSE, FLUSH]);
@@ -57,6 +64,38 @@ const EQP_MESSAGES = new Set([PARSE, BIND, DESCRIBE, EXECUTE, CLOSE, FLUSH]);
  * must not be allocated against.
  */
 const MAX_BACKEND_MESSAGE_LENGTH = 1_073_741_824;
+
+/**
+ * Widens any field whose dataTypeOID is 18 ("char") to oid 25 (text) — but
+ * only when the field originates from a pg_catalog relation (tableOID is
+ * non-zero and below FirstNormalObjectId). Single-ASCII-byte payloads from
+ * pg_catalog views (pg_constraint.contype, pg_type.typtype, etc.) decode
+ * identically as text, so the row data needs no transformation. Fields with
+ * tableOID === 0 (computed expressions) and user-table fields are left
+ * untouched, since arbitrary bytes in user "char" data can't safely be
+ * relabelled as text. Frame length is unchanged because all rewrites are
+ * fixed-size in place.
+ */
+const rewriteRowDescriptionInPlace = (buf: Buffer): void => {
+  const fieldCount = buf.readInt16BE(5);
+  let p = 7;
+  for (let i = 0; i < fieldCount; i++) {
+    while (p < buf.length && buf[p] !== 0) p++;
+    p++; // NUL terminator
+    // Per-field fixed suffix is 18 bytes: tableOID(4) + columnAttr(2) +
+    // dataTypeOID(4) + dataTypeSize(2) + typeModifier(4) + formatCode(2).
+    // Bail if the frame is truncated rather than throwing RangeError mid-loop.
+    if (p + 18 > buf.length) return;
+    const tableOID = buf.readUInt32BE(p);
+    p += 4 + 2; // tableOID, columnAttr
+    const oid = buf.readUInt32BE(p);
+    if (oid === PG_TYPE_OID_CHAR && tableOID !== 0 && tableOID < PG_FIRST_USER_OID) {
+      buf.writeUInt32BE(PG_TYPE_OID_TEXT, p);
+      buf.writeInt16BE(-1, p + 4);
+    }
+    p += 4 + 2 + 4 + 2; // dataTypeOID, dataTypeSize, typeModifier, formatCode
+  }
+};
 
 /**
  * Concatenates multiple Uint8Array views into one contiguous buffer.
@@ -458,10 +497,9 @@ export class BackendMessageFramer {
   }
 
   private finishRowDescription(): void {
-    /* c8 ignore next — finishRowDescription is only called when rowDescBuffer is set */
-    if (this.rowDescBuffer === undefined) return;
-    BackendMessageFramer.rewriteRowDescriptionInPlace(this.rowDescBuffer);
-    this.onChunk(this.rowDescBuffer);
+    const buffer = this.rowDescBuffer as Buffer;
+    rewriteRowDescriptionInPlace(buffer);
+    this.onChunk(buffer);
     this.rowDescBuffer = undefined;
     this.rowDescOffset = 0;
   }
@@ -500,33 +538,9 @@ export class BackendMessageFramer {
     this.onChunk(prefix);
   }
 
-  /**
-   * Rewrites every field in a complete RowDescription frame whose dataTypeOID
-   * is 18 ("char", 1-byte) to oid 25 (text), updating the dataTypeSize from 1
-   * to -1 to match. Single-ASCII-byte payloads from pg_catalog views
-   * (pg_constraint.contype, pg_type.typtype, etc.) decode identically as text,
-   * so the row data needs no transformation. Frame length is unchanged because
-   * all rewrites are fixed-size in place.
-   */
-  private static rewriteRowDescriptionInPlace(buf: Buffer): void {
-    const fieldCount = buf.readInt16BE(5);
-    let p = 7;
-    for (let i = 0; i < fieldCount; i++) {
-      while (p < buf.length && buf[p] !== 0) p++;
-      p++; // NUL terminator
-      p += 4 + 2; // tableOID, columnAttr
-      const oid = buf.readUInt32BE(p);
-      if (oid === PG_TYPE_OID_CHAR) {
-        buf.writeUInt32BE(PG_TYPE_OID_TEXT, p);
-        buf.writeInt16BE(-1, p + 4);
-      }
-      p += 4 + 2 + 4 + 2; // dataTypeOID, dataTypeSize, typeModifier, formatCode
-    }
-  }
-
   private emitRewrittenRowDescription(chunk: Uint8Array, start: number, totalLen: number): void {
     const out = Buffer.from(chunk.subarray(start, start + totalLen));
-    BackendMessageFramer.rewriteRowDescriptionInPlace(out);
+    rewriteRowDescriptionInPlace(out);
     this.onChunk(out);
   }
 
