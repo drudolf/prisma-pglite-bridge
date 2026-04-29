@@ -68,6 +68,10 @@
       "optional": true
     }
   },
+  "dependencies": {
+    "@prisma/driver-adapter-utils": "^7.8.0",
+    "@prisma/schema-engine-wasm": "7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a"
+  },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.2",
     "@biomejs/biome": "^2.4.13",
@@ -79,8 +83,6 @@
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@prisma/config": "^7.8.0",
-    "@prisma/driver-adapter-utils": "^7.8.0",
-    "@prisma/schema-engine-wasm": "7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a",
     "@types/node": "^25.6.0",
     "@types/pg": "^8.20.0",
     "@vitest/coverage-v8": "^4.1.5",

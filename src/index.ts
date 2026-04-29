@@ -28,6 +28,8 @@ export type {
   StatsFn,
 } from './create-pglite-adapter.ts';
 export { createPgliteAdapter } from './create-pglite-adapter.ts';
+export type { PushSchemaOptions, PushSchemaResult, SchemaTarget } from './schema.ts';
+export { pushSchema, resetSchema } from './schema.ts';
 
 // ── Low-level building blocks ──
 import {
