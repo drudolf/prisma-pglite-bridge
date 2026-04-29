@@ -36,6 +36,16 @@ const TERMINATE = 0x58; // X
 // Backend message types
 const READY_FOR_QUERY = 0x5a; // Z — 6 bytes: Z + length(5) + status
 const ERROR_RESPONSE = 0x45; // E — signals in-band SQL error (not a JS throw)
+const ROW_DESCRIPTION = 0x54; // T — column metadata; rewritten to widen oid 18
+
+// pg_catalog system columns (pg_constraint.contype, pg_type.typtype, pg_class.relkind,
+// etc.) report type oid 18 ("char", 1-byte). @prisma/adapter-pg's fieldToColumnType
+// has no case for oid 18 and throws UnsupportedNativeDataType. The bytes on the wire
+// for these single-ASCII-char values decode identically as text, so we widen oid 18
+// to oid 25 (text) in RowDescription frames before pg.Client sees them. Remove this
+// rewrite once https://github.com/prisma/prisma/<TBD> lands the missing case upstream.
+const PG_TYPE_OID_CHAR = 18;
+const PG_TYPE_OID_TEXT = 25;
 
 // Extended Query Protocol message types — must be batched until Sync
 const EQP_MESSAGES = new Set([PARSE, BIND, DESCRIBE, EXECUTE, CLOSE, FLUSH]);
@@ -230,6 +240,10 @@ export class BackendMessageFramer {
   private headerBytesRead = 0;
   private payloadBytesRemaining = 0;
   private rfqBytesRead = 0;
+  /** Slow-path RowDescription accumulator. Set once the T-frame header is decoded
+   *  and a multi-chunk payload starts arriving; cleared after rewrite + emit. */
+  private rowDescBuffer?: Buffer;
+  private rowDescOffset = 0;
 
   constructor(options: BackendMessageFramerOptions) {
     this.suppressIntermediateReadyForQuery = options.suppressIntermediateReadyForQuery ?? false;
@@ -298,6 +312,12 @@ export class BackendMessageFramer {
                 this.emitReadyForQuery();
                 this.rfqBytesRead = 0;
               }
+            } else if (msgType === ROW_DESCRIPTION) {
+              flushPassthrough(offset);
+              if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
+                this.dropHeldReadyForQuery();
+              }
+              this.emitRewrittenRowDescription(chunk, offset, totalLen);
             } else {
               if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
                 this.dropHeldReadyForQuery();
@@ -366,6 +386,15 @@ export class BackendMessageFramer {
         }
 
         this.dropHeldReadyForQuery();
+        if (this.messageType === ROW_DESCRIPTION) {
+          // Valid RowDescription always carries at least a 2-byte fieldCount,
+          // so payloadBytesRemaining is > 0 here — no zero-payload finalize needed.
+          this.rowDescBuffer = Buffer.alloc(5 + this.payloadBytesRemaining);
+          this.rowDescBuffer[0] = ROW_DESCRIPTION;
+          this.rowDescBuffer.set(this.headerScratch, 1);
+          this.rowDescOffset = 5;
+          continue;
+        }
         this.emitPrefix();
         if (this.payloadBytesRemaining === 0) {
           this.finishMessage();
@@ -390,11 +419,19 @@ export class BackendMessageFramer {
       const bytesToEmit = Math.min(this.payloadBytesRemaining, chunk.length - offset);
       /* c8 ignore next — bytesToEmit always ≥ 1 when reached */
       if (bytesToEmit > 0) {
-        this.emitChunkSlice(chunk, offset, offset + bytesToEmit);
+        if (this.rowDescBuffer !== undefined) {
+          this.rowDescBuffer.set(chunk.subarray(offset, offset + bytesToEmit), this.rowDescOffset);
+          this.rowDescOffset += bytesToEmit;
+        } else {
+          this.emitChunkSlice(chunk, offset, offset + bytesToEmit);
+        }
         this.payloadBytesRemaining -= bytesToEmit;
         offset += bytesToEmit;
       }
       if (this.payloadBytesRemaining === 0) {
+        if (this.rowDescBuffer !== undefined) {
+          this.finishRowDescription();
+        }
         this.finishMessage();
       }
     }
@@ -416,6 +453,17 @@ export class BackendMessageFramer {
     this.headerBytesRead = 0;
     this.payloadBytesRemaining = 0;
     this.rfqBytesRead = 0;
+    this.rowDescBuffer = undefined;
+    this.rowDescOffset = 0;
+  }
+
+  private finishRowDescription(): void {
+    /* c8 ignore next — finishRowDescription is only called when rowDescBuffer is set */
+    if (this.rowDescBuffer === undefined) return;
+    BackendMessageFramer.rewriteRowDescriptionInPlace(this.rowDescBuffer);
+    this.onChunk(this.rowDescBuffer);
+    this.rowDescBuffer = undefined;
+    this.rowDescOffset = 0;
   }
 
   private isReadyForQueryFrame(): boolean {
@@ -450,6 +498,36 @@ export class BackendMessageFramer {
     prefix[0] = this.messageType ?? 0;
     prefix.set(this.headerScratch, 1);
     this.onChunk(prefix);
+  }
+
+  /**
+   * Rewrites every field in a complete RowDescription frame whose dataTypeOID
+   * is 18 ("char", 1-byte) to oid 25 (text), updating the dataTypeSize from 1
+   * to -1 to match. Single-ASCII-byte payloads from pg_catalog views
+   * (pg_constraint.contype, pg_type.typtype, etc.) decode identically as text,
+   * so the row data needs no transformation. Frame length is unchanged because
+   * all rewrites are fixed-size in place.
+   */
+  private static rewriteRowDescriptionInPlace(buf: Buffer): void {
+    const fieldCount = buf.readInt16BE(5);
+    let p = 7;
+    for (let i = 0; i < fieldCount; i++) {
+      while (p < buf.length && buf[p] !== 0) p++;
+      p++; // NUL terminator
+      p += 4 + 2; // tableOID, columnAttr
+      const oid = buf.readUInt32BE(p);
+      if (oid === PG_TYPE_OID_CHAR) {
+        buf.writeUInt32BE(PG_TYPE_OID_TEXT, p);
+        buf.writeInt16BE(-1, p + 4);
+      }
+      p += 4 + 2 + 4 + 2; // dataTypeOID, dataTypeSize, typeModifier, formatCode
+    }
+  }
+
+  private emitRewrittenRowDescription(chunk: Uint8Array, start: number, totalLen: number): void {
+    const out = Buffer.from(chunk.subarray(start, start + totalLen));
+    BackendMessageFramer.rewriteRowDescriptionInPlace(out);
+    this.onChunk(out);
   }
 
   private emitChunkSlice(chunk: Uint8Array, start: number, end: number): void {
