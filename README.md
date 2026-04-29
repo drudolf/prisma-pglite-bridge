@@ -65,6 +65,62 @@ it from environment variables, network input, or any value that
 crosses a trust boundary, and keep the migrations directory
 writable only by trusted processes.
 
+## Applying a schema
+
+For projects without a migrations directory — typical of test
+fixtures or quick prototypes — the bridge can apply a Prisma
+schema directly via `@prisma/schema-engine-wasm`, in-process. No
+native schema-engine binary, no TCP, no Docker. `prisma generate`
+still goes through the regular CLI; only schema apply / reset is
+bridged.
+
+### Library
+
+```typescript
+import { readFile } from 'node:fs/promises';
+import { PGlite } from '@electric-sql/pglite';
+import { createPgliteAdapter, pushSchema } from 'prisma-pglite-bridge';
+
+const pglite = new PGlite();
+const adapter = await createPgliteAdapter({ pglite });
+
+await pushSchema(adapter, {
+  schema: await readFile('prisma/schema.prisma', 'utf8'),
+});
+```
+
+`pushSchema` returns `{ executedSteps, warnings, unexecutable }`.
+`acceptDataLoss: true` lets the engine apply destructive changes
+that would otherwise be reported as warnings; `unexecutable` steps
+are independent — the engine refuses them either way and the
+caller must reshape the schema. `forceReset: true` drops every
+non-system schema before applying.
+
+`resetSchema(adapter)` drops every non-system schema and
+recreates `public`.
+
+### CLI (`ppb`)
+
+```sh
+pnpm exec ppb db-push   [--schema <path>]            # default: prisma/schema.prisma
+                        [--force-reset]
+                        [--accept-data-loss]
+                        [--data-dir <path>]          # overrides DATABASE_URL
+pnpm exec ppb db-reset  [--data-dir <path>]
+```
+
+`DATABASE_URL` is read from env / `.env` and parsed as a `pglite://`
+URL — `pglite://memory` for in-memory, `pglite:///abs/path` or
+`pglite://./rel/path` for filesystem-backed PGlite. `--data-dir`
+overrides it.
+
+Exit codes:
+
+- **0** — success.
+- **1** — engine reported `unexecutable` steps, or `warnings` were
+  reported and `--accept-data-loss` was not supplied, or the
+  schema failed to parse / push.
+
 ## Bridge fs-sync policy
 
 The adapter defaults `syncToFs` to `'auto'`:
