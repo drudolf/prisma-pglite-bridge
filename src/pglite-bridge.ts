@@ -356,7 +356,9 @@ export class BackendMessageFramer {
               if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
                 this.dropHeldReadyForQuery();
               }
-              this.emitRewrittenRowDescription(chunk, offset, totalLen);
+              this.emitRewrittenRowDescription(
+                Buffer.from(chunk.subarray(offset, offset + totalLen)),
+              );
             } else {
               if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
                 this.dropHeldReadyForQuery();
@@ -469,7 +471,9 @@ export class BackendMessageFramer {
       }
       if (this.payloadBytesRemaining === 0) {
         if (this.rowDescBuffer !== undefined) {
-          this.finishRowDescription();
+          const buf = this.rowDescBuffer;
+          this.rowDescBuffer = undefined;
+          this.emitRewrittenRowDescription(buf);
         }
         this.finishMessage();
       }
@@ -492,14 +496,6 @@ export class BackendMessageFramer {
     this.headerBytesRead = 0;
     this.payloadBytesRemaining = 0;
     this.rfqBytesRead = 0;
-    this.rowDescBuffer = undefined;
-    this.rowDescOffset = 0;
-  }
-
-  private finishRowDescription(): void {
-    const buffer = this.rowDescBuffer as Buffer;
-    rewriteRowDescriptionInPlace(buffer);
-    this.onChunk(buffer);
     this.rowDescBuffer = undefined;
     this.rowDescOffset = 0;
   }
@@ -538,10 +534,9 @@ export class BackendMessageFramer {
     this.onChunk(prefix);
   }
 
-  private emitRewrittenRowDescription(chunk: Uint8Array, start: number, totalLen: number): void {
-    const out = Buffer.from(chunk.subarray(start, start + totalLen));
-    rewriteRowDescriptionInPlace(out);
-    this.onChunk(out);
+  private emitRewrittenRowDescription(buf: Buffer): void {
+    rewriteRowDescriptionInPlace(buf);
+    this.onChunk(buf);
   }
 
   private emitChunkSlice(chunk: Uint8Array, start: number, end: number): void {
