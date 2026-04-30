@@ -4,15 +4,14 @@
  * @example
  * ```typescript
  * import { PGlite } from '@electric-sql/pglite';
- * import { createPgliteAdapter } from 'prisma-pglite-bridge';
+ * import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
  * import { PrismaClient } from '@prisma/client';
  *
  * const pglite = new PGlite();
- * const { adapter, resetDb } = await createPgliteAdapter({
- *   pglite,
- *   migrationsPath: './prisma/migrations',
- * });
- * const prisma = new PrismaClient({ adapter });
+ * const adapter = await createPgliteAdapter({ pglite });
+ * await pushMigrations(adapter, { migrationsPath: './prisma/migrations' });
+ *
+ * const prisma = new PrismaClient({ adapter: adapter.adapter });
  * ```
  *
  * @packageDocumentation
@@ -29,6 +28,8 @@ export type {
   StatsFn,
 } from './create-pglite-adapter.ts';
 export { createPgliteAdapter } from './create-pglite-adapter.ts';
+export type { PushMigrationsOptions, PushMigrationsResult } from './migrations.ts';
+export { pushMigrations } from './migrations.ts';
 export type { PushSchemaOptions, PushSchemaResult, SchemaTarget } from './schema.ts';
 export { pushSchema, resetSchema } from './schema.ts';
 

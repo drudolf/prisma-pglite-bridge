@@ -6,26 +6,22 @@
  *
  * ```typescript
  * import { PGlite } from '@electric-sql/pglite';
- * import { createPgliteAdapter } from 'prisma-pglite-bridge';
+ * import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
  * import { PrismaClient } from '@prisma/client';
  *
  * const pglite = new PGlite();
- * const { adapter, resetDb } = await createPgliteAdapter({
- *   pglite,
- *   migrationsPath: './prisma/migrations',
- * });
- * const prisma = new PrismaClient({ adapter });
+ * const adapter = await createPgliteAdapter({ pglite });
+ * await pushMigrations(adapter, { migrationsPath: './prisma/migrations' });
  *
- * beforeEach(() => resetDb());
+ * const prisma = new PrismaClient({ adapter: adapter.adapter });
+ * beforeEach(() => adapter.resetDb());
  * ```
  */
 import type { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createPool, type SyncToFsMode } from './create-pool.ts';
 import { AdapterStats, type Stats, type StatsLevel } from './utils/adapter-stats.ts';
-import { getMigrationSQL, type MigrationsOptions } from './utils/migrations.ts';
 import { createSnapshotManager } from './utils/snapshot.ts';
-import { nsToMs } from './utils/time.ts';
 
 /** @internal Exported for testing. */
 export const emitAdapterLeakWarning = (): void => {
@@ -38,7 +34,7 @@ export const emitAdapterLeakWarning = (): void => {
 
 const leakRegistry = new FinalizationRegistry<void>(emitAdapterLeakWarning);
 
-export interface CreatePgliteAdapterOptions extends MigrationsOptions {
+export interface CreatePgliteAdapterOptions {
   /**
    * PGlite instance to bridge to. The caller owns its lifecycle — `close()`
    * shuts down the pool only, not the PGlite instance.
@@ -59,8 +55,8 @@ export interface CreatePgliteAdapterOptions extends MigrationsOptions {
   /**
    * Collect adapter/query telemetry. Default `'off'` (zero overhead).
    *
-   * - `'basic'` — timing (`durationMs`, `schemaSetupMs`, query percentiles)
-   *   and counters (`queryCount`, `failedQueryCount`, `resetDbCalls`), plus
+   * - `'basic'` — timing (`durationMs`, query percentiles) and counters
+   *   (`queryCount`, `failedQueryCount`, `resetDbCalls`), plus
    *   `dbSizeBytes`.
    * - `'full'` — everything in `'basic'`, plus `processRssPeakBytes`
    *   (process-wide, sampled) and session-lock wait statistics.
@@ -97,6 +93,13 @@ export type CloseFn = () => Promise<void>;
 export interface PgliteAdapter {
   /** Prisma adapter — pass directly to `new PrismaClient({ adapter })` */
   adapter: PrismaPg;
+
+  /**
+   * The caller-supplied PGlite instance this adapter wraps. Exposed so
+   * helpers like {@link pushMigrations} can run SQL directly through
+   * `pglite.exec(...)` without going through the bridge pool.
+   */
+  pglite: PGlite;
 
   /**
    * Identity tag published on every `QUERY_CHANNEL` / `LOCK_WAIT_CHANNEL`
@@ -149,10 +152,11 @@ export interface PgliteAdapter {
 /**
  * Creates a Prisma adapter backed by a caller-supplied PGlite instance.
  *
- * When migration config is provided (`sql`, `migrationsPath`, or
- * `configRoot`), the resolved SQL is applied once on construction.
- * Otherwise, the PGlite instance is assumed to already hold the schema —
- * useful for reopening a persistent `dataDir`.
+ * Schema application is a separate concern — call {@link pushMigrations}
+ * (raw SQL / migrations directory) or {@link pushSchema} (WASM-engine
+ * diff) before issuing Prisma traffic. When reopening a persistent
+ * `dataDir`, the PGlite instance is assumed to already hold the schema
+ * and no migration step is required.
  */
 export const createPgliteAdapter = async (
   options: CreatePgliteAdapterOptions,
@@ -173,28 +177,6 @@ export const createPgliteAdapter = async (
     syncToFs: options.syncToFs,
     telemetry: adapterStats,
   });
-
-  const hasMigrationConfig =
-    options.sql !== undefined ||
-    options.migrationsPath !== undefined ||
-    options.configRoot !== undefined;
-
-  const schemaStart = adapterStats ? process.hrtime.bigint() : undefined;
-  if (hasMigrationConfig) {
-    const sql = await getMigrationSQL(options);
-    try {
-      await pglite.exec(sql);
-    } catch (err) {
-      const target = pglite.dataDir ? `PGlite(dataDir=${pglite.dataDir})` : 'in-memory PGlite';
-      throw new Error(
-        `Failed to apply schema SQL to ${target}. Check your schema or migration files.`,
-        { cause: err },
-      );
-    }
-  }
-  if (adapterStats && schemaStart !== undefined) {
-    adapterStats.markSchemaSetup(nsToMs(process.hrtime.bigint() - schemaStart));
-  }
 
   const adapter = new PrismaPg(pool);
   const snapshotManager = createSnapshotManager(pglite);
@@ -224,6 +206,7 @@ export const createPgliteAdapter = async (
   const result: PgliteAdapter = {
     adapter,
     adapterId,
+    pglite,
     close,
     resetDb,
     resetSnapshot: snapshotManager.resetSnapshot,

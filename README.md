@@ -19,17 +19,16 @@ TypeScript users also need `@types/pg`.
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPgliteAdapter } from 'prisma-pglite-bridge';
+import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 
 const pglite = new PGlite();
-const { adapter, resetDb } = await createPgliteAdapter({
-  pglite,
-  migrationsPath: './prisma/migrations',
-});
-const prisma = new PrismaClient({ adapter });
+const pgliteAdapter = await createPgliteAdapter({ pglite });
+await pushMigrations(pgliteAdapter, { migrationsPath: './prisma/migrations' });
 
-beforeEach(() => resetDb());
+const prisma = new PrismaClient({ adapter: pgliteAdapter.adapter });
+
+beforeEach(() => pgliteAdapter.resetDb());
 ```
 
 Call `resetDb()` in `beforeEach` to wipe all data between tests.
@@ -40,86 +39,27 @@ That's it. Run `prisma migrate dev` first to generate migration
 files. No Docker, no database server — works in GitHub Actions,
 GitLab CI, and any environment where Node.js runs.
 
-## Schema Resolution
+## Populating the database
 
-When you pass any of `sql`, `migrationsPath`, or `configRoot`,
-`createPgliteAdapter` applies schema SQL. Resolution order:
+`createPgliteAdapter` returns an empty database. The bridge offers
+two helpers to populate it — pick the one that matches your
+project layout:
 
-1. **`sql` option** — pre-generated SQL string, applied directly
-2. **`migrationsPath` option** — reads migration files from the
-   given directory
-3. **Auto-discovered migrations** — uses `@prisma/config` to find
-   migration files (same resolution as `prisma migrate dev`),
-   triggered by passing `configRoot`. Requires `prisma` to be
-   installed (which provides `@prisma/config` as a transitive
-   dependency).
+| Helper | When to use | Cost |
+| --- | --- | --- |
+| [`pushMigrations`](#pushmigrationstarget-options) | You already run `prisma migrate dev` and have a `prisma/migrations` directory | No WASM schema engine; no Node `ExperimentalWarning` |
+| [`pushSchema`](#pushschematarget-options) | You only have `schema.prisma` (test fixtures, prototypes) and want it applied via `prisma db push` semantics | Loads `@prisma/schema-engine-wasm` once per process |
 
-When none of these options is provided, no SQL is applied — the
-PGlite instance is assumed to already hold the schema (useful
-for reopening a persistent `dataDir`).
+Both accept the same `PgliteAdapter` returned by
+`createPgliteAdapter`, so you can swap helpers without touching the
+adapter wiring. If you reopen a persistent `dataDir` that already
+holds the schema, call neither.
 
-Schema SQL — whether inline via `sql` or loaded from `migrationsPath`
-— is executed verbatim with no checksum or signature verification.
-Ensure the source is trusted and version-controlled. Do not compose
-it from environment variables, network input, or any value that
-crosses a trust boundary, and keep the migrations directory
-writable only by trusted processes.
-
-## Applying a schema
-
-For projects without a migrations directory — typical of test
-fixtures or quick prototypes — the bridge can apply a Prisma
-schema directly via `@prisma/schema-engine-wasm`, in-process. No
-native schema-engine binary, no TCP, no Docker. `prisma generate`
-still goes through the regular CLI; only schema apply / reset is
-bridged.
-
-### Library
-
-```typescript
-import { readFile } from 'node:fs/promises';
-import { PGlite } from '@electric-sql/pglite';
-import { createPgliteAdapter, pushSchema } from 'prisma-pglite-bridge';
-
-const pglite = new PGlite();
-const adapter = await createPgliteAdapter({ pglite });
-
-await pushSchema(adapter, {
-  schema: await readFile('prisma/schema.prisma', 'utf8'),
-});
-```
-
-`pushSchema` returns `{ executedSteps, warnings, unexecutable }`.
-`acceptDataLoss: true` lets the engine apply destructive changes
-that would otherwise be reported as warnings; `unexecutable` steps
-are independent — the engine refuses them either way and the
-caller must reshape the schema. `forceReset: true` drops every
-non-system schema before applying.
-
-`resetSchema(adapter)` drops every non-system schema and
-recreates `public`.
-
-### CLI (`ppb`)
-
-```sh
-pnpm exec ppb db-push   [--schema <path>]            # default: prisma/schema.prisma
-                        [--force-reset]
-                        [--accept-data-loss]
-                        [--data-dir <path>]          # overrides DATABASE_URL
-pnpm exec ppb db-reset  [--data-dir <path>]
-```
-
-`DATABASE_URL` is read from env / `.env` and parsed as a `pglite://`
-URL — `pglite://memory` for in-memory, `pglite:///abs/path` or
-`pglite://./rel/path` for filesystem-backed PGlite. `--data-dir`
-overrides it.
-
-Exit codes:
-
-- **0** — success.
-- **1** — engine reported `unexecutable` steps, or `warnings` were
-  reported and `--accept-data-loss` was not supplied, or the
-  schema failed to parse / push.
+Schema SQL is executed verbatim with no checksum or signature
+verification. Compose it from trusted, version-controlled source
+only — never from environment variables, network input, or any
+value that crosses a trust boundary, and keep the migrations
+directory writable only by trusted processes.
 
 ## Bridge fs-sync policy
 
@@ -143,19 +83,23 @@ instance.
 ```typescript
 const pglite = new PGlite(/* dataDir, extensions, ... */);
 
-const { adapter, resetDb, close, stats } = await createPgliteAdapter({
-  pglite,                                // required — caller owns lifecycle
-  migrationsPath: './prisma/migrations', // or:
-  sql: 'CREATE TABLE ...',              // (first match wins, see Schema Resolution)
-  configRoot: '../..',        // monorepo: where to find prisma.config.ts
-  max: 1,                     // pool connections (default: 1, see "Pool sizing" below)
+const pgliteAdapter = await createPgliteAdapter({
+  pglite,                     // required — caller owns lifecycle
+  max: 1,                     // pool connections (default: 1)
   statsLevel: 'off',          // 'off' | 'basic' | 'full' (default: 'off')
+  syncToFs: 'auto',           // 'auto' | true | false (default: 'auto')
 });
 ```
 
-Returns:
+To apply schema SQL, call [`pushMigrations`](#pushmigrationstarget-options)
+or [`pushSchema`](#pushschematarget-options) on the returned
+adapter — see [Populating the database](#populating-the-database).
+
+Returns a `PgliteAdapter`:
 
 - `adapter` — pass to `new PrismaClient({ adapter })`
+- `pglite` — the caller-supplied PGlite instance, re-exposed for
+  symmetry with `pushSchema` / `pushMigrations`
 - `resetDb()` — truncates all user tables and discards
   session-local state via `DISCARD ALL` (for example `SET`
   variables, prepared statements, temp tables, and `LISTEN`
@@ -177,6 +121,91 @@ Returns:
   truncating to empty.
 - `resetSnapshot()` — discards the current snapshot so later
   `resetDb()` calls truncate back to empty again.
+
+### `pushMigrations(target, options)`
+
+Applies SQL migrations to a `PgliteAdapter`. Use this for projects
+that already have a `prisma/migrations` directory generated by
+`prisma migrate dev`. Does not load `@prisma/schema-engine-wasm`.
+
+```typescript
+import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
+
+const adapter = await createPgliteAdapter({ pglite });
+
+// inline SQL
+await pushMigrations(adapter, { sql: 'CREATE TABLE ...' });
+
+// from a migrations directory
+await pushMigrations(adapter, { migrationsPath: './prisma/migrations' });
+
+// auto-discovered via prisma.config.ts (monorepo: pass configRoot)
+await pushMigrations(adapter, { configRoot: process.cwd() });
+```
+
+Resolution order — first match wins:
+
+1. **`sql` option** — pre-generated SQL string, applied directly
+2. **`migrationsPath` option** — concatenates every
+   `migration.sql` found one directory level below, in
+   directory-name order
+3. **Auto-discovered migrations** — uses `@prisma/config` to find
+   migration files (same resolution as `prisma migrate dev`),
+   triggered by passing `configRoot`. Requires `prisma` to be
+   installed (which provides `@prisma/config` as a transitive
+   dependency).
+
+Returns `{ durationMs }` — the wall-clock time PGlite spent applying
+the SQL, useful when you want to log schema-setup cost.
+
+### `pushSchema(target, options)`
+
+Applies a Prisma schema to the database via
+`@prisma/schema-engine-wasm`, in-process. No native schema-engine
+binary, no TCP, no Docker. `prisma generate` still goes through the
+regular CLI; only schema apply / reset is bridged.
+
+Use this for projects without a migrations directory — typical of
+test fixtures or quick prototypes — or when you want `prisma db
+push` semantics (diff `schema.prisma` against the live DB).
+
+```typescript
+import { readFile } from 'node:fs/promises';
+import { PGlite } from '@electric-sql/pglite';
+import { createPgliteAdapter, pushSchema } from 'prisma-pglite-bridge';
+
+const pglite = new PGlite();
+const adapter = await createPgliteAdapter({ pglite });
+
+await pushSchema(adapter, {
+  schema: await readFile('prisma/schema.prisma', 'utf8'),
+  // acceptDataLoss: true,  // apply destructive changes flagged as warnings
+  // forceReset: true,      // drop every non-system schema before applying
+});
+```
+
+Returns `{ executedSteps, warnings, unexecutable }`.
+`acceptDataLoss: true` lets the engine apply destructive changes
+that would otherwise be reported as warnings; `unexecutable` steps
+are independent — the engine refuses them either way and the
+caller must reshape the schema. `forceReset: true` drops every
+non-system schema before applying.
+
+The first call in a Node process emits an
+[`ExperimentalWarning`](#experimentalwarning-importing-webassembly-module-instances-is-an-experimental-feature)
+about WebAssembly imports.
+
+### `resetSchema(target)`
+
+Drops every non-system schema and recreates `public`. Useful as a
+between-suite reset when you want a clean slate without re-running
+all migrations.
+
+```typescript
+import { resetSchema } from 'prisma-pglite-bridge';
+
+await resetSchema(adapter);
+```
 
 ### `createPool(options)`
 
@@ -222,6 +251,47 @@ const client = new pg.Client({
 });
 ```
 
+### `SessionLock`
+
+An async mutex that serializes PGlite access across multiple
+bridges sharing one PGlite instance. `createPgliteAdapter` and
+`createPool` install one automatically; export it for custom
+multi-bridge setups built on top of `PGliteBridge`.
+
+### Diagnostics channel exports
+
+`QUERY_CHANNEL`, `LOCK_WAIT_CHANNEL`, and the matching
+`QueryEvent` / `LockWaitEvent` types are exported for subscribing
+to live per-query and per-lock-wait events. See
+[Diagnostics channels](#diagnostics-channels) for the wiring.
+
+## CLI (`ppb`)
+
+The `ppb` CLI exposes [`pushSchema`](#pushschematarget-options) and
+[`resetSchema`](#resetschematarget) as standalone commands so you
+can apply a Prisma schema to a PGlite database without writing
+glue code.
+
+```sh
+pnpm exec ppb db-push   [--schema <path>]            # default: prisma/schema.prisma
+                        [--force-reset]
+                        [--accept-data-loss]
+                        [--data-dir <path>]          # overrides DATABASE_URL
+pnpm exec ppb db-reset  [--data-dir <path>]
+```
+
+`DATABASE_URL` is read from env / `.env` and parsed as a `pglite://`
+URL — `pglite://memory` for in-memory, `pglite:///abs/path` or
+`pglite://./rel/path` for filesystem-backed PGlite. `--data-dir`
+overrides it.
+
+Exit codes:
+
+- **0** — success.
+- **1** — engine reported `unexecutable` steps, or `warnings` were
+  reported and `--accept-data-loss` was not supplied, or the
+  schema failed to parse / push.
+
 ## Examples
 
 ### Replacing your production database in tests
@@ -245,15 +315,14 @@ the in-memory PGlite version:
 ```typescript
 // vitest.setup.ts
 import { PGlite } from '@electric-sql/pglite';
-import { createPgliteAdapter } from 'prisma-pglite-bridge';
+import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { beforeEach, vi } from 'vitest';
 
 const pglite = new PGlite();
-const { adapter, resetDb } = await createPgliteAdapter({
-  pglite,
-  migrationsPath: './prisma/migrations',
-});
+const pgliteAdapter = await createPgliteAdapter({ pglite });
+await pushMigrations(pgliteAdapter, { migrationsPath: './prisma/migrations' });
+const { adapter, resetDb } = pgliteAdapter;
 export const testPrisma = new PrismaClient({ adapter });
 
 vi.mock('./lib/prisma', () => ({ prisma: testPrisma }));
@@ -281,7 +350,7 @@ the top level, not inside `beforeAll`:
 ```typescript
 // jest.setup.ts
 const { PGlite } = require('@electric-sql/pglite');
-const { createPgliteAdapter } = require('prisma-pglite-bridge');
+const { createPgliteAdapter, pushMigrations } = require('prisma-pglite-bridge');
 const { PrismaClient } = require('@prisma/client');
 
 let testPrisma;
@@ -293,10 +362,8 @@ jest.mock('./lib/prisma', () => ({
 
 beforeAll(async () => {
   const pglite = new PGlite();
-  const result = await createPgliteAdapter({
-    pglite,
-    migrationsPath: './prisma/migrations',
-  });
+  const result = await createPgliteAdapter({ pglite });
+  await pushMigrations(result, { migrationsPath: './prisma/migrations' });
   testPrisma = new PrismaClient({ adapter: result.adapter });
   resetDb = result.resetDb;
 });
@@ -310,7 +377,7 @@ If your code accepts `PrismaClient` as a parameter:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPgliteAdapter, type ResetDbFn } from 'prisma-pglite-bridge';
+import { createPgliteAdapter, pushMigrations, type ResetDbFn } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, beforeEach, it, expect } from 'vitest';
 
@@ -319,10 +386,8 @@ let resetDb: ResetDbFn;
 
 beforeAll(async () => {
   const pglite = new PGlite();
-  const result = await createPgliteAdapter({
-    pglite,
-    migrationsPath: './prisma/migrations',
-  });
+  const result = await createPgliteAdapter({ pglite });
+  await pushMigrations(result, { migrationsPath: './prisma/migrations' });
   prisma = new PrismaClient({ adapter: result.adapter });
   resetDb = result.resetDb;
 });
@@ -362,7 +427,7 @@ Then reuse it in tests:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPgliteAdapter, type ResetDbFn } from 'prisma-pglite-bridge';
+import { createPgliteAdapter, pushMigrations, type ResetDbFn } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { seed } from '../prisma/seed';
 
@@ -371,10 +436,8 @@ let resetDb: ResetDbFn;
 
 beforeAll(async () => {
   const pglite = new PGlite();
-  const result = await createPgliteAdapter({
-    pglite,
-    migrationsPath: './prisma/migrations',
-  });
+  const result = await createPgliteAdapter({ pglite });
+  await pushMigrations(result, { migrationsPath: './prisma/migrations' });
   prisma = new PrismaClient({ adapter: result.adapter });
   resetDb = result.resetDb;
   await seed(prisma);
@@ -387,6 +450,24 @@ beforeEach(async () => {
 });
 ```
 
+### Applying a schema directly (no migrations directory)
+
+For test fixtures or prototypes without `prisma/migrations`, swap
+`pushMigrations` for `pushSchema`:
+
+```typescript
+import { readFile } from 'node:fs/promises';
+import { PGlite } from '@electric-sql/pglite';
+import { createPgliteAdapter, pushSchema } from 'prisma-pglite-bridge';
+
+const pglite = new PGlite();
+const pgliteAdapter = await createPgliteAdapter({ pglite });
+await pushSchema(pgliteAdapter, {
+  schema: await readFile('prisma/schema.prisma', 'utf8'),
+});
+const { adapter } = pgliteAdapter;
+```
+
 ### Using PostgreSQL extensions
 
 If your schema uses `uuid-ossp`, `pgcrypto`, or other extensions,
@@ -394,15 +475,14 @@ pass them via the `extensions` option:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPgliteAdapter } from 'prisma-pglite-bridge';
+import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
 import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
 import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
 
 const pglite = new PGlite({ extensions: { uuid_ossp, pgcrypto } });
-const { adapter } = await createPgliteAdapter({
-  pglite,
-  migrationsPath: './prisma/migrations',
-});
+const pgliteAdapter = await createPgliteAdapter({ pglite });
+await pushMigrations(pgliteAdapter, { migrationsPath: './prisma/migrations' });
+const { adapter } = pgliteAdapter;
 ```
 
 Extensions are included in the `@electric-sql/pglite` package —
@@ -411,18 +491,18 @@ for the full list.
 
 ### Pre-generated SQL (fastest)
 
-The `sql` option runs verbatim with no sandbox or checksum. Compose
-it from trusted, version-controlled source only — never from
-environment variables, network input, or values that cross a trust
-boundary. See [Schema Resolution](#schema-resolution) for the
-full source-of-trust guidance.
+The `sql` option on `pushMigrations` runs verbatim with no sandbox
+or checksum. Compose it from trusted, version-controlled source
+only — never from environment variables, network input, or values
+that cross a trust boundary.
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
+import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
-const { adapter } = await createPgliteAdapter({
-  pglite,
+const pgliteAdapter = await createPgliteAdapter({ pglite });
+await pushMigrations(pgliteAdapter, {
   sql: `
     CREATE TABLE "User" (id text PRIMARY KEY, name text NOT NULL);
     CREATE TABLE "Post" (
@@ -432,6 +512,7 @@ const { adapter } = await createPgliteAdapter({
     );
   `,
 });
+const { adapter } = pgliteAdapter;
 ```
 
 ### Persistent dev database (optional)
@@ -451,10 +532,11 @@ const dataDir = './data/pglite';
 const firstRun = !existsSync(join(dataDir, 'PG_VERSION'));
 
 const pglite = new PGlite(dataDir);
-const { adapter, close } = await createPgliteAdapter({
-  pglite,
-  ...(firstRun ? { migrationsPath: './prisma/migrations' } : {}),
-});
+const pgliteAdapter = await createPgliteAdapter({ pglite });
+if (firstRun) {
+  await pushMigrations(pgliteAdapter, { migrationsPath: './prisma/migrations' });
+}
+const { adapter, close } = pgliteAdapter;
 const prisma = new PrismaClient({ adapter });
 ```
 
@@ -467,12 +549,12 @@ or environments where installing PostgreSQL is impractical.
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
+import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
-const { adapter, close } = await createPgliteAdapter({
-  pglite,
-  migrationsPath: './prisma/migrations',
-});
+const pgliteAdapter = await createPgliteAdapter({ pglite });
+await pushMigrations(pgliteAdapter, { migrationsPath: './prisma/migrations' });
+const { adapter, close } = pgliteAdapter;
 const prisma = new PrismaClient({ adapter });
 
 try {
@@ -504,13 +586,15 @@ external consumer subscribes to the public
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
+import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
-const { adapter, stats, close } = await createPgliteAdapter({
+const pgliteAdapter = await createPgliteAdapter({
   pglite,
-  migrationsPath: './prisma/migrations',
   statsLevel: 'basic', // or 'full'
 });
+await pushMigrations(pgliteAdapter, { migrationsPath: './prisma/migrations' });
+const { adapter, stats, close } = pgliteAdapter;
 const prisma = new PrismaClient({ adapter });
 
 afterAll(async () => {
@@ -537,7 +621,6 @@ described below. That path is more flexible, but also more advanced.
 
 - `durationMs` — adapter lifetime (frozen at `close()`, drain
   excluded)
-- `schemaSetupMs` — one-time cost of applying migration SQL
 - `queryCount`, `failedQueryCount` — WASM round-trips (a Prisma
   extended-query pipeline is one round-trip, not five). Lifetime
   counters.
@@ -628,9 +711,12 @@ share a process. Obtain it from the `createPgliteAdapter()` or
   variables leak between connections within a single test. `resetDb()`
   clears more of this between tests via `DISCARD ALL`. The default
   `max: 1` avoids extra bridge connections and session-lock overhead.
-- **Migration files required** — run `prisma migrate dev` once to
-  generate migration files, or pass schema SQL directly via the
-  `sql` option.
+- **Schema source required** — pick one of
+  [`pushMigrations`](#pushmigrationstarget-options) (run
+  `prisma migrate dev` first or pass `sql` directly) or
+  [`pushSchema`](#pushschematarget-options) (apply
+  `schema.prisma` directly). `createPgliteAdapter` alone returns
+  an empty database.
 
 ## Troubleshooting
 
@@ -661,6 +747,35 @@ If you see more than one version, force a single 0.4.x via
 ```
 
 Then `pnpm install`.
+
+### `ExperimentalWarning: Importing WebAssembly module instances is an experimental feature`
+
+Emitted by Node when `pushSchema` / `resetSchema` (or the `ppb` CLI)
+loads `@prisma/schema-engine-wasm`, which uses ESM static `.wasm`
+imports. The warning is harmless and prints once per Node process.
+
+If you only need to apply already-generated migration SQL, use
+[`pushMigrations`](#pushmigrationstarget-options) instead — it does
+not load the schema engine, so the warning never fires.
+
+To silence it in tests or CI, pass Node's `--disable-warning` flag:
+
+```sh
+NODE_OPTIONS=--disable-warning=ExperimentalWarning pnpm test
+```
+
+Or scope it to Vitest workers via `vitest.config.ts`:
+
+```ts
+export default defineConfig({
+  test: {
+    execArgv: ['--disable-warning=ExperimentalWarning'],
+  },
+});
+```
+
+Requires Node ≥ 22. The warning will go away once Node stabilizes
+WebAssembly ESM imports.
 
 ## License
 

@@ -4,8 +4,8 @@
  * Instantiated at level `'basic'` or `'full'` (level `'off'` means no stats
  * object exists).
  * Query-level timing is recorded directly by the bridge; one-shot lifecycle
- * signals (`markSchemaSetup`, `incrementResetDb`, `freeze`) remain direct
- * method calls invoked by the adapter itself.
+ * signals (`incrementResetDb`, `freeze`) remain direct method calls invoked
+ * by the adapter itself.
  *
  * Percentiles use nearest-rank (no interpolation) over a sliding window of
  * the most recent {@link QUERY_DURATION_WINDOW_SIZE} queries. Lifetime
@@ -23,8 +23,8 @@ type DbSizeQueryable = Pick<PGlite, 'query'>;
  * Stats collection level.
  *
  * - `'off'` — `stats()` returns `undefined`. Zero hot-path overhead.
- * - `'basic'` — timing (`durationMs`, `schemaSetupMs`), query
- *   percentiles, counters, and `dbSizeBytes`.
+ * - `'basic'` — timing (`durationMs`), query percentiles, counters, and
+ *   `dbSizeBytes`.
  * - `'full'` — `'basic'` plus `processRssPeakBytes` and session-lock
  *   waits.
  */
@@ -48,7 +48,6 @@ const QUERY_DURATION_TRIM_THRESHOLD = QUERY_DURATION_WINDOW_SIZE * 2;
 
 interface StatsBase {
   durationMs: number;
-  schemaSetupMs: number;
   /** Lifetime count of recorded queries. Not windowed. */
   queryCount: number;
   failedQueryCount: number;
@@ -132,9 +131,6 @@ export class AdapterStats implements TelemetrySink {
   private failedQueryCount = 0;
   private resetDbCalls = 0;
 
-  private schemaSetupMs = 0;
-  private schemaSetupSet = false;
-
   private totalSessionLockWaitMs = 0;
   private maxSessionLockWaitMs = 0;
   private sessionLockAcquisitionCount = 0;
@@ -173,12 +169,6 @@ export class AdapterStats implements TelemetrySink {
     this.resetDbCalls += 1;
   }
 
-  markSchemaSetup(durationMs: number): void {
-    if (this.schemaSetupSet) return;
-    this.schemaSetupSet = true;
-    this.schemaSetupMs = durationMs;
-  }
-
   async snapshot(pglite: DbSizeQueryable): Promise<Stats> {
     const durationMs =
       this.cachedDurationMs ?? nsToMs(process.hrtime.bigint() - this.createdAtHrtime);
@@ -189,7 +179,6 @@ export class AdapterStats implements TelemetrySink {
 
     const base: StatsBase = {
       durationMs,
-      schemaSetupMs: this.schemaSetupMs,
       queryCount: this.queryCount,
       failedQueryCount: this.failedQueryCount,
       totalQueryMs: this.totalQueryMs,

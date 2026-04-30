@@ -6,6 +6,7 @@ import setupTestSuite from './__tests__/adapter.ts';
 import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
 import { createMockPglite } from './__tests__/mocks.ts';
 import { createPgliteAdapter, emitAdapterLeakWarning } from './create-pglite-adapter.ts';
+import { pushMigrations } from './migrations.ts';
 
 const { pglite, prisma, adapter } = await setupTestSuite({
   options: { statsLevel: 'basic' },
@@ -15,15 +16,11 @@ type CreatePgliteAdapterModule = typeof import('./create-pglite-adapter.ts');
 
 const loadCreatePgliteAdapterWithMocks = async ({
   poolEnd = vi.fn().mockResolvedValue(undefined),
-  getMigrationSQL = vi
-    .fn()
-    .mockImplementation(async (options: { sql?: string }) => options.sql ?? 'BROKEN SQL'),
   prismaPg = vi.fn().mockImplementation(function MockPrismaPg() {
     return { mocked: true };
   }),
 }: {
   poolEnd?: Mock;
-  getMigrationSQL?: Mock;
   prismaPg?: Mock;
 } = {}): Promise<{
   createPool: Mock;
@@ -41,11 +38,6 @@ const loadCreatePgliteAdapterWithMocks = async ({
   vi.doMock('./create-pool.ts', () => ({
     createPool,
   }));
-  vi.doMock('./utils/migrations.ts', async () => {
-    const actual =
-      await vi.importActual<typeof import('./utils/migrations.ts')>('./utils/migrations.ts');
-    return { ...actual, getMigrationSQL };
-  });
   vi.doMock('@prisma/adapter-pg', () => ({
     PrismaPg: prismaPg,
   }));
@@ -54,7 +46,6 @@ const loadCreatePgliteAdapterWithMocks = async ({
 
 afterEach(() => {
   vi.doUnmock('./create-pool.ts');
-  vi.doUnmock('./utils/migrations.ts');
   vi.doUnmock('@prisma/adapter-pg');
   vi.resetModules();
 });
@@ -64,7 +55,6 @@ describe('createPgliteAdapter', () => {
     await expect(
       createPgliteAdapter({
         pglite,
-        sql: 'SELECT 1',
         statsLevel: 'invalid' as 'basic',
       }),
     ).rejects.toThrow(`statsLevel must be 'off', 'basic', or 'full'; got invalid`);
@@ -75,13 +65,16 @@ describe('createPgliteAdapter', () => {
 
     expect(stats).toBeDefined();
     expect(stats?.statsLevel).toBe('basic');
-    expect(stats?.schemaSetupMs).toBeDefined();
   });
 
   it(`returns undefined stats when statsLevel is 'off'`, async () => {
-    const { close, stats } = await createPgliteAdapter({ pglite, sql: 'SELECT 1' });
+    const { close, stats } = await createPgliteAdapter({ pglite });
     await expect(stats()).resolves.toBeUndefined();
     close();
+  });
+
+  it('exposes the underlying pglite instance', () => {
+    expect(adapter.pglite).toBe(pglite);
   });
 
   it('resetDb clears user data', async () => {
@@ -94,14 +87,13 @@ describe('createPgliteAdapter', () => {
     await expect(prisma.tenant.count()).resolves.toBe(0);
   });
 
-  it('reuses an initialized persistent dataDir when migrations are not re-applied', async () => {
+  it('reuses an initialized persistent dataDir without re-applying migrations', async () => {
     const { parent, path: dataDir } = createTempDir('adapter-data');
 
     const firstPglite = new PGlite(dataDir);
-    const first = await createPgliteAdapter({
-      pglite: firstPglite,
+    const first = await createPgliteAdapter({ pglite: firstPglite, statsLevel: 'basic' });
+    await pushMigrations(first, {
       sql: 'CREATE TABLE IF NOT EXISTS "Tenant" ("id" TEXT PRIMARY KEY, "name" TEXT NOT NULL, "slug" TEXT NOT NULL)',
-      statsLevel: 'basic',
     });
     const firstPrisma = new PrismaClient({ adapter: first.adapter });
 
@@ -166,109 +158,6 @@ describe('createPgliteAdapter', () => {
     await expect(prisma.tenant.count()).resolves.toBe(0);
   });
 
-  it('wraps migration failures with a descriptive error', async () => {
-    const exec = vi.fn().mockRejectedValueOnce(new Error('migration failed'));
-    const pglite = createMockPglite({ exec });
-    const { module } = await loadCreatePgliteAdapterWithMocks();
-    const { createPgliteAdapter } = module;
-
-    await expect(
-      createPgliteAdapter({
-        pglite,
-        migrationsPath: '/tmp/migrations',
-      }),
-    ).rejects.toThrow(
-      'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
-    );
-    expect(exec.mock.calls).toEqual([['BROKEN SQL']]);
-  });
-
-  it('includes the dataDir path in schema failures for persistent instances', async () => {
-    const exec = vi.fn().mockRejectedValueOnce(new Error('migration failed'));
-    const pglite = createMockPglite({ exec });
-    Object.assign(pglite, { dataDir: '/var/data/test-db' });
-    const { module } = await loadCreatePgliteAdapterWithMocks();
-    const { createPgliteAdapter } = module;
-
-    await expect(
-      createPgliteAdapter({
-        pglite,
-        sql: 'SELECT 1',
-      }),
-    ).rejects.toThrow(
-      'Failed to apply schema SQL to PGlite(dataDir=/var/data/test-db). Check your schema or migration files.',
-    );
-  });
-
-  it('applies migration SQL when a migrationsPath is provided', async () => {
-    const exec = vi.fn().mockResolvedValue(undefined);
-    const pglite = createMockPglite({ exec });
-    const { module } = await loadCreatePgliteAdapterWithMocks({
-      getMigrationSQL: vi.fn().mockResolvedValue('SELECT 1'),
-    });
-    const { createPgliteAdapter } = module;
-
-    const created = await createPgliteAdapter({
-      pglite,
-      migrationsPath: '/tmp/migrations',
-    });
-
-    expect(exec.mock.calls).toEqual([['SELECT 1']]);
-
-    await created.close();
-  });
-
-  it('skips migration application when no migration config is provided', async () => {
-    const exec = vi.fn().mockResolvedValue(undefined);
-    const pglite = createMockPglite({ exec });
-    const { module } = await loadCreatePgliteAdapterWithMocks();
-    const { createPgliteAdapter } = module;
-
-    const created = await createPgliteAdapter({ pglite });
-
-    expect(exec.mock.calls).toEqual([]);
-
-    await created.close();
-  });
-
-  it('wraps explicit sql failures with a descriptive error', async () => {
-    const exec = vi.fn().mockRejectedValueOnce(new Error('bad sql'));
-    const pglite = createMockPglite({ exec });
-    const { module } = await loadCreatePgliteAdapterWithMocks();
-    const { createPgliteAdapter } = module;
-
-    await expect(createPgliteAdapter({ pglite, sql: 'SELECT 1' })).rejects.toThrow(
-      'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
-    );
-    expect(exec.mock.calls).toEqual([['SELECT 1']]);
-  });
-
-  it('preserves the PGlite cause when a multi-statement migration fails partway', async () => {
-    const livePglite = new PGlite();
-    try {
-      const sql = [
-        'CREATE TABLE "Ok" ("id" TEXT PRIMARY KEY);',
-        'CREATE TABLE "Broken" ("id" TEXT REFERENCES "Missing"("id"));',
-        'CREATE TABLE "Unreached" ("id" TEXT PRIMARY KEY);',
-      ].join('\n');
-
-      const error = await createPgliteAdapter({ pglite: livePglite, sql }).then(
-        () => undefined,
-        (err: unknown) => err,
-      );
-
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toBe(
-        'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
-      );
-      const cause = (error as Error).cause;
-      expect(cause).toBeInstanceOf(Error);
-      expect(String((cause as Error).message).toLowerCase()).toContain('missing');
-    } finally {
-      await livePglite.close();
-    }
-  });
-
   it('close is idempotent while shutdown is already in progress', async () => {
     let releaseEnd: (() => void) | undefined;
     const poolEnd = vi.fn().mockImplementation(
@@ -277,14 +166,10 @@ describe('createPgliteAdapter', () => {
           releaseEnd = resolve;
         }),
     );
-    const exec = vi.fn().mockResolvedValue(undefined);
-    const pglite = createMockPglite({ exec });
+    const pglite = createMockPglite();
     const { module } = await loadCreatePgliteAdapterWithMocks({ poolEnd });
     const { createPgliteAdapter } = module;
-    const created = await createPgliteAdapter({
-      pglite,
-      sql: 'SELECT 1',
-    });
+    const created = await createPgliteAdapter({ pglite });
 
     const closingA = created.close();
     const closingB = created.close();
@@ -332,11 +217,10 @@ describe('createPgliteAdapter', () => {
     const registerSpy = vi.spyOn(FinalizationRegistry.prototype, 'register');
     const unregisterSpy = vi.spyOn(FinalizationRegistry.prototype, 'unregister');
     try {
-      const exec = vi.fn().mockResolvedValue(undefined);
-      const pglite = createMockPglite({ exec });
+      const pglite = createMockPglite();
       const { module } = await loadCreatePgliteAdapterWithMocks();
       const { createPgliteAdapter } = module;
-      const created = await createPgliteAdapter({ pglite, sql: 'SELECT 1' });
+      const created = await createPgliteAdapter({ pglite });
 
       expect(registerSpy).toHaveBeenCalled();
       const registeredToken = registerSpy.mock.calls.at(-1)?.[2];

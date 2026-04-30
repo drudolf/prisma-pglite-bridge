@@ -15,7 +15,7 @@ describe('createPgliteAdapter leak detection', () => {
     try {
       let adapterRef: unknown;
       await (async () => {
-        const result = await createPgliteAdapter({ pglite: livePglite, sql: 'SELECT 1' });
+        const result = await createPgliteAdapter({ pglite: livePglite });
         adapterRef = result.adapter;
         closeAdapter = result.close;
       })();
