@@ -85,6 +85,7 @@ const rewriteRowDescriptionInPlace = (buf: Buffer): void => {
     // Per-field fixed suffix is 18 bytes: tableOID(4) + columnAttr(2) +
     // dataTypeOID(4) + dataTypeSize(2) + typeModifier(4) + formatCode(2).
     // Bail if the frame is truncated rather than throwing RangeError mid-loop.
+    /* c8 ignore next — defense-in-depth: framer caller passes a complete frame */
     if (p + 18 > buf.length) return;
     const tableOID = buf.readUInt32BE(p);
     p += 4 + 2; // tableOID, columnAttr

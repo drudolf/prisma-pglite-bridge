@@ -96,7 +96,7 @@ describe('pushSchema', () => {
       await pglite.close();
     });
 
-    const result = await pushSchema(prismaPg, { schema: SCHEMA_BASE });
+    const result = await pushSchema(prismaPg, { schema: SCHEMA_BASE, forceReset: true });
 
     expect(result.executedSteps).toBeGreaterThan(0);
     expect(await listTables(pglite)).toContain('Widget');
