@@ -1,9 +1,7 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
 
-import { createPgliteAdapter, pushSchema } from '../../index.ts';
+import { createPgliteAdapter, pushMigrations } from '../../index.ts';
 
 import { seed } from './seed.ts';
 
@@ -17,11 +15,10 @@ let instance: Promise<Bridge> | undefined;
 
 const createInstance = async (): Promise<Bridge> => {
   const pglite = new PGlite();
-  const { adapter, close, resetDb, snapshotDb } = await createPgliteAdapter({ pglite });
+  const pgliteAdapter = await createPgliteAdapter({ pglite });
+  const { adapter, close, resetDb, snapshotDb } = pgliteAdapter;
 
-  await pushSchema(adapter, {
-    schema: readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8'),
-  });
+  await pushMigrations(pgliteAdapter, { configRoot: process.cwd() });
 
   const prisma = new PrismaClient({ adapter });
   await seed(prisma);

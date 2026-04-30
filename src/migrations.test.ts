@@ -1,6 +1,10 @@
+import { PGlite } from '@electric-sql/pglite';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createTempDir, createTempFile, removeTempDir } from '../__tests__/file-system.ts';
-import { getMigrationSQL, readMigrationFiles } from './migrations.ts';
+import { createTempDir, createTempFile, removeTempDir } from './__tests__/file-system.ts';
+import { createPgliteAdapter } from './create-pglite-adapter.ts';
+import { createPool } from './create-pool.ts';
+import { getMigrationSQL, pushMigrations, readMigrationFiles } from './migrations.ts';
 
 type MigrationsModule = typeof import('./migrations.ts');
 
@@ -193,6 +197,117 @@ describe('migrations utilities', () => {
 
     await expect(getMigrationSQLWithMock({})).rejects.toThrow(
       'No migration files found and no prisma.config.ts could be loaded. Run `prisma migrate dev` to generate them, or pass pre-generated SQL via the `sql` option.',
+    );
+  });
+});
+
+describe('pushMigrations', () => {
+  const cleanups: Array<() => Promise<void>> = [];
+  afterEach(async () => {
+    while (cleanups.length) {
+      const fn = cleanups.pop();
+      await fn?.();
+    }
+  });
+
+  const makeAdapter = async (dataDir?: string) => {
+    const pglite = new PGlite(dataDir);
+    await pglite.waitReady;
+    const adapter = await createPgliteAdapter({ pglite });
+    cleanups.push(async () => {
+      await adapter.close();
+      await pglite.close();
+    });
+    return { pglite, adapter };
+  };
+
+  it('applies inline SQL and returns durationMs', async () => {
+    const { pglite, adapter } = await makeAdapter();
+    const result = await pushMigrations(adapter, {
+      sql: 'CREATE TABLE "Demo" ("id" TEXT PRIMARY KEY);',
+    });
+
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+
+    const { rows } = await pglite.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM information_schema.tables WHERE table_name = 'Demo'`,
+    );
+    expect(rows[0]?.count).toBe('1');
+  });
+
+  it('applies SQL from a migrationsPath', async () => {
+    const { path: migrationsPath } = createTempDir('migrations');
+    try {
+      createTempFile(
+        'migration.sql',
+        'CREATE TABLE "FromPath" ("id" TEXT PRIMARY KEY);',
+        createTempDir('0001_init', migrationsPath).path,
+      );
+
+      const { pglite, adapter } = await makeAdapter();
+      await pushMigrations(adapter, { migrationsPath });
+
+      const { rows } = await pglite.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM information_schema.tables WHERE table_name = 'FromPath'`,
+      );
+      expect(rows[0]?.count).toBe('1');
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+
+  it('wraps PGlite exec failures with a descriptive error (in-memory)', async () => {
+    const { adapter } = await makeAdapter();
+    await expect(pushMigrations(adapter, { sql: 'NOT VALID SQL' })).rejects.toThrow(
+      'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
+    );
+  });
+
+  it('includes the dataDir path in failures for persistent instances', async () => {
+    const { parent, path: dataDir } = createTempDir('persist');
+    cleanups.push(async () => {
+      removeTempDir(parent);
+    });
+    const { adapter } = await makeAdapter(dataDir);
+    await expect(pushMigrations(adapter, { sql: 'NOT VALID SQL' })).rejects.toThrow(
+      `Failed to apply schema SQL to PGlite(dataDir=${dataDir}). Check your schema or migration files.`,
+    );
+  });
+
+  it('preserves the PGlite cause when a multi-statement migration fails partway', async () => {
+    const { adapter } = await makeAdapter();
+    const sql = [
+      'CREATE TABLE "Ok" ("id" TEXT PRIMARY KEY);',
+      'CREATE TABLE "Broken" ("id" TEXT REFERENCES "Missing"("id"));',
+      'CREATE TABLE "Unreached" ("id" TEXT PRIMARY KEY);',
+    ].join('\n');
+
+    const error = await pushMigrations(adapter, { sql }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
+    );
+    const cause = (error as Error).cause;
+    expect(cause).toBeInstanceOf(Error);
+    expect(String((cause as Error).message).toLowerCase()).toContain('missing');
+  });
+
+  it('rejects raw PrismaPg targets', async () => {
+    const pglite = new PGlite();
+    await pglite.waitReady;
+    const { pool } = await createPool({ pglite });
+    const prismaPg = new PrismaPg(pool);
+    cleanups.push(async () => {
+      await pool.end();
+      await pglite.close();
+    });
+
+    await expect(pushMigrations(prismaPg, { sql: 'SELECT 1' })).rejects.toThrow(
+      /pushMigrations requires a PgliteAdapter target/,
     );
   });
 });

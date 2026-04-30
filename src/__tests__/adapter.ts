@@ -10,26 +10,32 @@ import {
   createPgliteAdapter,
   type PgliteAdapter,
 } from '../create-pglite-adapter.ts';
+import { pushMigrations } from '../migrations.ts';
 
 const MIGRATION_SQL = readFileSync(
   join(process.cwd(), 'prisma/migrations/0001_init/migration.sql'),
   'utf8',
 );
 
-type TestOptions = Partial<CreatePgliteAdapterOptions>;
+interface TestOptions extends Partial<CreatePgliteAdapterOptions> {
+  /**
+   * Override the SQL applied via {@link pushMigrations}. Defaults to the
+   * project's `0001_init/migration.sql`. Pass `null` to skip the migration
+   * step entirely (e.g. when reopening a persistent dataDir).
+   */
+  migrationsSql?: string | null;
+}
 
 const createTestPgliteAdapter = async (options: TestOptions = {}): Promise<PgliteAdapter> => {
   const pglite = options.pglite ?? new PGlite();
-  const hasExplicitMigrations =
-    options.sql !== undefined ||
-    options.migrationsPath !== undefined ||
-    options.configRoot !== undefined;
+  const { migrationsSql, ...adapterOptions } = options;
+  const adapter = await createPgliteAdapter({ ...adapterOptions, pglite });
 
-  return createPgliteAdapter({
-    sql: hasExplicitMigrations ? undefined : MIGRATION_SQL,
-    ...options,
-    pglite,
-  });
+  if (migrationsSql !== null) {
+    await pushMigrations(adapter, { sql: migrationsSql ?? MIGRATION_SQL });
+  }
+
+  return adapter;
 };
 
 type SetupTestSuiteFn = ({

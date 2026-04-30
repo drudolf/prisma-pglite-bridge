@@ -111,15 +111,6 @@ describe('AdapterStats — counters', () => {
     });
   });
 
-  it('markSchemaSetup: first call wins', async () => {
-    await withStats('basic', async (c) => {
-      c.markSchemaSetup(42);
-      c.markSchemaSetup(777);
-      const s = await c.snapshot(pglite);
-      expect(s.schemaSetupMs).toBe(42);
-    });
-  });
-
   it('incrementResetDb counts each call', async () => {
     await withStats('basic', async (c) => {
       c.incrementResetDb();
