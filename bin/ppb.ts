@@ -6,7 +6,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { defineCommand, runMain } from 'citty';
 import { config as loadDotenv } from 'dotenv';
 
-import { createPgliteAdapter, pushSchema, resetSchema } from '../src/index.ts';
+import { createPgliteAdapter, type PgliteAdapter, pushSchema, resetSchema } from '../src/index.ts';
 
 loadDotenv();
 
@@ -39,9 +39,9 @@ const resolveDataDir = (cliFlag: string | undefined): string | undefined =>
 
 const withAdapter = async <T>(
   dataDir: string | undefined,
-  fn: (adapter: Awaited<ReturnType<typeof createPgliteAdapter>>) => Promise<T>,
+  fn: (adapter: PgliteAdapter) => Promise<T>,
 ): Promise<T> => {
-  const pglite = dataDir ? new PGlite(dataDir) : new PGlite();
+  const pglite = new PGlite(dataDir);
   await pglite.waitReady;
   const adapter = await createPgliteAdapter({ pglite });
   try {

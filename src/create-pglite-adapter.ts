@@ -92,6 +92,8 @@ export type SnapshotDbFn = () => Promise<void>;
 
 export type ResetSnapshotFn = () => Promise<void>;
 
+export type CloseFn = () => Promise<void>;
+
 export interface PgliteAdapter {
   /** Prisma adapter — pass directly to `new PrismaClient({ adapter })` */
   adapter: PrismaPg;
@@ -134,7 +136,7 @@ export interface PgliteAdapter {
    * at the moment `close()` is invoked, and subsequent `stats()` calls are
    * safe.
    */
-  close: () => Promise<void>;
+  close: CloseFn;
 
   /**
    * Retrieve collected telemetry. Returns `undefined` when `statsLevel` was
@@ -205,7 +207,7 @@ export const createPgliteAdapter = async (
   const leakToken: object = {};
 
   let closing: Promise<void> | undefined;
-  const close = async () => {
+  const close: CloseFn = async () => {
     if (!closing) {
       closing = (async () => {
         const closeEntry = adapterStats ? process.hrtime.bigint() : undefined;
