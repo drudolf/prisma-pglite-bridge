@@ -1,5 +1,5 @@
 ---
-"prisma-pglite-bridge": major
+"prisma-pglite-bridge": minor
 ---
 
 Rename the public surface to better reflect what each piece returns.
