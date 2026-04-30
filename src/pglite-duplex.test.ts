@@ -5,8 +5,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockTelemetry } from './__tests__/mocks.ts';
 import setupPGlite from './__tests__/pglite.ts';
 import { createPool } from './create-pool.ts';
-import { BackendMessageFramer, FrontendMessageBuffer, PGliteBridge } from './pglite-bridge.ts';
-import type { TelemetrySink } from './utils/adapter-stats.ts';
+import { BackendMessageFramer, FrontendMessageBuffer, PGliteDuplex } from './pglite-duplex.ts';
+import type { TelemetrySink } from './utils/bridge-stats.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
 const pglite = await setupPGlite();
@@ -20,14 +20,14 @@ beforeEach(async () => {
   await pglite.exec('TRUNCATE TABLE conc_test RESTART IDENTITY');
 });
 
-const createClient = (adapterId?: symbol, telemetry?: TelemetrySink) =>
+const createClient = (bridgeId?: symbol, telemetry?: TelemetrySink) =>
   new pg.Client({
     user: 'postgres',
     database: 'postgres',
-    stream: () => new PGliteBridge(pglite, undefined, adapterId, telemetry),
+    stream: () => new PGliteDuplex(pglite, undefined, bridgeId, telemetry),
   });
 
-describe('PGliteBridge', () => {
+describe('PGliteDuplex', () => {
   it('pg.Client connects through the bridge', async () => {
     const client = createClient();
     await client.connect();
@@ -100,7 +100,7 @@ describe('PGliteBridge', () => {
   });
 
   it('socket-compat no-ops return the bridge instance', () => {
-    const bridge = new PGliteBridge(pglite);
+    const bridge = new PGliteDuplex(pglite);
     expect(bridge.setKeepAlive()).toBe(bridge);
     expect(bridge.setNoDelay()).toBe(bridge);
     expect(bridge.setTimeout()).toBe(bridge);
@@ -111,7 +111,7 @@ describe('PGliteBridge', () => {
   });
 });
 
-describe('PGliteBridge concurrency', () => {
+describe('PGliteDuplex concurrency', () => {
   it('concurrent parameterized queries through pool do not cause portal errors', async () => {
     const { pool } = await createPool({ max: 5, pglite });
 
@@ -143,7 +143,7 @@ describe('PGliteBridge concurrency', () => {
   });
 });
 
-describe('PGliteBridge error paths', () => {
+describe('PGliteDuplex error paths', () => {
   const makeMockPglite = (overrides: {
     runExclusive?: (fn: () => Promise<unknown>) => Promise<void>;
     execProtocolRawStream?: (
@@ -177,7 +177,7 @@ describe('PGliteBridge error paths', () => {
     return buf;
   };
 
-  const writeAndAwait = (bridge: PGliteBridge, chunk: Buffer): Promise<Error | undefined> =>
+  const writeAndAwait = (bridge: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
     new Promise((resolve) => {
       bridge.write(chunk, (err) => resolve(err ?? undefined));
     });
@@ -186,7 +186,7 @@ describe('PGliteBridge error paths', () => {
     const mock = makeMockPglite({
       runExclusive: () => new Promise<void>(() => {}),
     });
-    const bridge = new PGliteBridge(mock);
+    const bridge = new PGliteDuplex(mock);
     bridge.on('error', () => {});
 
     const writeResult = writeAndAwait(bridge, startupBytes());
@@ -206,7 +206,7 @@ describe('PGliteBridge error paths', () => {
     });
     const lock = new SessionLock();
     const releaseSpy = vi.spyOn(lock, 'release');
-    const bridge = new PGliteBridge(mock, lock);
+    const bridge = new PGliteDuplex(mock, lock);
     bridge.on('error', () => {});
 
     const err = await writeAndAwait(bridge, startupBytes());
@@ -231,7 +231,7 @@ describe('PGliteBridge error paths', () => {
 
     const telemetry = createMockTelemetry();
 
-    const bridge = new PGliteBridge(mock, undefined, Symbol('adapter'), telemetry);
+    const bridge = new PGliteDuplex(mock, undefined, Symbol('bridge'), telemetry);
     bridge.on('error', () => {});
 
     const startupErr = await writeAndAwait(bridge, startupBytes());
@@ -252,7 +252,7 @@ describe('PGliteBridge error paths', () => {
         await fn();
       },
     });
-    const bridge = new PGliteBridge(mock);
+    const bridge = new PGliteDuplex(mock);
     bridge.on('error', () => {});
 
     const firstHalf = startupBytes().subarray(0, 3);
@@ -271,7 +271,7 @@ describe('PGliteBridge error paths', () => {
 
   it('breaks out of processMessages on a malformed length header', async () => {
     const mock = makeMockPglite({});
-    const bridge = new PGliteBridge(mock);
+    const bridge = new PGliteDuplex(mock);
     bridge.on('error', () => {});
 
     const startupErr = await writeAndAwait(bridge, startupBytes());
@@ -288,7 +288,7 @@ describe('PGliteBridge error paths', () => {
     const mock = makeMockPglite({});
     const lock = new SessionLock();
     const releaseSpy = vi.spyOn(lock, 'release');
-    const bridge = new PGliteBridge(mock, lock);
+    const bridge = new PGliteDuplex(mock, lock);
     bridge.on('error', () => {});
 
     await writeAndAwait(bridge, startupBytes());
@@ -308,7 +308,7 @@ describe('PGliteBridge error paths', () => {
         throw 'plain string boom';
       },
     });
-    const bridge = new PGliteBridge(mock);
+    const bridge = new PGliteDuplex(mock);
     bridge.on('error', () => {});
 
     const err = await writeAndAwait(bridge, startupBytes());
@@ -331,7 +331,7 @@ describe('PGliteBridge error paths', () => {
         await fn();
       },
     });
-    const bridge = new PGliteBridge(mock);
+    const bridge = new PGliteDuplex(mock);
     bridge.on('error', () => {});
 
     // Call _write directly twice in the same tick so the second one sees
@@ -375,7 +375,7 @@ describe('PGliteBridge error paths', () => {
   it('records a failed query when an EQP pipeline returns ErrorResponse', async () => {
     const telemetry = createMockTelemetry();
 
-    const client = createClient(Symbol('adapter'), telemetry);
+    const client = createClient(Symbol('bridge'), telemetry);
     await client.connect();
 
     await expect(client.query('SELECT * FROM nonexistent_eqp WHERE id = $1', [1])).rejects.toThrow(
@@ -394,7 +394,7 @@ describe('PGliteBridge error paths', () => {
     lock.updateStatus(owner, 0x54); // 'T'
 
     let destroyedBridgeRan = false;
-    const blockedBridge = new PGliteBridge(
+    const blockedBridge = new PGliteDuplex(
       makeMockPglite({
         runExclusive: async (fn) => {
           destroyedBridgeRan = true;
@@ -417,7 +417,7 @@ describe('PGliteBridge error paths', () => {
     expect(destroyedBridgeRan).toBe(false);
 
     let nextBridgeRan = false;
-    const nextBridge = new PGliteBridge(
+    const nextBridge = new PGliteDuplex(
       makeMockPglite({
         runExclusive: async (fn) => {
           nextBridgeRan = true;

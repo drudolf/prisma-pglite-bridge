@@ -4,14 +4,14 @@
  * @example
  * ```typescript
  * import { PGlite } from '@electric-sql/pglite';
- * import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
+ * import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
  * import { PrismaClient } from '@prisma/client';
  *
  * const pglite = new PGlite();
- * const adapter = await createPgliteAdapter({ pglite });
- * await pushMigrations(adapter, { migrationsPath: './prisma/migrations' });
+ * const bridge = await createPGliteBridge({ pglite });
+ * await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
  *
- * const prisma = new PrismaClient({ adapter: adapter.adapter });
+ * const prisma = new PrismaClient({ adapter: bridge.adapter });
  * ```
  *
  * @packageDocumentation
@@ -20,14 +20,14 @@
 // ── High-level API (most users only need this) ──
 export type {
   CloseFn,
-  CreatePgliteAdapterOptions,
-  PgliteAdapter,
+  CreatePGliteBridgeOptions,
+  PGliteBridge,
   ResetDbFn,
   ResetSnapshotFn,
   SnapshotDbFn,
   StatsFn,
-} from './create-pglite-adapter.ts';
-export { createPgliteAdapter } from './create-pglite-adapter.ts';
+} from './create-pglite-bridge.ts';
+export { createPGliteBridge } from './create-pglite-bridge.ts';
 export type { PushMigrationsOptions, PushMigrationsResult } from './migrations.ts';
 export { pushMigrations } from './migrations.ts';
 export type { PushSchemaOptions, PushSchemaResult, SchemaTarget } from './schema.ts';
@@ -53,18 +53,18 @@ export type { SyncToFsMode } from './create-pool.ts';
 
 /**
  * Build a `pg.Pool` backed by a caller-supplied PGlite instance. Each pool
- * connection bridges through its own {@link PGliteBridge} stream while
+ * connection bridges through its own {@link PGliteDuplex} stream while
  * sharing one PGlite WASM runtime and session lock.
  *
  * Use this low-level entry point when you want a raw `pg.Pool` (for example
  * to wire into `@prisma/adapter-pg` yourself). Most users should prefer
- * {@link createPgliteAdapter}, which layers schema setup and reset helpers
+ * {@link createPGliteBridge}, which layers schema setup and reset helpers
  * on top.
  */
 export const createPool = async (options: CreatePoolOptions): Promise<PoolResult> =>
   createBasePool(options);
-export { PGliteBridge } from './pglite-bridge.ts';
-export type { Stats, StatsBasic, StatsFull, StatsLevel } from './utils/adapter-stats.ts';
+export { PGliteDuplex } from './pglite-duplex.ts';
+export type { Stats, StatsBasic, StatsFull, StatsLevel } from './utils/bridge-stats.ts';
 // ── Diagnostics channels (public observability surface) ──
 export {
   LOCK_WAIT_CHANNEL,

@@ -8,21 +8,21 @@ import { SessionLock } from './utils/session-lock.ts';
 
 const createBridgePool = async (pglite: PGlite) => {
   await pglite.waitReady;
-  const adapterId = Symbol('adapter');
+  const bridgeId = Symbol('bridge');
   const poolConfig: BridgePoolConfig = {
     Client: BridgeClient,
     max: 1,
     [bridgeClientOptionsKey]: {
       pglite,
       sessionLock: new SessionLock(),
-      adapterId,
+      bridgeId,
       syncToFs: false,
     },
   };
   const pool = new pg.Pool(poolConfig);
 
   return {
-    adapterId,
+    bridgeId,
     close: () => pool.end(),
     pool,
   };
@@ -42,7 +42,7 @@ describe('BridgeClient', () => {
       [bridgeClientOptionsKey]: {
         pglite,
         sessionLock: new SessionLock(),
-        adapterId: Symbol('adapter'),
+        bridgeId: Symbol('bridge'),
         syncToFs: false,
       },
     });
@@ -78,7 +78,7 @@ describe('BridgeClient', () => {
       [bridgeClientOptionsKey]: {
         pglite,
         sessionLock: new SessionLock(),
-        adapterId: Symbol('adapter'),
+        bridgeId: Symbol('bridge'),
         syncToFs: false,
       },
     });

@@ -2,7 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTempDir, createTempFile, removeTempDir } from './__tests__/file-system.ts';
-import { createPgliteAdapter } from './create-pglite-adapter.ts';
+import { createPGliteBridge } from './create-pglite-bridge.ts';
 import { createPool } from './create-pool.ts';
 import { getMigrationSQL, pushMigrations, readMigrationFiles } from './migrations.ts';
 
@@ -210,20 +210,20 @@ describe('pushMigrations', () => {
     }
   });
 
-  const makeAdapter = async (dataDir?: string) => {
+  const makeBridge = async (dataDir?: string) => {
     const pglite = new PGlite(dataDir);
     await pglite.waitReady;
-    const adapter = await createPgliteAdapter({ pglite });
+    const bridge = await createPGliteBridge({ pglite });
     cleanups.push(async () => {
-      await adapter.close();
+      await bridge.close();
       await pglite.close();
     });
-    return { pglite, adapter };
+    return { pglite, bridge };
   };
 
   it('applies inline SQL and returns durationMs', async () => {
-    const { pglite, adapter } = await makeAdapter();
-    const result = await pushMigrations(adapter, {
+    const { pglite, bridge } = await makeBridge();
+    const result = await pushMigrations(bridge, {
       sql: 'CREATE TABLE "Demo" ("id" TEXT PRIMARY KEY);',
     });
 
@@ -244,8 +244,8 @@ describe('pushMigrations', () => {
         createTempDir('0001_init', migrationsPath).path,
       );
 
-      const { pglite, adapter } = await makeAdapter();
-      await pushMigrations(adapter, { migrationsPath });
+      const { pglite, bridge } = await makeBridge();
+      await pushMigrations(bridge, { migrationsPath });
 
       const { rows } = await pglite.query<{ count: string }>(
         `SELECT COUNT(*)::text AS count FROM information_schema.tables WHERE table_name = 'FromPath'`,
@@ -257,8 +257,8 @@ describe('pushMigrations', () => {
   });
 
   it('wraps PGlite exec failures with a descriptive error (in-memory)', async () => {
-    const { adapter } = await makeAdapter();
-    await expect(pushMigrations(adapter, { sql: 'NOT VALID SQL' })).rejects.toThrow(
+    const { bridge } = await makeBridge();
+    await expect(pushMigrations(bridge, { sql: 'NOT VALID SQL' })).rejects.toThrow(
       'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
     );
   });
@@ -268,21 +268,21 @@ describe('pushMigrations', () => {
     cleanups.push(async () => {
       removeTempDir(parent);
     });
-    const { adapter } = await makeAdapter(dataDir);
-    await expect(pushMigrations(adapter, { sql: 'NOT VALID SQL' })).rejects.toThrow(
+    const { bridge } = await makeBridge(dataDir);
+    await expect(pushMigrations(bridge, { sql: 'NOT VALID SQL' })).rejects.toThrow(
       `Failed to apply schema SQL to PGlite(dataDir=${dataDir}). Check your schema or migration files.`,
     );
   });
 
   it('preserves the PGlite cause when a multi-statement migration fails partway', async () => {
-    const { adapter } = await makeAdapter();
+    const { bridge } = await makeBridge();
     const sql = [
       'CREATE TABLE "Ok" ("id" TEXT PRIMARY KEY);',
       'CREATE TABLE "Broken" ("id" TEXT REFERENCES "Missing"("id"));',
       'CREATE TABLE "Unreached" ("id" TEXT PRIMARY KEY);',
     ].join('\n');
 
-    const error = await pushMigrations(adapter, { sql }).then(
+    const error = await pushMigrations(bridge, { sql }).then(
       () => undefined,
       (err: unknown) => err,
     );
@@ -307,7 +307,7 @@ describe('pushMigrations', () => {
     });
 
     await expect(pushMigrations(prismaPg, { sql: 'SELECT 1' })).rejects.toThrow(
-      /pushMigrations requires a PgliteAdapter target/,
+      /pushMigrations requires a PGliteBridge target/,
     );
   });
 });

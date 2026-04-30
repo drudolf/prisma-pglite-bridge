@@ -2,19 +2,19 @@ import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
 import type { Mock } from 'vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import setupTestSuite from './__tests__/adapter.ts';
+import setupTestSuite from './__tests__/bridge.ts';
 import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
 import { createMockPglite } from './__tests__/mocks.ts';
-import { createPgliteAdapter, emitAdapterLeakWarning } from './create-pglite-adapter.ts';
+import { createPGliteBridge, emitBridgeLeakWarning } from './create-pglite-bridge.ts';
 import { pushMigrations } from './migrations.ts';
 
-const { pglite, prisma, adapter } = await setupTestSuite({
+const { pglite, prisma, bridge } = await setupTestSuite({
   options: { statsLevel: 'basic' },
 });
 
-type CreatePgliteAdapterModule = typeof import('./create-pglite-adapter.ts');
+type CreatePGliteBridgeModule = typeof import('./create-pglite-bridge.ts');
 
-const loadCreatePgliteAdapterWithMocks = async ({
+const loadCreatePGliteBridgeWithMocks = async ({
   poolEnd = vi.fn().mockResolvedValue(undefined),
   prismaPg = vi.fn().mockImplementation(function MockPrismaPg() {
     return { mocked: true };
@@ -24,7 +24,7 @@ const loadCreatePgliteAdapterWithMocks = async ({
   prismaPg?: Mock;
 } = {}): Promise<{
   createPool: Mock;
-  module: CreatePgliteAdapterModule;
+  module: CreatePGliteBridgeModule;
   pool: { end: Mock };
   prismaPg: Mock;
 }> => {
@@ -32,7 +32,7 @@ const loadCreatePgliteAdapterWithMocks = async ({
   const pool = { end: poolEnd };
   const createPool = vi.fn().mockResolvedValue({
     pool,
-    adapterId: Symbol('mock'),
+    bridgeId: Symbol('mock'),
     close: vi.fn().mockResolvedValue(undefined),
   });
   vi.doMock('./create-pool.ts', () => ({
@@ -41,7 +41,7 @@ const loadCreatePgliteAdapterWithMocks = async ({
   vi.doMock('@prisma/adapter-pg', () => ({
     PrismaPg: prismaPg,
   }));
-  return { createPool, module: await import('./create-pglite-adapter.ts'), pool, prismaPg };
+  return { createPool, module: await import('./create-pglite-bridge.ts'), pool, prismaPg };
 };
 
 afterEach(() => {
@@ -50,10 +50,10 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe('createPgliteAdapter', () => {
+describe('createPGliteBridge', () => {
   it('rejects invalid stats levels', async () => {
     await expect(
-      createPgliteAdapter({
+      createPGliteBridge({
         pglite,
         statsLevel: 'invalid' as 'basic',
       }),
@@ -61,20 +61,20 @@ describe('createPgliteAdapter', () => {
   });
 
   it('returns telemetry when stats are enabled', async () => {
-    const stats = await adapter.stats();
+    const stats = await bridge.stats();
 
     expect(stats).toBeDefined();
     expect(stats?.statsLevel).toBe('basic');
   });
 
   it(`returns undefined stats when statsLevel is 'off'`, async () => {
-    const { close, stats } = await createPgliteAdapter({ pglite });
+    const { close, stats } = await createPGliteBridge({ pglite });
     await expect(stats()).resolves.toBeUndefined();
     close();
   });
 
   it('exposes the underlying pglite instance', () => {
-    expect(adapter.pglite).toBe(pglite);
+    expect(bridge.pglite).toBe(pglite);
   });
 
   it('resetDb clears user data', async () => {
@@ -82,16 +82,16 @@ describe('createPgliteAdapter', () => {
       data: { id: 'tenant-reset', name: 'Reset Tenant', slug: 'tenant-reset' },
     });
 
-    await adapter.resetDb();
+    await bridge.resetDb();
 
     await expect(prisma.tenant.count()).resolves.toBe(0);
   });
 
   it('reuses an initialized persistent dataDir without re-applying migrations', async () => {
-    const { parent, path: dataDir } = createTempDir('adapter-data');
+    const { parent, path: dataDir } = createTempDir('bridge-data');
 
     const firstPglite = new PGlite(dataDir);
-    const first = await createPgliteAdapter({ pglite: firstPglite, statsLevel: 'basic' });
+    const first = await createPGliteBridge({ pglite: firstPglite, statsLevel: 'basic' });
     await pushMigrations(first, {
       sql: 'CREATE TABLE IF NOT EXISTS "Tenant" ("id" TEXT PRIMARY KEY, "name" TEXT NOT NULL, "slug" TEXT NOT NULL)',
     });
@@ -106,7 +106,7 @@ describe('createPgliteAdapter', () => {
     await firstPglite.close();
 
     const secondPglite = new PGlite(dataDir);
-    const second = await createPgliteAdapter({ pglite: secondPglite, statsLevel: 'basic' });
+    const second = await createPGliteBridge({ pglite: secondPglite, statsLevel: 'basic' });
     const secondPrisma = new PrismaClient({ adapter: second.adapter });
 
     try {
@@ -128,13 +128,13 @@ describe('createPgliteAdapter', () => {
       data: { id: 'tenant-snap', name: 'Snapshot Tenant', slug: 'tenant-snap' },
     });
 
-    await adapter.snapshotDb();
+    await bridge.snapshotDb();
 
     await prisma.tenant.create({
       data: { id: 'tenant-extra', name: 'Extra Tenant', slug: 'tenant-extra' },
     });
 
-    await adapter.resetDb();
+    await bridge.resetDb();
 
     await expect(prisma.tenant.findMany({ orderBy: { id: 'asc' } })).resolves.toMatchObject([
       { id: 'tenant-snap', name: 'Snapshot Tenant', slug: 'tenant-snap' },
@@ -146,14 +146,14 @@ describe('createPgliteAdapter', () => {
       data: { id: 'tenant-drop', name: 'Drop Snapshot', slug: 'tenant-drop' },
     });
 
-    await adapter.snapshotDb();
-    await adapter.resetSnapshot();
+    await bridge.snapshotDb();
+    await bridge.resetSnapshot();
 
     await prisma.tenant.create({
       data: { id: 'tenant-after-drop', name: 'After Drop', slug: 'tenant-after-drop' },
     });
 
-    await adapter.resetDb();
+    await bridge.resetDb();
 
     await expect(prisma.tenant.count()).resolves.toBe(0);
   });
@@ -167,9 +167,9 @@ describe('createPgliteAdapter', () => {
         }),
     );
     const pglite = createMockPglite();
-    const { module } = await loadCreatePgliteAdapterWithMocks({ poolEnd });
-    const { createPgliteAdapter } = module;
-    const created = await createPgliteAdapter({ pglite });
+    const { module } = await loadCreatePGliteBridgeWithMocks({ poolEnd });
+    const { createPGliteBridge } = module;
+    const created = await createPGliteBridge({ pglite });
 
     const closingA = created.close();
     const closingB = created.close();
@@ -182,10 +182,10 @@ describe('createPgliteAdapter', () => {
 
   it('forwards syncToFs to createPool', async () => {
     const pglite = createMockPglite();
-    const { createPool, module, pool, prismaPg } = await loadCreatePgliteAdapterWithMocks();
-    const { createPgliteAdapter } = module;
+    const { createPool, module, pool, prismaPg } = await loadCreatePGliteBridgeWithMocks();
+    const { createPGliteBridge } = module;
 
-    const created = await createPgliteAdapter({ pglite, syncToFs: false });
+    const { adapter, close } = await createPGliteBridge({ pglite, syncToFs: false });
 
     expect(createPool).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -194,20 +194,20 @@ describe('createPgliteAdapter', () => {
       }),
     );
     expect(prismaPg).toHaveBeenCalledWith(pool);
-    expect(created.adapter).toEqual({ mocked: true });
+    expect(adapter).toEqual({ mocked: true });
 
-    await created.close();
+    await close();
   });
 
-  it('emitAdapterLeakWarning emits a typed process warning', () => {
+  it('emitBridgeLeakWarning emits a typed process warning', () => {
     const spy = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
     try {
-      emitAdapterLeakWarning();
+      emitBridgeLeakWarning();
       expect(spy).toHaveBeenCalledTimes(1);
       const [message, options] = spy.mock.calls[0] ?? [];
       expect(String(message)).toContain('garbage-collected');
       expect(String(message)).toContain('close()');
-      expect(options).toEqual({ type: 'PgliteAdapterLeakWarning' });
+      expect(options).toEqual({ type: 'PGliteBridgeLeakWarning' });
     } finally {
       spy.mockRestore();
     }
@@ -218,9 +218,9 @@ describe('createPgliteAdapter', () => {
     const unregisterSpy = vi.spyOn(FinalizationRegistry.prototype, 'unregister');
     try {
       const pglite = createMockPglite();
-      const { module } = await loadCreatePgliteAdapterWithMocks();
-      const { createPgliteAdapter } = module;
-      const created = await createPgliteAdapter({ pglite });
+      const { module } = await loadCreatePGliteBridgeWithMocks();
+      const { createPGliteBridge } = module;
+      const created = await createPGliteBridge({ pglite });
 
       expect(registerSpy).toHaveBeenCalled();
       const registeredToken = registerSpy.mock.calls.at(-1)?.[2];

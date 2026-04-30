@@ -1,7 +1,7 @@
 /**
  * Pool factory — creates a pg.Pool backed by a caller-supplied PGlite instance.
  *
- * Each pool connection gets its own PGliteBridge stream, all sharing the
+ * Each pool connection gets its own PGliteDuplex stream, all sharing the
  * same PGlite WASM instance. Pools with multiple connections also share a
  * SessionLock. The session lock ensures transaction isolation: when one
  * bridge starts a transaction (BEGIN), it gets exclusive PGlite access until
@@ -11,7 +11,7 @@
 import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { BridgeClient, type BridgePoolConfig, bridgeClientOptionsKey } from './bridge-client.ts';
-import type { TelemetrySink } from './utils/adapter-stats.ts';
+import type { TelemetrySink } from './utils/bridge-stats.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
 export type SyncToFsMode = 'auto' | boolean;
@@ -33,7 +33,7 @@ export interface CreatePoolOptions {
    *
    * PGlite's WASM runtime executes queries serially behind a single mutex.
    * Raising `max` above 1 therefore does not add parallelism — queries still
-   * run one at a time — and each extra connection costs a full `PGliteBridge`
+   * run one at a time — and each extra connection costs a full `PGliteDuplex`
    * (its framers and scratch buffers) plus shared session-lock coordination
    * in memory. Leave this at `1` unless your code specifically needs to check
    * out multiple `pg` clients or you are deliberately exercising wait-queue
@@ -43,10 +43,10 @@ export interface CreatePoolOptions {
 
   /**
    * Identity tag published with every diagnostics-channel event. Subscribers
-   * filter on this to distinguish events from different adapters in the
-   * same process. A fresh `Symbol('adapter')` is generated if omitted.
+   * filter on this to distinguish events from different bridges in the
+   * same process. A fresh `Symbol('bridge')` is generated if omitted.
    */
-  adapterId?: symbol;
+  bridgeId?: symbol;
 
   /**
    * Filesystem sync policy for bridge-driven wire-protocol calls.
@@ -70,11 +70,11 @@ export interface PoolResult {
 
   /**
    * Identity tag carried on every `QUERY_CHANNEL` / `LOCK_WAIT_CHANNEL`
-   * event this pool produces. Matches the `adapterId` option if supplied,
+   * event this pool produces. Matches the `bridgeId` option if supplied,
    * otherwise a freshly minted symbol. Filter on it from external
    * subscribers to isolate this pool's events.
    */
-  adapterId: symbol;
+  bridgeId: symbol;
 
   /** Shut down the pool. Does not close the caller-owned PGlite instance. */
   close: () => Promise<void>;
@@ -83,7 +83,7 @@ export interface PoolResult {
 /**
  * Creates a pg.Pool where every connection is an in-process PGlite bridge.
  *
- * Most users should prefer {@link createPgliteAdapter}, which wraps this
+ * Most users should prefer {@link createPGliteBridge}, which wraps this
  * function and also handles schema application and reset/snapshot lifecycle.
  *
  * ```typescript
@@ -98,11 +98,11 @@ export interface PoolResult {
  * const prisma = new PrismaClient({ adapter });
  * ```
  *
- * @see {@link createPgliteAdapter} for the higher-level API with schema management.
+ * @see {@link createPGliteBridge} for the higher-level API with schema management.
  */
 export const createPool = async (options: CreatePoolOptions): Promise<PoolResult> => {
   const { pglite, max = 1, telemetry } = options;
-  const adapterId = options.adapterId ?? Symbol('adapter');
+  const bridgeId = options.bridgeId ?? Symbol('bridge');
   const syncToFs = resolveSyncToFs(pglite, options.syncToFs);
 
   await pglite.waitReady;
@@ -115,7 +115,7 @@ export const createPool = async (options: CreatePoolOptions): Promise<PoolResult
     [bridgeClientOptionsKey]: {
       pglite,
       sessionLock,
-      adapterId,
+      bridgeId,
       telemetry,
       syncToFs,
     },
@@ -123,5 +123,5 @@ export const createPool = async (options: CreatePoolOptions): Promise<PoolResult
   const pool = new pg.Pool(poolConfig);
   const close = () => pool.end();
 
-  return { pool, adapterId, close };
+  return { pool, bridgeId, close };
 };

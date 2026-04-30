@@ -33,7 +33,7 @@ afterAll(async () => {
 });
 
 describe('QUERY_CHANNEL end-to-end', () => {
-  it('publishes an event with the pool adapterId, durationMs, succeeded:true on a successful query', async () => {
+  it('publishes an event with the pool bridgeId, durationMs, succeeded:true on a successful query', async () => {
     const events: QueryEvent[] = [];
     const listener = (msg: unknown) => events.push(msg as QueryEvent);
     queryCh.subscribe(listener);
@@ -41,7 +41,7 @@ describe('QUERY_CHANNEL end-to-end', () => {
       await queryPool.pool.query('SELECT 1 AS n');
       await new Promise((r) => setImmediate(r));
 
-      const mine = events.filter((e) => e.adapterId === queryPool.adapterId);
+      const mine = events.filter((e) => e.bridgeId === queryPool.bridgeId);
       expect(mine.length).toBeGreaterThan(0);
       const last = mine[mine.length - 1];
       expect(last).toBeDefined();
@@ -64,7 +64,7 @@ describe('QUERY_CHANNEL end-to-end', () => {
       ).rejects.toBeDefined();
       await new Promise((r) => setImmediate(r));
 
-      const mine = events.filter((e) => e.adapterId === queryPool.adapterId);
+      const mine = events.filter((e) => e.bridgeId === queryPool.bridgeId);
       expect(mine.length).toBeGreaterThan(0);
       expect(mine.some((e) => e.succeeded === false)).toBe(true);
     } finally {
@@ -72,7 +72,7 @@ describe('QUERY_CHANNEL end-to-end', () => {
     }
   });
 
-  it('filters across adapters: each pool sees only its own events after filtering', async () => {
+  it('filters across bridges: each pool sees only its own events after filtering', async () => {
     const events: QueryEvent[] = [];
     const listener = (msg: unknown) => events.push(msg as QueryEvent);
     queryCh.subscribe(listener);
@@ -81,12 +81,12 @@ describe('QUERY_CHANNEL end-to-end', () => {
       await queryPoolB.pool.query('SELECT 1');
       await new Promise((r) => setImmediate(r));
 
-      const fromA = events.filter((e) => e.adapterId === queryPool.adapterId);
-      const fromB = events.filter((e) => e.adapterId === queryPoolB.adapterId);
+      const fromA = events.filter((e) => e.bridgeId === queryPool.bridgeId);
+      const fromB = events.filter((e) => e.bridgeId === queryPoolB.bridgeId);
       expect(fromA.length).toBeGreaterThan(0);
       expect(fromB.length).toBeGreaterThan(0);
-      for (const e of fromA) expect(e.adapterId).toBe(queryPool.adapterId);
-      for (const e of fromB) expect(e.adapterId).toBe(queryPoolB.adapterId);
+      for (const e of fromA) expect(e.bridgeId).toBe(queryPool.bridgeId);
+      for (const e of fromB) expect(e.bridgeId).toBe(queryPoolB.bridgeId);
     } finally {
       queryCh.unsubscribe(listener);
     }
@@ -112,7 +112,7 @@ describe('LOCK_WAIT_CHANNEL end-to-end', () => {
         a.release();
       }
 
-      const mine = events.filter((e) => e.adapterId === lockWaitPool.adapterId);
+      const mine = events.filter((e) => e.bridgeId === lockWaitPool.bridgeId);
       expect(mine.length).toBeGreaterThan(0);
       const waited = mine.find((e) => e.durationMs > 0);
       expect(waited).toBeDefined();

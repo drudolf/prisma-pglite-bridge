@@ -7,27 +7,27 @@
  * everything reachable through the connection.
  *
  * The schema engine WASM module is dynamically imported so consumers
- * who only use the adapter never load it.
+ * who only use the bridge never load it.
  *
  * @example
  * ```typescript
  * import { PGlite } from '@electric-sql/pglite';
- * import { createPgliteAdapter, pushSchema } from 'prisma-pglite-bridge';
+ * import { createPGliteBridge, pushSchema } from 'prisma-pglite-bridge';
  *
  * const pglite = new PGlite();
- * const adapter = await createPgliteAdapter({ pglite });
+ * const bridge = await createPGliteBridge({ pglite });
  *
- * await pushSchema(adapter, {
+ * await pushSchema(bridge, {
  *   schema: await fs.readFile('prisma/schema.prisma', 'utf8'),
  * });
  * ```
  */
 import type { PrismaPg } from '@prisma/adapter-pg';
 
-import type { PgliteAdapter } from './create-pglite-adapter.ts';
+import type { PGliteBridge } from './create-pglite-bridge.ts';
 
-/** A target database adapter. Either the wrapper from {@link createPgliteAdapter} or a raw {@link PrismaPg}. */
-export type SchemaTarget = PgliteAdapter | PrismaPg;
+/** A schema-apply target. Either a {@link PGliteBridge} from {@link createPGliteBridge} or a raw {@link PrismaPg}. */
+export type SchemaTarget = PGliteBridge | PrismaPg;
 
 export interface PushSchemaOptions {
   /** Inline Prisma schema source. */
@@ -63,8 +63,7 @@ export interface PushSchemaResult {
   unexecutable: string[];
 }
 
-const unwrap = (target: SchemaTarget): PrismaPg =>
-  'adapter' in target ? (target.adapter as PrismaPg) : target;
+const unwrap = (target: SchemaTarget): PrismaPg => ('adapter' in target ? target.adapter : target);
 
 const bindAdapter = async (target: SchemaTarget): Promise<object> => {
   const { bindMigrationAwareSqlAdapterFactory } = await import('@prisma/driver-adapter-utils');

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockPglite } from '../__tests__/mocks.ts';
-import { AdapterStats, QUERY_DURATION_WINDOW_SIZE } from './adapter-stats.ts';
+import { BridgeStats, QUERY_DURATION_WINDOW_SIZE } from './bridge-stats.ts';
 
-let pglite: Parameters<AdapterStats['snapshot']>[0];
+let pglite: Parameters<BridgeStats['snapshot']>[0];
 
-const withStats = async (level: 'basic' | 'full', fn: (c: AdapterStats) => Promise<void>) => {
-  const c = new AdapterStats(level);
+const withStats = async (level: 'basic' | 'full', fn: (c: BridgeStats) => Promise<void>) => {
+  const c = new BridgeStats(level);
   await fn(c);
 };
 
@@ -17,7 +17,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('AdapterStats — percentile math', () => {
+describe('BridgeStats — percentile math', () => {
   it('computes p50/p95/max for [10,20,30,40,50]', async () => {
     await withStats('basic', async (c) => {
       for (const d of [10, 20, 30, 40, 50]) c.recordQuery(d, true);
@@ -52,7 +52,7 @@ describe('AdapterStats — percentile math', () => {
     const hrtimeSpy = vi.spyOn(process.hrtime, 'bigint');
     hrtimeSpy.mockReturnValueOnce(1_000_000_000n);
 
-    const c = new AdapterStats('basic');
+    const c = new BridgeStats('basic');
     hrtimeSpy.mockReturnValueOnce(1_005_000_000n);
     const s = await c.snapshot(pglite);
     expect(s.queryCount).toBe(0);
@@ -87,7 +87,7 @@ describe('AdapterStats — percentile math', () => {
   });
 });
 
-describe('AdapterStats — counters', () => {
+describe('BridgeStats — counters', () => {
   it('recordQuery is additive across calls', async () => {
     await withStats('basic', async (c) => {
       c.recordQuery(10, true);
@@ -122,7 +122,7 @@ describe('AdapterStats — counters', () => {
   });
 });
 
-describe('AdapterStats — snapshot level gating', () => {
+describe('BridgeStats — snapshot level gating', () => {
   it(`'basic': statsLevel === 'basic' and 'full'-only fields are undefined`, async () => {
     await withStats('basic', async (c) => {
       const s = await c.snapshot(pglite);
@@ -148,7 +148,7 @@ describe('AdapterStats — snapshot level gating', () => {
   });
 });
 
-describe('AdapterStats — pglite query robustness', () => {
+describe('BridgeStats — pglite query robustness', () => {
   it('snapshot parses dbSizeBytes from the single column of rows[0]', async () => {
     await withStats('basic', async (c) => {
       vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 54321n }] });
@@ -170,9 +170,9 @@ describe('AdapterStats — pglite query robustness', () => {
   });
 });
 
-describe('AdapterStats — freeze()', () => {
+describe('BridgeStats — freeze()', () => {
   it('post-freeze snapshots use cached values and do not call pglite.query', async () => {
-    const c = new AdapterStats('basic');
+    const c = new BridgeStats('basic');
     vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 99999n }] });
     await c.freeze(pglite, process.hrtime.bigint());
     const callsAfterFreeze = vi.mocked(pglite.query).mock.calls.length;
@@ -189,7 +189,7 @@ describe('AdapterStats — freeze()', () => {
     const hrtimeSpy = vi.spyOn(process.hrtime, 'bigint');
     hrtimeSpy.mockReturnValueOnce(1_000_000_000n);
 
-    const c = new AdapterStats('basic');
+    const c = new BridgeStats('basic');
     const earlyTimestamp = 1_010_000_000n;
     await c.freeze(pglite, earlyTimestamp);
     const s = await c.snapshot(pglite);
@@ -197,7 +197,7 @@ describe('AdapterStats — freeze()', () => {
   });
 
   it('seals dbSizeFrozen even when queryDbSize rejects', async () => {
-    const c = new AdapterStats('basic');
+    const c = new BridgeStats('basic');
     vi.mocked(pglite.query).mockRejectedValue(new Error('boom'));
 
     await c.freeze(pglite, process.hrtime.bigint());
@@ -210,7 +210,7 @@ describe('AdapterStats — freeze()', () => {
   });
 
   it('freeze is idempotent after the instance is already frozen', async () => {
-    const c = new AdapterStats('basic');
+    const c = new BridgeStats('basic');
     vi.mocked(pglite.query).mockResolvedValueOnce({ fields: [], rows: [{ size: 123n }] });
 
     await c.freeze(pglite, process.hrtime.bigint());
@@ -226,7 +226,7 @@ describe('AdapterStats — freeze()', () => {
 
   it('resolves within the timeout when pglite.query hangs, and leaves dbSizeBytes undefined', async () => {
     vi.useFakeTimers();
-    const c = new AdapterStats('basic');
+    const c = new BridgeStats('basic');
     try {
       vi.mocked(pglite.query).mockReturnValue(new Promise(() => {}) as Promise<never>);
 
@@ -242,7 +242,7 @@ describe('AdapterStats — freeze()', () => {
   });
 
   it('ignores recordQuery / recordLockWait / incrementResetDb after freeze', async () => {
-    const c = new AdapterStats('full');
+    const c = new BridgeStats('full');
     c.recordQuery(10, true);
     c.recordLockWait(5);
     c.incrementResetDb();
@@ -263,7 +263,7 @@ describe('AdapterStats — freeze()', () => {
   });
 });
 
-describe(`AdapterStats — 'full' processRssPeakBytes`, () => {
+describe(`BridgeStats — 'full' processRssPeakBytes`, () => {
   it('reads process.resourceUsage().maxRSS and converts kilobytes to bytes', async () => {
     const resourceSpy = vi.spyOn(process, 'resourceUsage').mockReturnValue({
       userCPUTime: 0,
@@ -310,7 +310,7 @@ describe(`AdapterStats — 'full' processRssPeakBytes`, () => {
   });
 });
 
-describe('AdapterStats — queryDbSize robustness', () => {
+describe('BridgeStats — queryDbSize robustness', () => {
   it('returns undefined when pg_database_size yields a non-numeric value', async () => {
     await withStats('basic', async (c) => {
       vi.mocked(pglite.query).mockResolvedValueOnce({
@@ -339,7 +339,7 @@ describe('AdapterStats — queryDbSize robustness', () => {
   });
 });
 
-describe(`AdapterStats — 'full' session-lock accumulation`, () => {
+describe(`BridgeStats — 'full' session-lock accumulation`, () => {
   it('recordLockWait(5), (15), (10) produces total=30, max=15, count=3, avg=10', async () => {
     await withStats('full', async (c) => {
       c.recordLockWait(5);
@@ -367,9 +367,9 @@ describe(`AdapterStats — 'full' session-lock accumulation`, () => {
   });
 });
 
-describe('AdapterStats — freeze preserves cached state', () => {
+describe('BridgeStats — freeze preserves cached state', () => {
   it(`freeze() retains cached 'full' state across snapshots`, async () => {
-    const c = new AdapterStats('full');
+    const c = new BridgeStats('full');
     c.recordQuery(11, true);
     c.recordLockWait(7);
     await c.freeze(pglite, process.hrtime.bigint());
