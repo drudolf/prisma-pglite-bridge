@@ -34,6 +34,17 @@ export default defineConfig({
           execArgv: ['--expose-gc'],
         },
       }),
+      defineProject({
+        extends: true,
+        test: {
+          name: 'integration',
+          include: ['src/__tests__/integration/**/*.test.ts'],
+          setupFiles: ['./src/__tests__/integration/setup.ts'],
+          isolate: false,
+          pool: 'forks',
+          maxWorkers: 4,
+        },
+      }),
     ],
   },
 });
