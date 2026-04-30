@@ -38,6 +38,11 @@ const READY_FOR_QUERY = 0x5a; // Z — 6 bytes: Z + length(5) + status
 const ERROR_RESPONSE = 0x45; // E — signals in-band SQL error (not a JS throw)
 const ROW_DESCRIPTION = 0x54; // T — column metadata; rewritten to widen oid 18
 
+// ReadyForQuery transaction status bytes (RFC: pg wire protocol §53.7)
+const RFQ_STATUS_IDLE = 0x49; // 'I' — no transaction
+const RFQ_STATUS_IN_TRANSACTION = 0x54; // 'T' — in transaction block
+const RFQ_STATUS_FAILED = 0x45; // 'E' — failed transaction block
+
 // pg_catalog system columns (pg_constraint.contype, pg_type.typtype, pg_class.relkind,
 // etc.) report type oid 18 ("char", 1-byte). @prisma/adapter-pg's fieldToColumnType
 // has no case for oid 18 and throws UnsupportedNativeDataType. The bytes on the wire
@@ -605,6 +610,19 @@ export class PGliteDuplex extends Duplex {
   private drainQueue: Array<(error?: Error | null) => void> = [];
   /** Buffered EQP messages awaiting Sync */
   private pipeline: Uint8Array[] = [];
+  /** Last RFQ status byte observed in a backend response — independent of
+   *  SessionLock so rollback works for max=1 pools (no lock) and survives
+   *  the in-flight BEGIN race (lock owner is set only on RFQ arrival). */
+  private lastSeenRfqStatus?: number;
+  /** In-flight `op()` from the runExclusive callback, if any. Set only once
+   *  the callback has actually entered `op()` — a queued callback that fires
+   *  after `tornDown` returns immediately and is never registered here, so
+   *  teardown does not block on its slot. Rollback awaits this to catch the
+   *  RFQ from a BEGIN that started before destroy. */
+  private currentPGliteCall?: Promise<unknown>;
+  /** Memoized rollback so concurrent teardown paths (e.g., `_final` then
+   *  `_destroy`) don't issue duplicate `ROLLBACK` statements. */
+  private rollbackPromise?: Promise<void>;
 
   /**
    * @param pglite       PGlite instance to bridge to. The caller owns its lifecycle.
@@ -689,25 +707,42 @@ export class PGliteDuplex extends Duplex {
   }
 
   override _final(callback: (error?: Error | null) => void): void {
-    this.sessionLock?.release(this.duplexId);
-    this.push(null);
-    callback();
+    // Forced disconnects (raw socket close, no Terminate) reach us here. Roll
+    // back any open transaction before releasing the session lock — otherwise
+    // the next bridge can run queries while PGlite is still in 'T' state and
+    // observe rows from the dead transaction.
+    this.rollbackIfInTransaction()
+      .catch(() => {})
+      .then(() => {
+        this.sessionLock?.release(this.duplexId);
+        this.push(null);
+        callback();
+      });
   }
 
   override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
     this.tornDown = true;
     this.pipeline.length = 0;
     this.input.clear();
-    this.sessionLock?.cancel(this.duplexId, error ?? new Error('Bridge destroyed'));
 
-    // Flush pending write callbacks so pg.Client doesn't hang
+    // Fail queued write callbacks promptly — rollback below may await an
+    // in-flight pglite call, and pg.Client must not see those writes resolve
+    // successfully when the bridge is being destroyed.
+    const destroyError = error ?? new Error('Bridge destroyed');
     const callbacks = this.drainQueue;
     this.drainQueue = [];
     for (const cb of callbacks) {
-      cb(error);
+      cb(destroyError);
     }
 
-    callback(error);
+    // Roll back BEFORE cancelling the session lock — cancel() unblocks waiters,
+    // so any rollback after that would race with the next bridge's queries.
+    this.rollbackIfInTransaction()
+      .catch(() => {})
+      .then(() => {
+        this.sessionLock?.cancel(this.duplexId, destroyError);
+        callback(error);
+      });
   }
 
   // ── Message processing ──
@@ -787,11 +822,37 @@ export class PGliteDuplex extends Duplex {
 
     const session = this.acquireSession();
     if (session) await session;
-    await this.pglite.runExclusive(async () => {
+    await this.runUnderRunExclusive(async () => {
       await this.streamProtocol(message, { detectErrors: false, suppressIntermediateRfq: false });
     });
 
     this.phase = 'ready';
+  }
+
+  /**
+   * Wrap a `pglite.runExclusive` call so the in-flight operation is tracked
+   * via `currentPGliteCall`. Skip the work entirely if teardown happened
+   * before our turn — otherwise a queued BEGIN would still run against PGlite
+   * after `_destroy` has already returned, leaking 'T' state into the next
+   * bridge's session.
+   *
+   * `currentPGliteCall` is set only once `op()` actually starts. A callback
+   * that fires after `tornDown` returns immediately and was never observed by
+   * rollback — there is no RFQ state to wait for, so blocking teardown on the
+   * queued no-op would needlessly stall stream close (and any SessionLock
+   * waiters behind it).
+   */
+  private async runUnderRunExclusive(op: () => Promise<void>): Promise<void> {
+    await this.pglite.runExclusive(async () => {
+      if (this.tornDown) return;
+      const opPromise = op();
+      this.currentPGliteCall = opPromise;
+      try {
+        await opPromise;
+      } finally {
+        this.currentPGliteCall = undefined;
+      }
+    });
   }
 
   /**
@@ -817,6 +878,7 @@ export class PGliteDuplex extends Duplex {
       const msgType = message[0] ?? 0;
 
       if (msgType === TERMINATE) {
+        await this.rollbackIfInTransaction();
         this.sessionLock?.release(this.duplexId);
         this.push(null);
         return;
@@ -881,7 +943,7 @@ export class PGliteDuplex extends Duplex {
     if (!wantTiming) {
       const session = this.acquireSession();
       if (session) await session;
-      await this.pglite.runExclusive(async () => {
+      await this.runUnderRunExclusive(async () => {
         await op(false);
       });
       return;
@@ -904,7 +966,7 @@ export class PGliteDuplex extends Duplex {
 
     let succeeded = true;
     try {
-      await this.pglite.runExclusive(async () => {
+      await this.runUnderRunExclusive(async () => {
         succeeded = await op(detectErrors);
       });
     } catch (err) {
@@ -954,19 +1016,24 @@ export class PGliteDuplex extends Duplex {
         if (detectErrors) errSeen = true;
       },
       onReadyForQuery: (status) => {
+        this.lastSeenRfqStatus = status;
         if (this.sessionLock) {
           this.sessionLock.updateStatus(this.duplexId, status);
         }
       },
     });
 
+    // Let framer.write run even during teardown so RFQ tracking stays current.
+    // The onChunk handler above already gates `this.push` on tornDown to avoid
+    // writing to a dead socket — keeping framer state up to date here is what
+    // makes rollback decisions correct after a forced destroy. The in-flight
+    // pglite call is tracked from inside the runExclusive callback in
+    // `runUnderRunExclusive`, so a queued-but-not-yet-started callback never
+    // pins teardown.
     await this.pglite.execProtocolRawStream(message, {
       syncToFs: this.syncToFs,
       onRawData: (chunk: Uint8Array) => {
-        /* c8 ignore next — race-only: tornDown becomes true mid-stream */
-        if (!this.tornDown) {
-          framer.write(chunk);
-        }
+        framer.write(chunk);
       },
     });
 
@@ -978,5 +1045,51 @@ export class PGliteDuplex extends Duplex {
 
   private acquireSession(): Promise<void> | undefined {
     return this.sessionLock?.acquire(this.duplexId);
+  }
+
+  /**
+   * Issue `ROLLBACK` against PGlite when the duplex's last observed
+   * ReadyForQuery status indicates an open transaction (`T` or `E`). Safe
+   * to call when no transaction is active — resolves with no effect.
+   *
+   * Transaction detection lives on the duplex (not on `SessionLock`) so it
+   * works for both locked pools (max>1, TCP server) and standalone duplexes
+   * (max=1 pool, no lock). When a `SessionLock` is present, ownership is an
+   * additional safety check — a duplex whose lock was released via an error
+   * path must not roll back another bridge's transaction.
+   *
+   * Used by `_final`, `_destroy`, and the Terminate handler. PGlite is
+   * single-session, so leftover `T` state would otherwise leak into the
+   * next connection.
+   */
+  async rollbackIfInTransaction(): Promise<void> {
+    // Memoize so concurrent teardown paths (e.g., `_final` racing `_destroy`)
+    // share one ROLLBACK instead of issuing duplicates.
+    if (this.rollbackPromise !== undefined) return this.rollbackPromise;
+    this.rollbackPromise = this.runRollback();
+    return this.rollbackPromise;
+  }
+
+  private async runRollback(): Promise<void> {
+    // Wait for any in-flight pglite call so its RFQ has been processed —
+    // otherwise destroying mid-BEGIN would skip cleanup because the status
+    // hasn't transitioned to 'T' yet.
+    if (this.currentPGliteCall) {
+      await this.currentPGliteCall.catch(() => undefined);
+    }
+
+    const status = this.lastSeenRfqStatus;
+    if (status !== RFQ_STATUS_IN_TRANSACTION && status !== RFQ_STATUS_FAILED) return;
+
+    if (this.sessionLock !== undefined && !this.sessionLock.isOwner(this.duplexId)) return;
+
+    try {
+      // pglite.query acquires runExclusive internally — do not wrap it.
+      await this.pglite.query('ROLLBACK');
+      this.lastSeenRfqStatus = RFQ_STATUS_IDLE;
+    } catch {
+      // Best-effort cleanup. PGlite may reject ROLLBACK (e.g., already
+      // auto-rolled back during shutdown) — nothing recoverable here.
+    }
   }
 }

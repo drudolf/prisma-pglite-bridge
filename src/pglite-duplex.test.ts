@@ -433,6 +433,110 @@ describe('PGliteDuplex error paths', () => {
 
     nextBridge.destroy();
   });
+
+  it('skips a queued runExclusive callback when destroyed before it fires', async () => {
+    // Race: pglite.runExclusive enqueues our callback, _destroy then flips
+    // tornDown before the callback fires. Without the inner guard the queued
+    // op would still execute and leak BEGIN state into the next bridge.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let execCalled = false;
+    const mock = makeMockPglite({
+      runExclusive: async (fn) => {
+        await gate;
+        await fn();
+      },
+      execProtocolRawStream: async () => {
+        execCalled = true;
+      },
+    });
+    const bridge = new PGliteDuplex(mock);
+    bridge.on('error', () => {});
+
+    const writeP = writeAndAwait(bridge, startupBytes());
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const destroyErr = new Error('forced destroy');
+    bridge.destroy(destroyErr);
+    await expect(writeP).resolves.toBe(destroyErr);
+
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(execCalled).toBe(false);
+  });
+
+  it('does not block stream teardown on a queued runExclusive callback', async () => {
+    // pglite.runExclusive may have accepted our callback but not fired it yet
+    // (other queries ahead in PGlite's queue). _destroy must not block on the
+    // queued no-op — close needs to proceed promptly so SessionLock waiters
+    // and the surrounding server can move on.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const mock = makeMockPglite({
+      runExclusive: async (fn) => {
+        await gate;
+        await fn();
+      },
+    });
+    const bridge = new PGliteDuplex(mock);
+    bridge.on('error', () => {});
+
+    void writeAndAwait(bridge, startupBytes());
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const closed = new Promise<void>((resolve) => bridge.once('close', resolve));
+    bridge.destroy(new Error('forced'));
+
+    // close must fire without us touching `release`. If _destroy awaited the
+    // queued callback, this would only resolve once the gate was released.
+    await Promise.race([
+      closed,
+      new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('teardown blocked on queued runExclusive')), 200),
+      ),
+    ]);
+
+    release();
+  });
+
+  it('issues only one ROLLBACK across concurrent _final / _destroy calls', async () => {
+    // _final and _destroy can both reach rollbackIfInTransaction nearly at
+    // once when a client disconnects mid-transaction. Memoization keeps it to
+    // a single ROLLBACK; without it PGlite would see two and reject the second.
+    const queryCalls: string[] = [];
+    const mock = {
+      runExclusive: async (fn: () => Promise<unknown>) => {
+        await fn();
+      },
+      execProtocolRawStream: async () => {},
+      query: async (sql: string) => {
+        queryCalls.push(sql);
+        return { rows: [] };
+      },
+    } as unknown as PGlite;
+    const bridge = new PGliteDuplex(mock);
+    bridge.on('error', () => {});
+
+    // Force the duplex into 'T' state — the wire path would normally set this
+    // via the framer's onReadyForQuery, but the mock execProtocolRawStream
+    // emits no bytes.
+    (bridge as unknown as { lastSeenRfqStatus: number }).lastSeenRfqStatus = 0x54;
+
+    await Promise.all([
+      bridge.rollbackIfInTransaction(),
+      bridge.rollbackIfInTransaction(),
+      bridge.rollbackIfInTransaction(),
+    ]);
+
+    expect(queryCalls.filter((sql) => sql === 'ROLLBACK').length).toBe(1);
+
+    bridge.destroy();
+  });
 });
 
 describe('BackendMessageFramer', () => {

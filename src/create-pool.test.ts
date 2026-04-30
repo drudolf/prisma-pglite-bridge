@@ -116,6 +116,37 @@ describe('createPool — syncToFs', () => {
   });
 });
 
+describe('createPool — rollback on forced client release', () => {
+  it('rolls back uncommitted state when a max=1 client is destroyed mid-transaction', async () => {
+    // max=1 → no SessionLock. Rollback must still run on destroy, otherwise
+    // PGlite is left in 'T' state and the next connection inherits it.
+    const local = new PGlite();
+    const { pool, close } = await createPool({ pglite: local });
+    try {
+      const c1 = await pool.connect();
+      await c1.query('CREATE TABLE rollback_t (id int)');
+      await c1.query('BEGIN');
+      await c1.query('INSERT INTO rollback_t VALUES (1)');
+      // release(true) → pg.Pool destroys the underlying BridgeClient/duplex
+      // without sending Terminate. Cleanup must come from PGliteDuplex._destroy.
+      c1.release(new Error('forced release'));
+
+      const c2 = await pool.connect();
+      try {
+        const r = await c2.query<{ count: string }>(
+          'SELECT count(*)::text AS count FROM rollback_t',
+        );
+        expect(r.rows[0]?.count).toBe('0');
+      } finally {
+        c2.release();
+      }
+    } finally {
+      await close();
+      await local.close();
+    }
+  });
+});
+
 // The framer rewrites RowDescription `oid 18` ("char") → `oid 25` (text) only
 // when the field originates from a pg_catalog relation. User-defined "char"
 // columns are intentionally left untouched: the bridge must not relabel a
