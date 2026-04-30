@@ -55,6 +55,11 @@ export class SessionLock {
     });
   }
 
+  /** Returns `true` if `id` currently holds the session (e.g., is mid-transaction). */
+  isOwner(id: BridgeId): boolean {
+    return this.owner === id;
+  }
+
   /**
    * Update session state based on the ReadyForQuery status byte.
    * Call after every PGlite response that contains RFQ.

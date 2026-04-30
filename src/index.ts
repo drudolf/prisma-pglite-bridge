@@ -63,6 +63,8 @@ export type { SyncToFsMode } from './create-pool.ts';
  */
 export const createPool = async (options: CreatePoolOptions): Promise<PoolResult> =>
   createBasePool(options);
+export type { CreatePGliteServerOptions, PGliteServer } from './create-pglite-server.ts';
+export { createPGliteServer } from './create-pglite-server.ts';
 export { PGliteDuplex } from './pglite-duplex.ts';
 export type { Stats, StatsBasic, StatsFull, StatsLevel } from './utils/bridge-stats.ts';
 // ── Diagnostics channels (public observability surface) ──
