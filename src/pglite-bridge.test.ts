@@ -938,6 +938,22 @@ describe('BackendMessageFramer', () => {
     expect(emitted.length).toBe(frame.length + RFQ_FAILED.length);
     expect(readField(emitted, 0)).toEqual({ name: 'contype', oid: 25, size: -1 });
   });
+
+  it('drops a held intermediate RFQ before emitting a chunked rewritten RowDescription', () => {
+    const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
+    const splitAt = Math.floor(frame.length / 2);
+    expect(splitAt).toBeGreaterThan(5); // ensure the split lands inside the payload
+    const { framer, outputs, statuses } = makeHarness(true);
+    framer.write(RFQ_IDLE);
+    framer.write(frame.subarray(0, splitAt));
+    framer.write(frame.subarray(splitAt));
+    framer.write(RFQ_FAILED);
+    framer.flush();
+    expect(statuses).toEqual([0x49, 0x45]);
+    const emitted = collect(outputs);
+    expect(emitted.length).toBe(frame.length + RFQ_FAILED.length);
+    expect(readField(emitted, 0)).toEqual({ name: 'contype', oid: 25, size: -1 });
+  });
 });
 
 describe('FrontendMessageBuffer', () => {
