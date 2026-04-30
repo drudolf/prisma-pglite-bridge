@@ -20,6 +20,7 @@
 
 // ── High-level API (most users only need this) ──
 export type {
+  CloseFn,
   CreatePgliteAdapterOptions,
   PgliteAdapter,
   ResetDbFn,
