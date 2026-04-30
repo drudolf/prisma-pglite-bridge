@@ -170,7 +170,7 @@ CREATE TABLE "Channel" (
 
 -- CreateTable
 CREATE TABLE "Item" (
-    "id" TEXT NOT NULL,
+    "id" SERIAL NOT NULL,
     "key" TEXT NOT NULL,
     "value" JSONB NOT NULL,
     "version" INTEGER NOT NULL DEFAULT 1,
@@ -194,7 +194,7 @@ CREATE TABLE "Blob" (
 -- CreateTable
 CREATE TABLE "_ChannelToItem" (
     "A" TEXT NOT NULL,
-    "B" TEXT NOT NULL,
+    "B" INTEGER NOT NULL,
 
     CONSTRAINT "_ChannelToItem_AB_pkey" PRIMARY KEY ("A","B")
 );

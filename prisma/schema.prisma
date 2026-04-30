@@ -201,7 +201,7 @@ model Channel {
 }
 
 model Item {
-  id          String    @id @default(cuid())
+  id          Int       @id @default(autoincrement())
   key         String
   value       Json
   version     Int       @default(1)

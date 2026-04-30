@@ -85,7 +85,6 @@ export const seed = async (prisma: PrismaClient): Promise<void> => {
 
   await prisma.item.create({
     data: {
-      id: 'item-prod-foo',
       key: 'foo',
       value: { kind: 'config', enabled: true },
       workspaceId: 'ws-acme-prod',
@@ -94,7 +93,6 @@ export const seed = async (prisma: PrismaClient): Promise<void> => {
   });
   await prisma.item.create({
     data: {
-      id: 'item-prod-bar',
       key: 'bar',
       value: { kind: 'config', enabled: false },
       version: 2,
