@@ -1,5 +1,84 @@
 # prisma-pglite-bridge
 
+## 1.0.0
+
+### Major Changes
+
+- [`870a878`](https://github.com/drudolf/prisma-pglite-bridge/commit/870a878de685fb6063747e656a338f88e5cfaa7b) Thanks [@drudolf](https://github.com/drudolf)! - Rename the public surface to better reflect what each piece returns.
+
+  The factory function and its return type now use `Bridge` (since the
+  returned bundle holds the Prisma adapter, the underlying PGlite
+  instance, and lifecycle helpers — not just an adapter), while the
+  underlying `Duplex` stream that replaces `pg.Client`'s socket is now
+  named `Duplex`. Casing matches `@electric-sql/pglite`'s `PGlite`.
+
+  Renames:
+
+  - `createPgliteAdapter` → `createPGliteBridge`
+  - `CreatePgliteAdapterOptions` → `CreatePGliteBridgeOptions`
+  - `PgliteAdapter` (returned type) → `PGliteBridge`
+  - `PGliteBridge` (Duplex stream class) → `PGliteDuplex`
+  - `PgliteAdapterLeakWarning` (process warning type) → `PGliteBridgeLeakWarning`
+  - `emitAdapterLeakWarning` (internal) → `emitBridgeLeakWarning`
+
+  Migration:
+
+  ```diff
+  - import { createPgliteAdapter, PGliteBridge } from 'prisma-pglite-bridge';
+  + import { createPGliteBridge, PGliteDuplex } from 'prisma-pglite-bridge';
+
+  - const pgliteAdapter = await createPgliteAdapter({ pglite });
+  + const bridge = await createPGliteBridge({ pglite });
+  - const prisma = new PrismaClient({ adapter: pgliteAdapter.adapter });
+  + const prisma = new PrismaClient({ adapter: bridge.adapter });
+  ```
+
+### Minor Changes
+
+- [`4701048`](https://github.com/drudolf/prisma-pglite-bridge/commit/4701048905957ee6321b6dda394d16fec02418ca) Thanks [@drudolf](https://github.com/drudolf)! - Add the `ppb` CLI with `db-push` and `db-reset` subcommands. Applies a
+  Prisma schema to a PGlite database in-process via the
+  `@prisma/schema-engine-wasm` engine — no native schema-engine binary,
+  no Docker. Reads `DATABASE_URL` as a `pglite://` URL or accepts
+  `--data-dir` directly.
+
+- [`225ed69`](https://github.com/drudolf/prisma-pglite-bridge/commit/225ed69bebe8d35dba0fa2fe5a5704cd81ded887) Thanks [@drudolf](https://github.com/drudolf)! - Add `pushSchema` and `resetSchema` helpers that apply a Prisma schema to a
+  PGlite database in-process via `@prisma/schema-engine-wasm` — no native
+  schema-engine binary, no TCP. The WASM module is loaded lazily, so consumers
+  who only use `createPGliteBridge` pay no init cost.
+
+- [`788a855`](https://github.com/drudolf/prisma-pglite-bridge/commit/788a8552ab64acd4c585a29d43fa53000812017f) Thanks [@drudolf](https://github.com/drudolf)! - Split migration application out of `createPGliteBridge` into a new
+  `pushMigrations(target, options)` helper, sibling to `pushSchema`.
+
+  `createPGliteBridge` no longer accepts `sql`, `migrationsPath`, or
+  `configRoot` — call `pushMigrations` on the returned bridge instead.
+  The new helper avoids loading `@prisma/schema-engine-wasm`, so projects
+  that only replay pre-generated migrations no longer trigger Node's
+  `ExperimentalWarning: Importing WebAssembly module instances`.
+
+  The returned `PGliteBridge` now exposes the underlying `pglite`
+  instance for symmetry with `pushSchema` / `pushMigrations`.
+
+  Breaking changes:
+
+  - `createPGliteBridge({ sql | migrationsPath | configRoot })` is no
+    longer supported. Migrate by chaining a `pushMigrations(bridge, {
+... })` call after `createPGliteBridge`.
+  - `Stats.schemaSetupMs` has been removed. `pushMigrations` returns
+    `{ durationMs }` for callers who want to record the cost.
+
+### Patch Changes
+
+- [`cb44861`](https://github.com/drudolf/prisma-pglite-bridge/commit/cb44861d28d364c26ed7276195a55242bc399410) Thanks [@drudolf](https://github.com/drudolf)! - Unify the fast and slow RowDescription rewrite paths in
+  `BackendMessageFramer` behind a single `emitRewrittenRowDescription(buf)`
+  helper. Removes a redundant guard, an unsafe `as Buffer` cast, and a
+  dead state-reset; behavior is unchanged.
+
+- [`6501576`](https://github.com/drudolf/prisma-pglite-bridge/commit/65015764e63a7abf5e20a922cb080cef2e2408d6) Thanks [@drudolf](https://github.com/drudolf)! - Rewrite RowDescription frames to widen `"char"` (oid 18) → `text` (oid 25)
+  so the official `@prisma/adapter-pg` can decode `pg_catalog` system columns
+  (e.g. `pg_constraint.contype`). This unblocks running the WASM schema engine
+  (`@prisma/schema-engine-wasm`) against the bridge — i.e. an in-process
+  `prisma db push` path without TCP or a Prisma-version-coupled adapter.
+
 ## 0.5.3
 
 ### Patch Changes
