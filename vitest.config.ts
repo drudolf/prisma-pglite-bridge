@@ -17,7 +17,7 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'default',
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'bin/**/*.test.ts'],
           exclude: [
             'node_modules',
             'dist',
