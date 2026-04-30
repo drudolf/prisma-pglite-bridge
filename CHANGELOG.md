@@ -1,5 +1,14 @@
 # prisma-pglite-bridge
 
+## 0.6.1
+
+### Patch Changes
+
+- [`d5901e8`](https://github.com/drudolf/prisma-pglite-bridge/commit/d5901e88d066f381d62df3ecc80c6212df5e0437) Thanks [@drudolf](https://github.com/drudolf)! - Fix `resetDb` failing with `relation "..._id_seq" does not exist` when a
+  schema uses `SERIAL` / `@default(autoincrement())` on a mixed-case table.
+  `snapshotDb` captured sequence names without `quote_ident`, so the
+  `setval` regclass argument was case-folded to lowercase on reset.
+
 ## 0.6.0
 
 ### Minor Changes
