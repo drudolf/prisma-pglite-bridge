@@ -22,7 +22,7 @@ export default defineConfig({
             'node_modules',
             'dist',
             'src/**/__tests__/**',
-            'src/create-pglite-adapter.gc.test.ts',
+            'src/create-pglite-bridge.gc.test.ts',
           ],
         },
       }),
@@ -30,7 +30,7 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'gc',
-          include: ['src/create-pglite-adapter.gc.test.ts'],
+          include: ['src/create-pglite-bridge.gc.test.ts'],
           execArgv: ['--expose-gc'],
         },
       }),

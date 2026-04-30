@@ -6,10 +6,10 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeEach } from 'vitest';
 
 import {
-  type CreatePgliteAdapterOptions,
-  createPgliteAdapter,
-  type PgliteAdapter,
-} from '../create-pglite-adapter.ts';
+  type CreatePGliteBridgeOptions,
+  createPGliteBridge,
+  type PGliteBridge,
+} from '../create-pglite-bridge.ts';
 import { pushMigrations } from '../migrations.ts';
 
 const MIGRATION_SQL = readFileSync(
@@ -17,7 +17,7 @@ const MIGRATION_SQL = readFileSync(
   'utf8',
 );
 
-interface TestOptions extends Partial<CreatePgliteAdapterOptions> {
+interface TestOptions extends Partial<CreatePGliteBridgeOptions> {
   /**
    * Override the SQL applied via {@link pushMigrations}. Defaults to the
    * project's `0001_init/migration.sql`. Pass `null` to skip the migration
@@ -26,16 +26,16 @@ interface TestOptions extends Partial<CreatePgliteAdapterOptions> {
   migrationsSql?: string | null;
 }
 
-const createTestPgliteAdapter = async (options: TestOptions = {}): Promise<PgliteAdapter> => {
+const createTestPGliteBridge = async (options: TestOptions = {}): Promise<PGliteBridge> => {
   const pglite = options.pglite ?? new PGlite();
-  const { migrationsSql, ...adapterOptions } = options;
-  const adapter = await createPgliteAdapter({ ...adapterOptions, pglite });
+  const { migrationsSql, ...bridgeOptions } = options;
+  const bridge = await createPGliteBridge({ ...bridgeOptions, pglite });
 
   if (migrationsSql !== null) {
-    await pushMigrations(adapter, { sql: migrationsSql ?? MIGRATION_SQL });
+    await pushMigrations(bridge, { sql: migrationsSql ?? MIGRATION_SQL });
   }
 
-  return adapter;
+  return bridge;
 };
 
 type SetupTestSuiteFn = ({
@@ -46,28 +46,28 @@ type SetupTestSuiteFn = ({
   reset?: boolean;
 }) => Promise<{
   prisma: PrismaClient;
-  adapter: PgliteAdapter;
+  bridge: PGliteBridge;
   pglite: PGlite;
 }>;
 
 const setupTestSuite: SetupTestSuiteFn = async ({ options, reset = true } = {}) => {
   const pglite = options?.pglite ?? new PGlite();
-  const adapter = await createTestPgliteAdapter({ ...options, pglite });
-  const prisma = new PrismaClient({ adapter: adapter.adapter });
+  const bridge = await createTestPGliteBridge({ ...options, pglite });
+  const prisma = new PrismaClient({ adapter: bridge.adapter });
 
   if (reset) {
     beforeEach(async () => {
-      await adapter!.resetDb();
+      await bridge!.resetDb();
     });
   }
 
   afterAll(async () => {
     await prisma.$disconnect();
-    await adapter.close();
+    await bridge.close();
     await pglite.close();
   });
 
-  return { prisma, adapter, pglite };
+  return { prisma, bridge, pglite };
 };
 
 export default setupTestSuite;

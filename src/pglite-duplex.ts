@@ -1,16 +1,16 @@
 /**
- * PGlite bridge stream.
+ * PGlite duplex stream.
  *
  * A Duplex stream that replaces the TCP socket in pg.Client, routing
  * wire protocol messages directly to an in-process PGlite instance.
  *
- * pg.Client writes wire protocol bytes → bridge frames messages →
- * PGlite processes via execProtocolRawStream → bridge pushes responses back.
+ * pg.Client writes wire protocol bytes → duplex frames messages →
+ * PGlite processes via execProtocolRawStream → duplex pushes responses back.
  *
  * Extended Query Protocol pipelines (Parse→Bind→Describe→Execute→Sync) are
  * concatenated into a single buffer and sent as one atomic execProtocolRawStream
  * call within one runExclusive. This prevents portal interleaving between
- * concurrent bridges AND reduces async overhead (1 WASM call instead of 5).
+ * concurrent streams AND reduces async overhead (1 WASM call instead of 5).
  *
  * The response from a batched pipeline contains spurious ReadyForQuery messages
  * after each sub-message (PGlite's single-user mode). These are stripped,
@@ -18,9 +18,9 @@
  */
 import { Duplex } from 'node:stream';
 import type { PGlite } from '@electric-sql/pglite';
-import type { TelemetrySink } from './utils/adapter-stats.ts';
+import type { TelemetrySink } from './utils/bridge-stats.ts';
 import { lockWaitChannel, queryChannel } from './utils/diagnostics.ts';
-import type { BridgeId, SessionLock } from './utils/session-lock.ts';
+import type { BridgeId as DuplexId, SessionLock } from './utils/session-lock.ts';
 import { nsToMs } from './utils/time.ts';
 
 // Frontend message types
@@ -580,21 +580,21 @@ export class BackendMessageFramer {
  * PostgreSQL wire protocol directly to PGlite — no TCP, no serialization
  * overhead beyond what the wire protocol requires.
  *
- * Pass to `pg.Client` or use via `createPool()` / `createPgliteAdapter()`:
+ * Pass to `pg.Client` or use via `createPool()` / `createPGliteBridge()`:
  *
  * ```typescript
  * const client = new pg.Client({
- *   stream: () => new PGliteBridge(pglite),
+ *   stream: () => new PGliteDuplex(pglite),
  * });
  * ```
  */
-export class PGliteBridge extends Duplex {
+export class PGliteDuplex extends Duplex {
   private readonly pglite: PGlite;
   private readonly sessionLock?: SessionLock;
-  private readonly adapterId?: symbol;
+  private readonly bridgeId?: symbol;
   private readonly telemetry?: TelemetrySink;
   private readonly syncToFs: boolean;
-  private readonly bridgeId: BridgeId;
+  private readonly duplexId: DuplexId;
   /** Incoming bytes framed directly from a queued chunk buffer */
   private readonly input = new FrontendMessageBuffer();
   private phase: 'pre_startup' | 'ready' = 'pre_startup';
@@ -608,30 +608,30 @@ export class PGliteBridge extends Duplex {
   /**
    * @param pglite       PGlite instance to bridge to. The caller owns its lifecycle.
    * @param sessionLock  Shared lock that serialises access to the PGlite runtime
-   *                     across multiple bridges. Omit for a standalone bridge.
-   * @param adapterId    Identity tag published with diagnostics-channel events.
-   *                     Omit to disable channel publication for this bridge.
-   * @param telemetry    Internal sink used by `createPgliteAdapter` for built-in
+   *                     across multiple duplex streams. Omit for a standalone duplex.
+   * @param bridgeId    Identity tag published with diagnostics-channel events.
+   *                     Omit to disable channel publication for this duplex.
+   * @param telemetry    Internal sink used by `createPGliteBridge` for built-in
    *                     stats. Not a public extension point — subscribe via
    *                     `node:diagnostics_channel` instead.
-   * @param syncToFs     Whether each bridged wire-protocol call should force a
+   * @param syncToFs     Whether each wire-protocol call should force a
    *                     filesystem sync before returning. Disable only when
    *                     higher throughput / lower RSS is worth weaker durability.
    */
   constructor(
     pglite: PGlite,
     sessionLock?: SessionLock,
-    adapterId?: symbol,
+    bridgeId?: symbol,
     telemetry?: TelemetrySink,
     syncToFs = true,
   ) {
     super();
     this.pglite = pglite;
     this.sessionLock = sessionLock;
-    this.adapterId = adapterId;
+    this.bridgeId = bridgeId;
     this.telemetry = telemetry;
     this.syncToFs = syncToFs;
-    this.bridgeId = Symbol('bridge');
+    this.duplexId = Symbol('duplex');
   }
 
   // ── Socket compatibility (called by pg's Connection) ──
@@ -688,7 +688,7 @@ export class PGliteBridge extends Duplex {
   }
 
   override _final(callback: (error?: Error | null) => void): void {
-    this.sessionLock?.release(this.bridgeId);
+    this.sessionLock?.release(this.duplexId);
     this.push(null);
     callback();
   }
@@ -697,7 +697,7 @@ export class PGliteBridge extends Duplex {
     this.tornDown = true;
     this.pipeline.length = 0;
     this.input.clear();
-    this.sessionLock?.cancel(this.bridgeId, error ?? new Error('Bridge destroyed'));
+    this.sessionLock?.cancel(this.duplexId, error ?? new Error('Bridge destroyed'));
 
     // Flush pending write callbacks so pg.Client doesn't hang
     const callbacks = this.drainQueue;
@@ -757,7 +757,7 @@ export class PGliteBridge extends Duplex {
       error = err instanceof Error ? err : new Error(String(err));
       // Release session lock on error — prevents permanent deadlock if
       // PGlite crashes mid-transaction (other bridges would wait forever)
-      this.sessionLock?.release(this.bridgeId);
+      this.sessionLock?.release(this.duplexId);
     } finally {
       this.draining = false;
 
@@ -816,7 +816,7 @@ export class PGliteBridge extends Duplex {
       const msgType = message[0] ?? 0;
 
       if (msgType === TERMINATE) {
-        this.sessionLock?.release(this.bridgeId);
+        this.sessionLock?.release(this.duplexId);
         this.push(null);
         return;
       }
@@ -866,14 +866,14 @@ export class PGliteBridge extends Duplex {
    *
    * `op` returns `false` when an `ErrorResponse` was seen without throwing
    * (protocol-level failure). Combined with the catch branch, both failure
-   * modes flip `succeeded` so both `AdapterStats` and `QUERY_CHANNEL`
+   * modes flip `succeeded` so both `BridgeStats` and `QUERY_CHANNEL`
    * payloads stay accurate. `detectErrors` is therefore tied to whether
    * either of those consumers is active, not to timing in general.
    */
   private async runWithTiming(op: (detectErrors: boolean) => Promise<boolean>): Promise<void> {
     const wantTelemetry = this.telemetry !== undefined;
-    const publishQuery = this.adapterId !== undefined && queryChannel.hasSubscribers;
-    const publishLockWait = this.adapterId !== undefined && lockWaitChannel.hasSubscribers;
+    const publishQuery = this.bridgeId !== undefined && queryChannel.hasSubscribers;
+    const publishLockWait = this.bridgeId !== undefined && lockWaitChannel.hasSubscribers;
     const wantTiming = wantTelemetry || publishQuery || publishLockWait;
     const detectErrors = wantTelemetry || publishQuery;
 
@@ -896,7 +896,7 @@ export class PGliteBridge extends Duplex {
     }
     if (publishLockWait) {
       lockWaitChannel.publish({
-        adapterId: this.adapterId,
+        bridgeId: this.bridgeId,
         durationMs: lockWaitMs,
       });
     }
@@ -916,7 +916,7 @@ export class PGliteBridge extends Duplex {
       }
       if (publishQuery) {
         queryChannel.publish({
-          adapterId: this.adapterId,
+          bridgeId: this.bridgeId,
           durationMs: queryMs,
           succeeded,
         });
@@ -954,7 +954,7 @@ export class PGliteBridge extends Duplex {
       },
       onReadyForQuery: (status) => {
         if (this.sessionLock) {
-          this.sessionLock.updateStatus(this.bridgeId, status);
+          this.sessionLock.updateStatus(this.duplexId, status);
         }
       },
     });
@@ -976,6 +976,6 @@ export class PGliteBridge extends Duplex {
   // ── Session lock helpers ──
 
   private acquireSession(): Promise<void> | undefined {
-    return this.sessionLock?.acquire(this.bridgeId);
+    return this.sessionLock?.acquire(this.duplexId);
   }
 }

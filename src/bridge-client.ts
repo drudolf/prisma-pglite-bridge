@@ -1,7 +1,7 @@
 import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
-import { PGliteBridge } from './pglite-bridge.ts';
-import type { TelemetrySink } from './utils/adapter-stats.ts';
+import { PGliteDuplex } from './pglite-duplex.ts';
+import type { TelemetrySink } from './utils/bridge-stats.ts';
 import type { SessionLock } from './utils/session-lock.ts';
 
 export const bridgeClientOptionsKey: unique symbol = Symbol('bridgeClientOptions');
@@ -9,7 +9,7 @@ export const bridgeClientOptionsKey: unique symbol = Symbol('bridgeClientOptions
 interface BridgeClientOptions {
   pglite: PGlite;
   sessionLock?: SessionLock;
-  adapterId: symbol;
+  bridgeId: symbol;
   telemetry?: TelemetrySink;
   syncToFs: boolean;
 }
@@ -37,10 +37,10 @@ export class BridgeClient extends pg.Client {
       user: 'postgres',
       database: 'postgres',
       stream: () =>
-        new PGliteBridge(
+        new PGliteDuplex(
           bridge.pglite,
           bridge.sessionLock,
-          bridge.adapterId,
+          bridge.bridgeId,
           bridge.telemetry,
           bridge.syncToFs,
         ),

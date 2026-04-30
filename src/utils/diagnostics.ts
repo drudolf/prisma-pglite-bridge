@@ -4,15 +4,15 @@
  * The bridge publishes per-query and per-lock-wait events to named
  * channels. External consumers (OpenTelemetry, APM tools, custom
  * loggers) can subscribe without touching the library API. Built-in
- * adapter stats are updated directly from the bridge and are
+ * bridge stats are updated directly from the bridge and are
  * independent of these public channels.
  *
  * Publication is gated by `channel.hasSubscribers`, so the hot path
  * pays no cost when nobody is listening. Subscribing opts the consumer
  * in to the timing/publication overhead.
  *
- * Filter on `adapterId` to distinguish events from different adapters
- * in the same process — obtain it from the `createPgliteAdapter` or
+ * Filter on `bridgeId` to distinguish events from different bridges
+ * in the same process — obtain it from the `createPGliteBridge` or
  * `createPool` return value.
  */
 import diagnostics_channel from 'node:diagnostics_channel';
@@ -32,8 +32,8 @@ export const LOCK_WAIT_CHANNEL = 'prisma-pglite-bridge:lock-wait';
 
 /** Payload published to {@link QUERY_CHANNEL}. */
 export interface QueryEvent {
-  /** Adapter identity tag — filter on this to isolate one adapter's events. */
-  adapterId: symbol;
+  /** Bridge identity tag — filter on this to isolate one bridge's events. */
+  bridgeId: symbol;
   /** Wall-clock duration of the query in milliseconds. */
   durationMs: number;
   /** `false` when the query rejected (protocol or SQL error). */
@@ -42,8 +42,8 @@ export interface QueryEvent {
 
 /** Payload published to {@link LOCK_WAIT_CHANNEL}. */
 export interface LockWaitEvent {
-  /** Adapter identity tag — filter on this to isolate one adapter's events. */
-  adapterId: symbol;
+  /** Bridge identity tag — filter on this to isolate one bridge's events. */
+  bridgeId: symbol;
   /** Time spent waiting to acquire the session lock, in milliseconds. */
   durationMs: number;
 }

@@ -7,17 +7,17 @@
  * @example
  * ```typescript
  * import { PGlite } from '@electric-sql/pglite';
- * import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
+ * import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
  *
  * const pglite = new PGlite();
- * const adapter = await createPgliteAdapter({ pglite });
- * await pushMigrations(adapter, { migrationsPath: './prisma/migrations' });
+ * const bridge = await createPGliteBridge({ pglite });
+ * await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
  * ```
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import type { PgliteAdapter } from './create-pglite-adapter.ts';
+import type { PGliteBridge } from './create-pglite-bridge.ts';
 import type { SchemaTarget } from './schema.ts';
 
 export interface PushMigrationsOptions {
@@ -127,27 +127,26 @@ export const getMigrationSQL = async (options: PushMigrationsOptions): Promise<s
   );
 };
 
-const isPgliteAdapter = (target: SchemaTarget): target is PgliteAdapter =>
+const isPGliteBridge = (target: SchemaTarget): target is PGliteBridge =>
   'pglite' in target && 'adapter' in target;
 
 /**
  * Apply pre-generated SQL to the PGlite instance backing `target`.
  *
  * Runs the SQL through `pglite.exec(...)` directly, bypassing the bridge
- * pool — the same path the prior `createPgliteAdapter({ migrationsPath })`
- * shortcut used. No schema engine, no WASM module, no diffing.
+ * pool. No schema engine, no WASM module, no diffing.
  *
- * Currently only {@link PgliteAdapter} targets are supported. Raw `PrismaPg`
- * targets have no PGlite reference; pass the {@link PgliteAdapter} returned
- * by {@link createPgliteAdapter} instead.
+ * Currently only {@link PGliteBridge} targets are supported. Raw `PrismaPg`
+ * targets have no PGlite reference; pass the {@link PGliteBridge} returned
+ * by {@link createPGliteBridge} instead.
  */
 export const pushMigrations = async (
   target: SchemaTarget,
   options: PushMigrationsOptions = {},
 ): Promise<PushMigrationsResult> => {
-  if (!isPgliteAdapter(target)) {
+  if (!isPGliteBridge(target)) {
     throw new Error(
-      'pushMigrations requires a PgliteAdapter target. Raw PrismaPg targets have no PGlite reference; pass the adapter returned by createPgliteAdapter().',
+      'pushMigrations requires a PGliteBridge target. Raw PrismaPg targets have no PGlite reference; pass the bridge returned by createPGliteBridge().',
     );
   }
   const sql = await getMigrationSQL(options);

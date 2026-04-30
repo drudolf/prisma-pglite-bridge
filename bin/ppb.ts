@@ -6,7 +6,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { defineCommand, runMain } from 'citty';
 import { config as loadDotenv } from 'dotenv';
 
-import { createPgliteAdapter, type PgliteAdapter, pushSchema, resetSchema } from '../src/index.ts';
+import { createPGliteBridge, type PGliteBridge, pushSchema, resetSchema } from '../src/index.ts';
 
 loadDotenv();
 
@@ -37,17 +37,17 @@ const parseDatabaseUrl = (raw: string | undefined): string | undefined => {
 const resolveDataDir = (cliFlag: string | undefined): string | undefined =>
   cliFlag ?? parseDatabaseUrl(process.env.DATABASE_URL);
 
-const withAdapter = async <T>(
+const withBridge = async <T>(
   dataDir: string | undefined,
-  fn: (adapter: PgliteAdapter) => Promise<T>,
+  fn: (bridge: PGliteBridge) => Promise<T>,
 ): Promise<T> => {
   const pglite = new PGlite(dataDir);
   await pglite.waitReady;
-  const adapter = await createPgliteAdapter({ pglite });
+  const bridge = await createPGliteBridge({ pglite });
   try {
-    return await fn(adapter);
+    return await fn(bridge);
   } finally {
-    await adapter.close();
+    await bridge.close();
     await pglite.close();
   }
 };
@@ -81,8 +81,8 @@ const dbPush = defineCommand({
     const dataDir = resolveDataDir(args['data-dir']);
     const acceptDataLoss = args['accept-data-loss'];
 
-    const result = await withAdapter(dataDir, (adapter) =>
-      pushSchema(adapter, {
+    const result = await withBridge(dataDir, (bridge) =>
+      pushSchema(bridge, {
         schema,
         forceReset: args['force-reset'],
         acceptDataLoss,
@@ -112,7 +112,7 @@ const dbReset = defineCommand({
   },
   async run({ args }) {
     const dataDir = resolveDataDir(args['data-dir']);
-    await withAdapter(dataDir, (adapter) => resetSchema(adapter));
+    await withBridge(dataDir, (bridge) => resetSchema(bridge));
   },
 });
 

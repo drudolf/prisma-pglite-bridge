@@ -1,40 +1,41 @@
 /**
- * Creates a Prisma adapter backed by a caller-supplied PGlite instance.
+ * Creates a PGliteBridge: a Prisma adapter, the underlying PGlite instance,
+ * and lifecycle helpers, all backed by a caller-supplied PGlite instance.
  *
  * No TCP, no Docker, no worker threads — everything runs in the same process.
  * Works for testing, development, seeding, and scripts.
  *
  * ```typescript
  * import { PGlite } from '@electric-sql/pglite';
- * import { createPgliteAdapter, pushMigrations } from 'prisma-pglite-bridge';
+ * import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
  * import { PrismaClient } from '@prisma/client';
  *
  * const pglite = new PGlite();
- * const adapter = await createPgliteAdapter({ pglite });
- * await pushMigrations(adapter, { migrationsPath: './prisma/migrations' });
+ * const bridge = await createPGliteBridge({ pglite });
+ * await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
  *
- * const prisma = new PrismaClient({ adapter: adapter.adapter });
- * beforeEach(() => adapter.resetDb());
+ * const prisma = new PrismaClient({ adapter: bridge.adapter });
+ * beforeEach(() => bridge.resetDb());
  * ```
  */
 import type { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { createPool, type SyncToFsMode } from './create-pool.ts';
-import { AdapterStats, type Stats, type StatsLevel } from './utils/adapter-stats.ts';
+import { BridgeStats, type Stats, type StatsLevel } from './utils/bridge-stats.ts';
 import { createSnapshotManager } from './utils/snapshot.ts';
 
 /** @internal Exported for testing. */
-export const emitAdapterLeakWarning = (): void => {
+export const emitBridgeLeakWarning = (): void => {
   process.emitWarning(
-    'PGlite adapter was garbage-collected before close() was called. ' +
-      'Call adapter.close() to release the pool and finalize stats().',
-    { type: 'PgliteAdapterLeakWarning' },
+    'PGliteBridge was garbage-collected before close() was called. ' +
+      'Call bridge.close() to release the pool and finalize stats().',
+    { type: 'PGliteBridgeLeakWarning' },
   );
 };
 
-const leakRegistry = new FinalizationRegistry<void>(emitAdapterLeakWarning);
+const leakRegistry = new FinalizationRegistry<void>(emitBridgeLeakWarning);
 
-export interface CreatePgliteAdapterOptions {
+export interface CreatePGliteBridgeOptions {
   /**
    * PGlite instance to bridge to. The caller owns its lifecycle — `close()`
    * shuts down the pool only, not the PGlite instance.
@@ -53,7 +54,7 @@ export interface CreatePgliteAdapterOptions {
   max?: number;
 
   /**
-   * Collect adapter/query telemetry. Default `'off'` (zero overhead).
+   * Collect bridge/query telemetry. Default `'off'` (zero overhead).
    *
    * - `'basic'` — timing (`durationMs`, query percentiles) and counters
    *   (`queryCount`, `failedQueryCount`, `resetDbCalls`), plus
@@ -61,7 +62,7 @@ export interface CreatePgliteAdapterOptions {
    * - `'full'` — everything in `'basic'`, plus `processRssPeakBytes`
    *   (process-wide, sampled) and session-lock wait statistics.
    *
-   * Retrieve via `await adapter.stats()` — returns `undefined` at `'off'`.
+   * Retrieve via `await bridge.stats()` — returns `undefined` at `'off'`.
    */
   statsLevel?: StatsLevel;
 
@@ -78,7 +79,7 @@ export interface CreatePgliteAdapterOptions {
   syncToFs?: SyncToFsMode;
 }
 
-/** Snapshot of adapter/query telemetry. See {@link CreatePgliteAdapterOptions.statsLevel}. */
+/** Snapshot of bridge/query telemetry. See {@link CreatePGliteBridgeOptions.statsLevel}. */
 export type StatsFn = () => Promise<Stats | undefined>;
 
 /** Clear all user tables and discard session-local state. Call in `beforeEach` for per-test isolation. */
@@ -90,12 +91,12 @@ export type ResetSnapshotFn = () => Promise<void>;
 
 export type CloseFn = () => Promise<void>;
 
-export interface PgliteAdapter {
+export interface PGliteBridge {
   /** Prisma adapter — pass directly to `new PrismaClient({ adapter })` */
   adapter: PrismaPg;
 
   /**
-   * The caller-supplied PGlite instance this adapter wraps. Exposed so
+   * The caller-supplied PGlite instance this bridge wraps. Exposed so
    * helpers like {@link pushMigrations} can run SQL directly through
    * `pglite.exec(...)` without going through the bridge pool.
    */
@@ -103,11 +104,11 @@ export interface PgliteAdapter {
 
   /**
    * Identity tag published on every `QUERY_CHANNEL` / `LOCK_WAIT_CHANNEL`
-   * diagnostics event produced by this adapter's bridges. External
-   * subscribers filter on it to isolate events from this adapter in
-   * multi-adapter processes.
+   * diagnostics event produced by this bridge. External subscribers
+   * filter on it to isolate events from this bridge in multi-bridge
+   * processes.
    */
-  adapterId: symbol;
+  bridgeId: symbol;
 
   /** Clear all user tables and discard session-local state. Call in `beforeEach` for per-test isolation. */
   resetDb: ResetDbFn;
@@ -150,7 +151,9 @@ export interface PgliteAdapter {
 }
 
 /**
- * Creates a Prisma adapter backed by a caller-supplied PGlite instance.
+ * Creates a `PGliteBridge` — a bundle holding a Prisma driver adapter,
+ * the underlying PGlite instance, and lifecycle helpers — backed by a
+ * caller-supplied PGlite instance.
  *
  * Schema application is a separate concern — call {@link pushMigrations}
  * (raw SQL / migrations directory) or {@link pushSchema} (WASM-engine
@@ -158,31 +161,31 @@ export interface PgliteAdapter {
  * `dataDir`, the PGlite instance is assumed to already hold the schema
  * and no migration step is required.
  */
-export const createPgliteAdapter = async (
-  options: CreatePgliteAdapterOptions,
-): Promise<PgliteAdapter> => {
+export const createPGliteBridge = async (
+  options: CreatePGliteBridgeOptions,
+): Promise<PGliteBridge> => {
   const statsLevel = options.statsLevel ?? 'off';
   if (statsLevel !== 'off' && statsLevel !== 'basic' && statsLevel !== 'full') {
     throw new Error(`statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`);
   }
-  const adapterId = Symbol('adapter');
-  const adapterStats = statsLevel === 'off' ? undefined : new AdapterStats(statsLevel);
+  const bridgeId = Symbol('bridge');
+  const bridgeStats = statsLevel === 'off' ? undefined : new BridgeStats(statsLevel);
 
   const { pglite } = options;
 
   const { pool } = await createPool({
     pglite,
     max: options.max,
-    adapterId,
+    bridgeId,
     syncToFs: options.syncToFs,
-    telemetry: adapterStats,
+    telemetry: bridgeStats,
   });
 
   const adapter = new PrismaPg(pool);
   const snapshotManager = createSnapshotManager(pglite);
 
   const resetDb: ResetDbFn = async () => {
-    adapterStats?.incrementResetDb();
+    bridgeStats?.incrementResetDb();
     await snapshotManager.resetDb();
   };
 
@@ -192,10 +195,10 @@ export const createPgliteAdapter = async (
   const close: CloseFn = async () => {
     if (!closing) {
       closing = (async () => {
-        const closeEntry = adapterStats ? process.hrtime.bigint() : undefined;
+        const closeEntry = bridgeStats ? process.hrtime.bigint() : undefined;
         await pool.end();
-        if (adapterStats && closeEntry !== undefined) {
-          await adapterStats.freeze(pglite, closeEntry);
+        if (bridgeStats && closeEntry !== undefined) {
+          await bridgeStats.freeze(pglite, closeEntry);
         }
         leakRegistry.unregister(leakToken);
       })();
@@ -203,20 +206,20 @@ export const createPgliteAdapter = async (
     return closing;
   };
 
-  const result: PgliteAdapter = {
+  const result: PGliteBridge = {
     adapter,
-    adapterId,
+    bridgeId,
     pglite,
     close,
     resetDb,
     resetSnapshot: snapshotManager.resetSnapshot,
     snapshotDb: snapshotManager.snapshotDb,
-    stats: async () => (adapterStats ? adapterStats.snapshot(pglite) : undefined),
+    stats: async () => (bridgeStats ? bridgeStats.snapshot(pglite) : undefined),
   };
 
   // Track the lifetime of the Prisma adapter instance users actually retain.
-  // The wrapper object returned by createPgliteAdapter() is often ephemeral
-  // (`const adapter = (await createPgliteAdapter(...)).adapter`), so
+  // The wrapper object returned by createPGliteBridge() is often ephemeral
+  // (`const adapter = (await createPGliteBridge(...)).adapter`), so
   // registering that wrapper causes false leak warnings while Prisma still
   // holds the live adapter and pool.
   leakRegistry.register(adapter, undefined, leakToken);

@@ -1,17 +1,17 @@
 /**
- * Private per-adapter stats state used to power `stats()`.
+ * Private per-bridge stats state used to power `stats()`.
  *
  * Instantiated at level `'basic'` or `'full'` (level `'off'` means no stats
  * object exists).
  * Query-level timing is recorded directly by the bridge; one-shot lifecycle
  * signals (`incrementResetDb`, `freeze`) remain direct method calls invoked
- * by the adapter itself.
+ * by the bridge itself.
  *
  * Percentiles use nearest-rank (no interpolation) over a sliding window of
  * the most recent {@link QUERY_DURATION_WINDOW_SIZE} queries. Lifetime
  * counters (`queryCount`, `totalQueryMs`, `avgQueryMs`) are not windowed.
  * `durationMs` is frozen at the instant `close()` was invoked, via the
- * `closeEntryHrtime` the adapter records as its very first action and
+ * `closeEntryHrtime` the bridge records as its very first action and
  * passes to {@link freeze}.
  */
 import type { PGlite } from '@electric-sql/pglite';
@@ -59,7 +59,7 @@ interface StatsBase {
    * Nearest-rank 50th percentile over the most recent
    * {@link QUERY_DURATION_WINDOW_SIZE} queries. Compare to `avgQueryMs`
    * with care: the two fields describe different populations on long-lived
-   * adapters.
+   * bridges.
    */
   recentP50QueryMs: number;
   /** Nearest-rank 95th percentile over the recent-query window. */
@@ -80,7 +80,7 @@ export interface StatsFull extends StatsBase {
   /**
    * Process-wide RSS high-water mark since process start, read from
    * `process.resourceUsage().maxRSS` (kernel-tracked, lossless). Reflects
-   * the entire Node process — parallel test runners, other adapters, and
+   * the entire Node process — parallel test runners, other bridges, and
    * prior work in the same process all contribute. Use only as an
    * ordering signal, not an absolute measurement.
    *
@@ -121,7 +121,7 @@ const percentile = (sorted: readonly number[], p: number): number => {
   return sorted[index] ?? 0;
 };
 
-export class AdapterStats implements TelemetrySink {
+export class BridgeStats implements TelemetrySink {
   private readonly level: 'basic' | 'full';
   private readonly createdAtHrtime: bigint;
 

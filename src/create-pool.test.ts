@@ -7,25 +7,25 @@ import { createPool } from './create-pool.ts';
 
 const pglite = await setupPGlite();
 
-describe('createPool — adapterId', async () => {
+describe('createPool — bridgeId', async () => {
   it('returns a symbol, unique per call when omitted', async () => {
     const a = await createPool({ pglite });
     const b = await createPool({ pglite });
     try {
-      expect(typeof a.adapterId).toBe('symbol');
-      expect(typeof b.adapterId).toBe('symbol');
-      expect(a.adapterId).not.toBe(b.adapterId);
+      expect(typeof a.bridgeId).toBe('symbol');
+      expect(typeof b.bridgeId).toBe('symbol');
+      expect(a.bridgeId).not.toBe(b.bridgeId);
     } finally {
       await a.close();
       await b.close();
     }
   });
 
-  it('honors the adapterId passed in options', async () => {
-    const adapterId = Symbol('custom');
-    const pool = await createPool({ pglite, adapterId });
+  it('honors the bridgeId passed in options', async () => {
+    const bridgeId = Symbol('custom');
+    const pool = await createPool({ pglite, bridgeId });
     try {
-      expect(pool.adapterId).toBe(adapterId);
+      expect(pool.bridgeId).toBe(bridgeId);
     } finally {
       await pool.close();
     }
