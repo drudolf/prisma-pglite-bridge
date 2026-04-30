@@ -83,7 +83,7 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
       }
 
       const { rows: seqs } = await pglite.query<{ name: string; value: string }>(
-        `SELECT quote_literal(schemaname || '.' || sequencename) AS name, last_value::text AS value
+        `SELECT quote_literal(quote_ident(schemaname) || '.' || quote_ident(sequencename)) AS name, last_value::text AS value
          FROM pg_sequences
          WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
          AND schemaname != '${SNAPSHOT_SCHEMA}'

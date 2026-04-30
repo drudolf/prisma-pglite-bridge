@@ -32,31 +32,33 @@ describe('channels + items', () => {
   });
 
   it('item value JSON roundtrips and updates', async () => {
-    const foo = await prisma.item.findUniqueOrThrow({ where: { id: 'item-prod-foo' } });
+    const fooKey = { workspaceId_key: { workspaceId: 'ws-acme-prod', key: 'foo' } };
+    const foo = await prisma.item.findUniqueOrThrow({ where: fooKey });
     expect(foo.value).toEqual({ kind: 'config', enabled: true });
     await prisma.item.update({
-      where: { id: 'item-prod-foo' },
+      where: fooKey,
       data: { value: { kind: 'config', enabled: false, ttl: 60 } },
     });
-    const after = await prisma.item.findUniqueOrThrow({ where: { id: 'item-prod-foo' } });
+    const after = await prisma.item.findUniqueOrThrow({ where: fooKey });
     expect(after.value).toEqual({ kind: 'config', enabled: false, ttl: 60 });
   });
 
   it('reads item with channels (implicit m2m)', async () => {
     const bar = await prisma.item.findUniqueOrThrow({
-      where: { id: 'item-prod-bar' },
+      where: { workspaceId_key: { workspaceId: 'ws-acme-prod', key: 'bar' } },
       include: { channels: { orderBy: { name: 'asc' } } },
     });
     expect(bar.channels.map((c) => c.name)).toEqual(['fast', 'slow']);
   });
 
   it('disconnects an item from a channel', async () => {
+    const barKey = { workspaceId_key: { workspaceId: 'ws-acme-prod', key: 'bar' } };
     await prisma.item.update({
-      where: { id: 'item-prod-bar' },
+      where: barKey,
       data: { channels: { disconnect: [{ id: 'ch-prod-slow' }] } },
     });
     const after = await prisma.item.findUniqueOrThrow({
-      where: { id: 'item-prod-bar' },
+      where: barKey,
       include: { channels: true },
     });
     expect(after.channels.map((c) => c.id)).toEqual(['ch-prod-fast']);
@@ -71,10 +73,11 @@ describe('channels + items', () => {
   });
 
   it('increments item version', async () => {
-    const before = await prisma.item.findUniqueOrThrow({ where: { id: 'item-prod-bar' } });
+    const barKey = { workspaceId_key: { workspaceId: 'ws-acme-prod', key: 'bar' } };
+    const before = await prisma.item.findUniqueOrThrow({ where: barKey });
     expect(before.version).toBe(2);
     const after = await prisma.item.update({
-      where: { id: 'item-prod-bar' },
+      where: barKey,
       data: { version: { increment: 1 } },
     });
     expect(after.version).toBe(3);
@@ -89,18 +92,21 @@ describe('channels + items', () => {
   });
 
   it('deleting an item severs the m2m link', async () => {
-    await prisma.item.delete({ where: { id: 'item-prod-foo' } });
+    const foo = await prisma.item.findUniqueOrThrow({
+      where: { workspaceId_key: { workspaceId: 'ws-acme-prod', key: 'foo' } },
+    });
+    await prisma.item.delete({ where: { id: foo.id } });
     const fast = await prisma.channel.findUniqueOrThrow({
       where: { id: 'ch-prod-fast' },
       include: { items: true },
     });
-    expect(fast.items.map((i) => i.id)).not.toContain('item-prod-foo');
+    expect(fast.items.map((i) => i.id)).not.toContain(foo.id);
   });
 
   it('snapshot restored — both items present, channels intact', async () => {
     expect(await prisma.item.count({ where: { workspaceId: 'ws-acme-prod' } })).toBe(2);
     const bar = await prisma.item.findUniqueOrThrow({
-      where: { id: 'item-prod-bar' },
+      where: { workspaceId_key: { workspaceId: 'ws-acme-prod', key: 'bar' } },
       include: { channels: true },
     });
     expect(bar.channels).toHaveLength(2);
