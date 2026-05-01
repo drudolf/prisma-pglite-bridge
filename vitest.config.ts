@@ -18,7 +18,7 @@ const config: ViteUserConfigExport = defineConfig({
         extends: true,
         test: {
           name: 'unit',
-          include: ['src/**/*.test.ts', 'bin/**/*.test.ts'],
+          include: ['src/**/*.test.ts'],
           exclude: ['node_modules', 'dist', 'src/**/__tests__/**', 'src/pglite-bridge.gc.test.ts'],
           sequence: { groupOrder: 0 },
         },

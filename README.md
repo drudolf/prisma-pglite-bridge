@@ -52,7 +52,7 @@ database](./docs/api.md#populating-the-database) for the
 ## Documentation
 
 - **[API reference](./docs/api.md)** — exports, options, return
-  values, the `ppb` CLI, fs-sync policy.
+  values, fs-sync policy.
 - **[Cookbook](./docs/cookbook.md)** — Vitest / Jest setup,
   per-test isolation, seed sharing, extensions, persistent dev
   database, clean shutdown.
