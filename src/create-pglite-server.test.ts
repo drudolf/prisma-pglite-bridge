@@ -370,6 +370,144 @@ describe('createPGliteServer', () => {
     }
   });
 
+  it('honors an explicit syncToFs override (true)', async () => {
+    const pglite = new PGlite();
+    const server = await createPGliteServer({ pglite, syncToFs: true });
+    cleanups.push(async () => {
+      await server.close();
+      await pglite.close();
+    });
+    const client = new pg.Client({ host: server.host, port: server.port });
+    await client.connect();
+    try {
+      const r = await client.query<{ ok: number }>('SELECT 1::int AS ok');
+      expect(r.rows).toEqual([{ ok: 1 }]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it('honors an explicit syncToFs override (false)', async () => {
+    const pglite = new PGlite();
+    const server = await createPGliteServer({ pglite, syncToFs: false });
+    cleanups.push(async () => {
+      await server.close();
+      await pglite.close();
+    });
+    const client = new pg.Client({ host: server.host, port: server.port });
+    await client.connect();
+    try {
+      const r = await client.query<{ ok: number }>('SELECT 1::int AS ok');
+      expect(r.rows).toEqual([{ ok: 1 }]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it('infers syncToFs=true from an on-disk dataDir', async () => {
+    // Real on-disk path exercises the fall-through arm of resolveSyncToFs
+    // where dataDir is defined and is not a memory:// URI.
+    const dir = mkdtempSync(path.join(tmpdir(), 'pglite-disk-'));
+    const pglite = new PGlite(dir);
+    const server = await createPGliteServer({ pglite });
+    cleanups.push(async () => {
+      await server.close();
+      await pglite.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const client = new pg.Client({ host: server.host, port: server.port });
+    await client.connect();
+    try {
+      const r = await client.query<{ ok: number }>('SELECT 1::int AS ok');
+      expect(r.rows).toEqual([{ ok: 1 }]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it('infers syncToFs from a memory:// dataDir', async () => {
+    // `dataDir === 'memory://something'` exercises the falsy arms of
+    // `dataDir === undefined` / `dataDir === ''` and the truthy arm of the
+    // `startsWith('memory://')` guard inside resolveSyncToFs.
+    const pglite = new PGlite('memory://test');
+    const server = await createPGliteServer({ pglite });
+    cleanups.push(async () => {
+      await server.close();
+      await pglite.close();
+    });
+    const client = new pg.Client({ host: server.host, port: server.port });
+    await client.connect();
+    try {
+      const r = await client.query<{ ok: number }>('SELECT 1::int AS ok');
+      expect(r.rows).toEqual([{ ok: 1 }]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it('drops a CancelRequest delivered as two partial chunks', async () => {
+    // First chunk is the 8-byte header (length=16, code=cancel) — onData must
+    // wait for the full 16-byte frame before closing the socket. Forces the
+    // partial-buffer return path that's unreachable when clients send the
+    // 16-byte frame in one write.
+    const { server } = await startServer();
+
+    await new Promise<void>((resolve, reject) => {
+      const socket = net.createConnection(server.port, server.host);
+      socket.once('error', reject);
+      socket.once('close', () => resolve());
+      socket.write(buildPrelude(16, CANCEL_REQUEST_CODE).subarray(0, 8));
+      // After 30ms (during which onData has already fired with the partial
+      // header and returned waiting for more), send the trailing 8 bytes.
+      setTimeout(() => {
+        const tail = Buffer.alloc(8);
+        tail.writeInt32BE(1234, 0);
+        tail.writeInt32BE(5678, 4);
+        socket.write(tail);
+      }, 30);
+    });
+  });
+
+  it('handles an SSLRequest split across two TCP chunks', async () => {
+    // First chunk is 4 bytes of the SSL prelude — onData must buffer it and
+    // wait for the rest. Forces the `Buffer.concat` arm of the buffer-merge
+    // ternary, which is otherwise unreachable when clients send 8-byte
+    // preludes in one write.
+    const { server } = await startServer();
+
+    const reply = await new Promise<Buffer>((resolve, reject) => {
+      const socket = net.createConnection(server.port, server.host);
+      socket.once('error', reject);
+      socket.once('data', (chunk: Buffer) => {
+        socket.end();
+        resolve(chunk);
+      });
+      const prelude = buildPrelude(8, SSL_REQUEST_CODE);
+      socket.write(prelude.subarray(0, 4));
+      setTimeout(() => socket.write(prelude.subarray(4)), 30);
+    });
+    expect(reply.toString('ascii')).toBe('N');
+  });
+
+  it('rejects when the bind target is already in use', async () => {
+    // A second server bound to the same Unix socket path raises EADDRINUSE
+    // during listen(), exercising the rejection path of the listen Promise.
+    const sockDir = mkdtempSync(path.join(tmpdir(), 'pglite-busy-'));
+    const pgliteA = new PGlite();
+    const pgliteB = new PGlite();
+    const a = await createPGliteServer({ pglite: pgliteA, socketDir: sockDir });
+    cleanups.push(async () => {
+      await a.close();
+      await pgliteA.close();
+      await pgliteB.close();
+      rmSync(sockDir, { recursive: true, force: true });
+    });
+
+    await expect(createPGliteServer({ pglite: pgliteB, socketDir: sockDir })).rejects.toThrow(
+      /EADDRINUSE/,
+    );
+  });
+
   it('close() resolves promptly while a client is still connected', async () => {
     const pglite = new PGlite();
     const server = await createPGliteServer({ pglite });

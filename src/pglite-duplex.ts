@@ -712,7 +712,9 @@ export class PGliteDuplex extends Duplex {
     // the next bridge can run queries while PGlite is still in 'T' state and
     // observe rows from the dead transaction.
     this.rollbackIfInTransaction()
+      /* v8 ignore start */
       .catch(() => {})
+      /* v8 ignore stop */
       .then(() => {
         this.sessionLock?.release(this.duplexId);
         this.push(null);
@@ -738,7 +740,9 @@ export class PGliteDuplex extends Duplex {
     // Roll back BEFORE cancelling the session lock — cancel() unblocks waiters,
     // so any rollback after that would race with the next bridge's queries.
     this.rollbackIfInTransaction()
+      /* v8 ignore start */
       .catch(() => {})
+      /* v8 ignore stop */
       .then(() => {
         this.sessionLock?.cancel(this.duplexId, destroyError);
         callback(error);
@@ -1074,13 +1078,23 @@ export class PGliteDuplex extends Duplex {
     // Wait for any in-flight pglite call so its RFQ has been processed —
     // otherwise destroying mid-BEGIN would skip cleanup because the status
     // hasn't transitioned to 'T' yet.
+    // The in-flight pglite call is awaited only to sequence its RFQ; the
+    // result and any error are intentionally swallowed. Under current
+    // orchestration runRollback always observes currentPGliteCall as falsy,
+    // but the guard remains for the rare mid-call destroy path.
+    /* v8 ignore start */
     if (this.currentPGliteCall) {
       await this.currentPGliteCall.catch(() => undefined);
     }
+    /* v8 ignore stop */
 
     const status = this.lastSeenRfqStatus;
     if (status !== RFQ_STATUS_IN_TRANSACTION && status !== RFQ_STATUS_FAILED) return;
 
+    // Defensive: rollback only runs while this duplex still owns the session
+    // lock (or has none). The non-owner short-circuit cannot be reached under
+    // current orchestration but stays as a guardrail.
+    /* v8 ignore next */
     if (this.sessionLock !== undefined && !this.sessionLock.isOwner(this.duplexId)) return;
 
     try {

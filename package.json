@@ -49,6 +49,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --project default --project gc",
     "test:integration": "vitest run --project integration",
+    "test:cli-compat": "vitest run --project cli-compat",
     "test:coverage": "vitest run --project default --project gc --coverage",
     "lint": "biome lint .",
     "lint:fix": "biome check --write .",
