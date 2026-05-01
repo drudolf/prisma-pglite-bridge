@@ -50,8 +50,8 @@ Then `pnpm install`.
 
 ## `ExperimentalWarning: Importing WebAssembly module instances is an experimental feature`
 
-Emitted by Node when `pushSchema` / `resetSchema` (or the `ppb` CLI)
-loads `@prisma/schema-engine-wasm`, which uses ESM static `.wasm`
+Emitted by Node when `pushSchema` / `resetSchema` loads
+`@prisma/schema-engine-wasm`, which uses ESM static `.wasm`
 imports. The warning is harmless and prints once per Node process.
 
 If you only need to apply already-generated migration SQL, use
