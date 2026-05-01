@@ -2,13 +2,13 @@ import type { PGlite } from '@electric-sql/pglite';
 import { type Mock, vi } from 'vitest';
 import type { TelemetrySink } from '../../utils/bridge-stats.ts';
 
-interface MockPglite {
+interface MockPGlite {
   exec: Mock;
   query: Mock;
   waitReady: Promise<void>;
 }
 
-export const createMockPglite = (overrides: Partial<MockPglite> = {}): PGlite =>
+export const createMockPGlite = (overrides: Partial<MockPGlite> = {}): PGlite =>
   ({
     exec: vi.fn().mockResolvedValue(undefined),
     query: vi.fn().mockResolvedValue({ fields: [], rows: [] }),

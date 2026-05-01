@@ -17,7 +17,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import type { PGliteBridge } from './create-pglite-bridge.ts';
+import type { PGliteBridge } from './pglite-bridge.ts';
 import type { SchemaTarget } from './schema.ts';
 
 export interface PushMigrationsOptions {

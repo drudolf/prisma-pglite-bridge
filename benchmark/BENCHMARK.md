@@ -135,8 +135,8 @@ you want stage-level attribution.
 1. Create `benchmark/adapters/<name>.ts` exporting an `AdapterHarness`.
 2. Register it in `loadAdapters()` in `benchmark/run.ts` (add any CLI
    aliases there).
-3. Instrument via `stackProbe.patchPg()`, `instrumentBridgePglite()`,
-   `instrumentDirectPglite()`, and/or `instrumentDriverAdapter()` so the
+3. Instrument via `stackProbe.patchPg()`, `instrumentBridgePGlite()`,
+   `instrumentDirectPGlite()`, and/or `instrumentDriverAdapter()` so the
    stack-breakdown scenario works across adapters.
 4. If the adapter runs a server process, provide a
    `serverProcessSampler` on the returned `AdapterContext` so combined

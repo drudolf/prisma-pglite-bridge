@@ -6,7 +6,7 @@ import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createPGliteServer, type PGliteServer } from './create-pglite-server.ts';
+import { createPGliteServer, type PGliteServer } from './pglite-server.ts';
 
 const SSL_REQUEST_CODE = 80877103;
 const GSSENC_REQUEST_CODE = 80877104;

@@ -20,7 +20,7 @@
  */
 import type { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { createPool, type SyncToFsMode } from './create-pool.ts';
+import { createPool, type SyncToFsMode } from './pool.ts';
 import { BridgeStats, type Stats, type StatsLevel } from './utils/bridge-stats.ts';
 import { createSnapshotManager } from './utils/snapshot.ts';
 
@@ -35,7 +35,7 @@ export const emitBridgeLeakWarning = (): void => {
 
 const leakRegistry = new FinalizationRegistry<void>(emitBridgeLeakWarning);
 
-export interface CreatePGliteBridgeOptions {
+export interface PGliteBridgeOptions {
   /**
    * PGlite instance to bridge to. The caller owns its lifecycle — `close()`
    * shuts down the pool only, not the PGlite instance.
@@ -79,7 +79,7 @@ export interface CreatePGliteBridgeOptions {
   syncToFs?: SyncToFsMode;
 }
 
-/** Snapshot of bridge/query telemetry. See {@link CreatePGliteBridgeOptions.statsLevel}. */
+/** Snapshot of bridge/query telemetry. See {@link PGliteBridgeOptions.statsLevel}. */
 export type StatsFn = () => Promise<Stats | undefined>;
 
 /** Clear all user tables and discard session-local state. Call in `beforeEach` for per-test isolation. */
@@ -161,9 +161,7 @@ export interface PGliteBridge {
  * `dataDir`, the PGlite instance is assumed to already hold the schema
  * and no migration step is required.
  */
-export const createPGliteBridge = async (
-  options: CreatePGliteBridgeOptions,
-): Promise<PGliteBridge> => {
+export const createPGliteBridge = async (options: PGliteBridgeOptions): Promise<PGliteBridge> => {
   const statsLevel = options.statsLevel ?? 'off';
   if (statsLevel !== 'off' && statsLevel !== 'basic' && statsLevel !== 'full') {
     throw new Error(`statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`);

@@ -4,15 +4,15 @@ import type { Mock } from 'vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import setupTestSuite from './__tests__/utils/bridge.ts';
 import { createTempDir, removeTempDir } from './__tests__/utils/file-system.ts';
-import { createMockPglite } from './__tests__/utils/mocks.ts';
-import { createPGliteBridge, emitBridgeLeakWarning } from './create-pglite-bridge.ts';
+import { createMockPGlite } from './__tests__/utils/mocks.ts';
 import { pushMigrations } from './migrations.ts';
+import { createPGliteBridge, emitBridgeLeakWarning } from './pglite-bridge.ts';
 
 const { pglite, prisma, bridge } = await setupTestSuite({
   options: { statsLevel: 'basic' },
 });
 
-type CreatePGliteBridgeModule = typeof import('./create-pglite-bridge.ts');
+type CreatePGliteBridgeModule = typeof import('./pglite-bridge.ts');
 
 const loadCreatePGliteBridgeWithMocks = async ({
   poolEnd = vi.fn().mockResolvedValue(undefined),
@@ -35,17 +35,17 @@ const loadCreatePGliteBridgeWithMocks = async ({
     bridgeId: Symbol('mock'),
     close: vi.fn().mockResolvedValue(undefined),
   });
-  vi.doMock('./create-pool.ts', () => ({
+  vi.doMock('./pool.ts', () => ({
     createPool,
   }));
   vi.doMock('@prisma/adapter-pg', () => ({
     PrismaPg: prismaPg,
   }));
-  return { createPool, module: await import('./create-pglite-bridge.ts'), pool, prismaPg };
+  return { createPool, module: await import('./pglite-bridge.ts'), pool, prismaPg };
 };
 
 afterEach(() => {
-  vi.doUnmock('./create-pool.ts');
+  vi.doUnmock('./pool.ts');
   vi.doUnmock('@prisma/adapter-pg');
   vi.resetModules();
 });
@@ -90,8 +90,8 @@ describe('createPGliteBridge', () => {
   it('reuses an initialized persistent dataDir without re-applying migrations', async () => {
     const { parent, path: dataDir } = createTempDir('bridge-data');
 
-    const firstPglite = new PGlite(dataDir);
-    const first = await createPGliteBridge({ pglite: firstPglite, statsLevel: 'basic' });
+    const firstPGlite = new PGlite(dataDir);
+    const first = await createPGliteBridge({ pglite: firstPGlite, statsLevel: 'basic' });
     await pushMigrations(first, {
       sql: 'CREATE TABLE IF NOT EXISTS "Tenant" ("id" TEXT PRIMARY KEY, "name" TEXT NOT NULL, "slug" TEXT NOT NULL)',
     });
@@ -103,21 +103,21 @@ describe('createPGliteBridge', () => {
 
     await firstPrisma.$disconnect();
     await first.close();
-    await firstPglite.close();
+    await firstPGlite.close();
 
-    const secondPglite = new PGlite(dataDir);
-    const second = await createPGliteBridge({ pglite: secondPglite, statsLevel: 'basic' });
+    const secondPGlite = new PGlite(dataDir);
+    const second = await createPGliteBridge({ pglite: secondPGlite, statsLevel: 'basic' });
     const secondPrisma = new PrismaClient({ adapter: second.adapter });
 
     try {
-      const { rows } = await secondPglite.query<{ count: string }>(
+      const { rows } = await secondPGlite.query<{ count: string }>(
         'SELECT COUNT(*)::text AS count FROM "Tenant"',
       );
       expect(rows[0]?.count).toBe('1');
     } finally {
       await secondPrisma.$disconnect();
       await second.close();
-      await secondPglite.close();
+      await secondPGlite.close();
     }
 
     removeTempDir(parent);
@@ -166,7 +166,7 @@ describe('createPGliteBridge', () => {
           releaseEnd = resolve;
         }),
     );
-    const pglite = createMockPglite();
+    const pglite = createMockPGlite();
     const { module } = await loadCreatePGliteBridgeWithMocks({ poolEnd });
     const { createPGliteBridge } = module;
     const created = await createPGliteBridge({ pglite });
@@ -181,7 +181,7 @@ describe('createPGliteBridge', () => {
   });
 
   it('forwards syncToFs to createPool', async () => {
-    const pglite = createMockPglite();
+    const pglite = createMockPGlite();
     const { createPool, module, pool, prismaPg } = await loadCreatePGliteBridgeWithMocks();
     const { createPGliteBridge } = module;
 
@@ -217,7 +217,7 @@ describe('createPGliteBridge', () => {
     const registerSpy = vi.spyOn(FinalizationRegistry.prototype, 'register');
     const unregisterSpy = vi.spyOn(FinalizationRegistry.prototype, 'unregister');
     try {
-      const pglite = createMockPglite();
+      const pglite = createMockPGlite();
       const { module } = await loadCreatePGliteBridgeWithMocks();
       const { createPGliteBridge } = module;
       const created = await createPGliteBridge({ pglite });

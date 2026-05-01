@@ -339,7 +339,7 @@ class StackProbe {
     };
   }
 
-  instrumentBridgePglite(pglite: PGlite): void {
+  instrumentBridgePGlite(pglite: PGlite): void {
     if (this.instrumentedBridge.has(pglite)) return;
     this.instrumentedBridge.add(pglite);
 
@@ -401,7 +401,7 @@ class StackProbe {
     }) as typeof pglite.execProtocolRawStream;
   }
 
-  instrumentDirectPglite(pglite: PGlite): void {
+  instrumentDirectPGlite(pglite: PGlite): void {
     if (this.instrumentedDirect.has(pglite)) return;
     this.instrumentedDirect.add(pglite);
 

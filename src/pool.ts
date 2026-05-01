@@ -10,8 +10,8 @@
  */
 import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
-import { BridgeClient, type BridgePoolConfig, bridgeClientOptionsKey } from './bridge-client.ts';
 import type { TelemetrySink } from './utils/bridge-stats.ts';
+import { PgBridgeClient, type PgBridgePoolConfig } from './utils/pg-bridge-client.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
 export type SyncToFsMode = 'auto' | boolean;
@@ -23,7 +23,7 @@ const resolveSyncToFs = (pglite: PGlite, mode: SyncToFsMode | undefined): boolea
   return !(dataDir === undefined || dataDir === '' || dataDir.startsWith('memory://'));
 };
 
-export interface CreatePoolOptions {
+export interface PoolOptions {
   /** PGlite instance to bridge to. The caller owns its lifecycle. */
   pglite: PGlite;
 
@@ -100,7 +100,7 @@ export interface PoolResult {
  *
  * @see {@link createPGliteBridge} for the higher-level API with schema management.
  */
-export const createPool = async (options: CreatePoolOptions): Promise<PoolResult> => {
+export const createPool = async (options: PoolOptions): Promise<PoolResult> => {
   const { pglite, max = 1, telemetry } = options;
   const bridgeId = options.bridgeId ?? Symbol('bridge');
   const syncToFs = resolveSyncToFs(pglite, options.syncToFs);
@@ -109,10 +109,10 @@ export const createPool = async (options: CreatePoolOptions): Promise<PoolResult
 
   const sessionLock = max > 1 ? new SessionLock() : undefined;
 
-  const poolConfig: BridgePoolConfig = {
-    Client: BridgeClient,
+  const poolConfig: PgBridgePoolConfig = {
+    Client: PgBridgeClient,
     max,
-    [bridgeClientOptionsKey]: {
+    [PgBridgeClient.OptionsKey]: {
       pglite,
       sessionLock,
       bridgeId,

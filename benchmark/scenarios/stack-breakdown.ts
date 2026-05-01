@@ -181,12 +181,12 @@ export const stackBreakdown: Scenario = async (prisma, iterations) => {
   const operations: Operation[] = [];
 
   if (pglite) {
-    const rawPglite = {
+    const rawPGlite = {
       name: 'raw pglite.query 1MB JSON',
       label: 'raw-pglite',
       execute: (tenantId) => pglite.query(SQL, [tenantId]),
     };
-    operations.push(rawPglite, repeated(rawPglite.name, rawPglite.label, rawPglite.execute));
+    operations.push(rawPGlite, repeated(rawPGlite.name, rawPGlite.label, rawPGlite.execute));
   }
 
   if (pool) {

@@ -24,7 +24,7 @@
  */
 import type { PrismaPg } from '@prisma/adapter-pg';
 
-import type { PGliteBridge } from './create-pglite-bridge.ts';
+import type { PGliteBridge } from './pglite-bridge.ts';
 
 /** A schema-apply target. Either a {@link PGliteBridge} from {@link createPGliteBridge} or a raw {@link PrismaPg}. */
 export type SchemaTarget = PGliteBridge | PrismaPg;
