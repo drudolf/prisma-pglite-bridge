@@ -1,10 +1,10 @@
 // Frontend message types
-export const PARSE = 0x50; // P
-export const BIND = 0x42; // B
-export const DESCRIBE = 0x44; // D
-export const EXECUTE = 0x45; // E
-export const CLOSE = 0x43; // C
-export const FLUSH = 0x48; // H
+const PARSE = 0x50; // P
+const BIND = 0x42; // B
+const DESCRIBE = 0x44; // D
+const EXECUTE = 0x45; // E
+const CLOSE = 0x43; // C
+const FLUSH = 0x48; // H
 export const SYNC = 0x53; // S (frontend)
 export const TERMINATE = 0x58; // X
 

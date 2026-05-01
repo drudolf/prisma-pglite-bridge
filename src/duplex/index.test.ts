@@ -7,7 +7,7 @@ import setupPGlite from '../__tests__/utils/pglite.ts';
 import { createPool } from '../pool.ts';
 import type { TelemetrySink } from '../utils/bridge-stats.ts';
 import { SessionLock } from '../utils/session-lock.ts';
-import { PGliteDuplex } from './pglite-duplex.ts';
+import { PGliteDuplex } from './index.ts';
 
 const pglite = await setupPGlite();
 
