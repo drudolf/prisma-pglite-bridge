@@ -45,6 +45,17 @@ export default defineConfig({
           maxWorkers: 4,
         },
       }),
+      defineProject({
+        extends: true,
+        test: {
+          name: 'cli-compat',
+          include: ['src/__tests__/cli-compat/**/*.test.ts'],
+          pool: 'forks',
+          maxWorkers: 2,
+          testTimeout: 60_000,
+          hookTimeout: 60_000,
+        },
+      }),
     ],
   },
 });
