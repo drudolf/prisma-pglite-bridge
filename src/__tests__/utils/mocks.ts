@@ -1,6 +1,6 @@
 import type { PGlite } from '@electric-sql/pglite';
 import { type Mock, vi } from 'vitest';
-import type { TelemetrySink } from '../utils/bridge-stats.ts';
+import type { TelemetrySink } from '../../utils/bridge-stats.ts';
 
 interface MockPglite {
   exec: Mock;

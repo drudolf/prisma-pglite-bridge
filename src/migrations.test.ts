@@ -1,7 +1,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createTempDir, createTempFile, removeTempDir } from './__tests__/file-system.ts';
+import { createTempDir, createTempFile, removeTempDir } from './__tests__/utils/file-system.ts';
 import { createPGliteBridge } from './create-pglite-bridge.ts';
 import { createPool } from './create-pool.ts';
 import { getMigrationSQL, pushMigrations, readMigrationFiles } from './migrations.ts';

@@ -9,8 +9,8 @@ import {
   type CreatePGliteBridgeOptions,
   createPGliteBridge,
   type PGliteBridge,
-} from '../create-pglite-bridge.ts';
-import { pushMigrations } from '../migrations.ts';
+} from '../../create-pglite-bridge.ts';
+import { pushMigrations } from '../../migrations.ts';
 
 const MIGRATION_SQL = readFileSync(
   join(process.cwd(), 'prisma/migrations/0001_init/migration.sql'),

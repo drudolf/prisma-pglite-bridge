@@ -2,9 +2,9 @@ import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
 import type { Mock } from 'vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import setupTestSuite from './__tests__/bridge.ts';
-import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
-import { createMockPglite } from './__tests__/mocks.ts';
+import setupTestSuite from './__tests__/utils/bridge.ts';
+import { createTempDir, removeTempDir } from './__tests__/utils/file-system.ts';
+import { createMockPglite } from './__tests__/utils/mocks.ts';
 import { createPGliteBridge, emitBridgeLeakWarning } from './create-pglite-bridge.ts';
 import { pushMigrations } from './migrations.ts';
 
