@@ -63,7 +63,7 @@ export type { SyncToFsMode } from './pool.ts';
  */
 export const createPool = async (options: PoolOptions): Promise<PoolResult> =>
   createBasePool(options);
-export { PGliteDuplex } from './duplex/index.ts';
+export { PGliteDuplex } from './duplex';
 export type { PGliteServer, PGliteServerOptions } from './pglite-server.ts';
 export { createPGliteServer } from './pglite-server.ts';
 export type { Stats, StatsBasic, StatsFull, StatsLevel } from './utils/bridge-stats.ts';
