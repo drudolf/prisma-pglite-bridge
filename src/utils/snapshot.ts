@@ -13,7 +13,7 @@ const quoteIdent = (identifier: string): string => `"${identifier.replace(/"/g, 
 
 const SNAPSHOT_SCHEMA_IDENT = quoteIdent(SNAPSHOT_SCHEMA);
 
-interface SnapshotManager {
+export interface SnapshotManager {
   /**
    * Truncate all user tables. If a snapshot exists, restore its contents and
    * sequence values afterwards; otherwise just truncate and `DISCARD ALL`.
