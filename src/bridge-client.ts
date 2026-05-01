@@ -1,6 +1,6 @@
 import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
-import { PGliteDuplex } from './pglite-duplex.ts';
+import { PGliteDuplex } from './duplex/index.ts';
 import type { TelemetrySink } from './utils/bridge-stats.ts';
 import type { SessionLock } from './utils/session-lock.ts';
 
