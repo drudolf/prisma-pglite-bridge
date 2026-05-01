@@ -13,7 +13,7 @@ import net from 'node:net';
 import nodePath from 'node:path';
 import type { PGlite } from '@electric-sql/pglite';
 import type { SyncToFsMode } from './create-pool.ts';
-import { PGliteDuplex } from './pglite-duplex.ts';
+import { PGliteDuplex } from './duplex/index.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
 const SSL_REQUEST_CODE = 80877103;
