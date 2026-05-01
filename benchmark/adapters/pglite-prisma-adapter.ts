@@ -17,7 +17,7 @@ export const pglitePrismaAdapter: AdapterHarness = {
   setup: async (schemaSql) => {
     const pglite = new PGlite();
     await pglite.waitReady;
-    stackProbe.instrumentDirectPglite(pglite);
+    stackProbe.instrumentDirectPGlite(pglite);
     await pglite.exec(schemaSql);
     const adapterFactory = new PrismaPGlite(pglite);
     const driverAdapter = await adapterFactory.connect();

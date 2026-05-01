@@ -17,28 +17,28 @@
  * @packageDocumentation
  */
 
+export type { PushMigrationsOptions, PushMigrationsResult } from './migrations.ts';
+export { pushMigrations } from './migrations.ts';
 // ── High-level API (most users only need this) ──
 export type {
   CloseFn,
-  CreatePGliteBridgeOptions,
   PGliteBridge,
+  PGliteBridgeOptions,
   ResetDbFn,
   ResetSnapshotFn,
   SnapshotDbFn,
   StatsFn,
-} from './create-pglite-bridge.ts';
-export { createPGliteBridge } from './create-pglite-bridge.ts';
-export type { PushMigrationsOptions, PushMigrationsResult } from './migrations.ts';
-export { pushMigrations } from './migrations.ts';
+} from './pglite-bridge.ts';
+export { createPGliteBridge } from './pglite-bridge.ts';
 export type { PushSchemaOptions, PushSchemaResult, SchemaTarget } from './schema.ts';
 export { pushSchema, resetSchema } from './schema.ts';
 
 // ── Low-level building blocks ──
 import {
-  type CreatePoolOptions as CreateBasePoolOptions,
+  type PoolOptions as BasePoolOptions,
   createPool as createBasePool,
   type PoolResult,
-} from './create-pool.ts';
+} from './pool.ts';
 
 export type { PoolResult };
 
@@ -48,8 +48,8 @@ export type { PoolResult };
  * `node:diagnostics_channel` instead — see {@link QUERY_CHANNEL} and
  * {@link LOCK_WAIT_CHANNEL}).
  */
-export type CreatePoolOptions = Omit<CreateBasePoolOptions, 'telemetry'>;
-export type { SyncToFsMode } from './create-pool.ts';
+export type PoolOptions = Omit<BasePoolOptions, 'telemetry'>;
+export type { SyncToFsMode } from './pool.ts';
 
 /**
  * Build a `pg.Pool` backed by a caller-supplied PGlite instance. Each pool
@@ -61,11 +61,11 @@ export type { SyncToFsMode } from './create-pool.ts';
  * {@link createPGliteBridge}, which layers schema setup and reset helpers
  * on top.
  */
-export const createPool = async (options: CreatePoolOptions): Promise<PoolResult> =>
+export const createPool = async (options: PoolOptions): Promise<PoolResult> =>
   createBasePool(options);
-export type { CreatePGliteServerOptions, PGliteServer } from './create-pglite-server.ts';
-export { createPGliteServer } from './create-pglite-server.ts';
 export { PGliteDuplex } from './duplex/index.ts';
+export type { PGliteServer, PGliteServerOptions } from './pglite-server.ts';
+export { createPGliteServer } from './pglite-server.ts';
 export type { Stats, StatsBasic, StatsFull, StatsLevel } from './utils/bridge-stats.ts';
 // ── Diagnostics channels (public observability surface) ──
 export {

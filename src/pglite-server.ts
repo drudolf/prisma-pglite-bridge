@@ -12,8 +12,8 @@
 import net from 'node:net';
 import nodePath from 'node:path';
 import type { PGlite } from '@electric-sql/pglite';
-import type { SyncToFsMode } from './create-pool.ts';
 import { PGliteDuplex } from './duplex/index.ts';
+import type { SyncToFsMode } from './pool.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
 const SSL_REQUEST_CODE = 80877103;
@@ -22,7 +22,7 @@ const CANCEL_REQUEST_CODE = 80877102;
 const PRELUDE_HEADER_BYTES = 8;
 const DEFAULT_SOCKET_PORT = 5432;
 
-export interface CreatePGliteServerOptions {
+export interface PGliteServerOptions {
   /**
    * PGlite instance to expose. Caller owns its lifecycle — `close()` shuts
    * the listener and tears down per-connection bridges only.
@@ -95,9 +95,7 @@ const resolveSyncToFs = (pglite: PGlite, mode: SyncToFsMode | undefined): boolea
  * // unix.url === 'postgres:///postgres?host=%2Ftmp%2Fpgl&port=5432'
  * ```
  */
-export const createPGliteServer = async (
-  options: CreatePGliteServerOptions,
-): Promise<PGliteServer> => {
+export const createPGliteServer = async (options: PGliteServerOptions): Promise<PGliteServer> => {
   const { pglite, socketDir, host = '127.0.0.1', port = 0 } = options;
   const socketPort = options.socketPort ?? DEFAULT_SOCKET_PORT;
   const syncToFs = resolveSyncToFs(pglite, options.syncToFs);

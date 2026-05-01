@@ -4,7 +4,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockTelemetry } from '../__tests__/utils/mocks.ts';
 import setupPGlite from '../__tests__/utils/pglite.ts';
-import { createPool } from '../create-pool.ts';
+import { createPool } from '../pool.ts';
 import type { TelemetrySink } from '../utils/bridge-stats.ts';
 import { SessionLock } from '../utils/session-lock.ts';
 import { PGliteDuplex } from './pglite-duplex.ts';
@@ -144,7 +144,7 @@ describe('PGliteDuplex concurrency', () => {
 });
 
 describe('PGliteDuplex error paths', () => {
-  const makeMockPglite = (overrides: {
+  const makeMockPGlite = (overrides: {
     runExclusive?: (fn: () => Promise<unknown>) => Promise<void>;
     execProtocolRawStream?: (
       msg: Uint8Array,
@@ -183,7 +183,7 @@ describe('PGliteDuplex error paths', () => {
     });
 
   it('fires pending write callbacks with the destroy error when torn down mid-drain', async () => {
-    const mock = makeMockPglite({
+    const mock = makeMockPGlite({
       runExclusive: () => new Promise<void>(() => {}),
     });
     const bridge = new PGliteDuplex(mock);
@@ -199,7 +199,7 @@ describe('PGliteDuplex error paths', () => {
   });
 
   it('releases the session lock and surfaces the error when runExclusive throws', async () => {
-    const mock = makeMockPglite({
+    const mock = makeMockPGlite({
       runExclusive: async () => {
         throw new Error('pglite kaput');
       },
@@ -218,7 +218,7 @@ describe('PGliteDuplex error paths', () => {
 
   it('records a failed query and rethrows when runExclusive throws after startup', async () => {
     let call = 0;
-    const mock = makeMockPglite({
+    const mock = makeMockPGlite({
       runExclusive: async (fn) => {
         call += 1;
         if (call === 1) {
@@ -246,7 +246,7 @@ describe('PGliteDuplex error paths', () => {
 
   it('holds processing until a partial startup message completes', async () => {
     let runCalls = 0;
-    const mock = makeMockPglite({
+    const mock = makeMockPGlite({
       runExclusive: async (fn) => {
         runCalls += 1;
         await fn();
@@ -270,7 +270,7 @@ describe('PGliteDuplex error paths', () => {
   });
 
   it('breaks out of processMessages on a malformed length header', async () => {
-    const mock = makeMockPglite({});
+    const mock = makeMockPGlite({});
     const bridge = new PGliteDuplex(mock);
     bridge.on('error', () => {});
 
@@ -285,7 +285,7 @@ describe('PGliteDuplex error paths', () => {
   });
 
   it('releases the session lock and ends the stream on TERMINATE', async () => {
-    const mock = makeMockPglite({});
+    const mock = makeMockPGlite({});
     const lock = new SessionLock();
     const releaseSpy = vi.spyOn(lock, 'release');
     const bridge = new PGliteDuplex(mock, lock);
@@ -303,7 +303,7 @@ describe('PGliteDuplex error paths', () => {
   });
 
   it('wraps a non-Error throw into an Error when runExclusive rejects', async () => {
-    const mock = makeMockPglite({
+    const mock = makeMockPGlite({
       runExclusive: async () => {
         throw 'plain string boom';
       },
@@ -324,7 +324,7 @@ describe('PGliteDuplex error paths', () => {
       release = resolve;
     });
     let runCalls = 0;
-    const mock = makeMockPglite({
+    const mock = makeMockPGlite({
       runExclusive: async (fn) => {
         runCalls += 1;
         if (runCalls === 1) await gate;
@@ -395,7 +395,7 @@ describe('PGliteDuplex error paths', () => {
 
     let destroyedBridgeRan = false;
     const blockedBridge = new PGliteDuplex(
-      makeMockPglite({
+      makeMockPGlite({
         runExclusive: async (fn) => {
           destroyedBridgeRan = true;
           await fn();
@@ -418,7 +418,7 @@ describe('PGliteDuplex error paths', () => {
 
     let nextBridgeRan = false;
     const nextBridge = new PGliteDuplex(
-      makeMockPglite({
+      makeMockPGlite({
         runExclusive: async (fn) => {
           nextBridgeRan = true;
           await fn();
@@ -443,7 +443,7 @@ describe('PGliteDuplex error paths', () => {
       release = resolve;
     });
     let execCalled = false;
-    const mock = makeMockPglite({
+    const mock = makeMockPGlite({
       runExclusive: async (fn) => {
         await gate;
         await fn();
@@ -477,7 +477,7 @@ describe('PGliteDuplex error paths', () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const mock = makeMockPglite({
+    const mock = makeMockPGlite({
       runExclusive: async (fn) => {
         await gate;
         await fn();

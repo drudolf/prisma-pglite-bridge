@@ -1,12 +1,10 @@
 import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
-import { PGliteDuplex } from './duplex/index.ts';
-import type { TelemetrySink } from './utils/bridge-stats.ts';
-import type { SessionLock } from './utils/session-lock.ts';
+import { PGliteDuplex } from '../duplex/index.ts';
+import type { TelemetrySink } from './bridge-stats.ts';
+import type { SessionLock } from './session-lock.ts';
 
-export const bridgeClientOptionsKey: unique symbol = Symbol('bridgeClientOptions');
-
-interface BridgeClientOptions {
+interface PgBridgeClientOptions {
   pglite: PGlite;
   sessionLock?: SessionLock;
   bridgeId: symbol;
@@ -14,22 +12,24 @@ interface BridgeClientOptions {
   syncToFs: boolean;
 }
 
-type BridgeClientConfig = pg.ClientConfig & {
-  [bridgeClientOptionsKey]: BridgeClientOptions;
+type PgBridgeClientConfig = pg.ClientConfig & {
+  [PgBridgeClient.OptionsKey]: PgBridgeClientOptions;
 };
 
-export type BridgePoolConfig = pg.PoolConfig & {
-  [bridgeClientOptionsKey]: BridgeClientOptions;
+export type PgBridgePoolConfig = pg.PoolConfig & {
+  [PgBridgeClient.OptionsKey]: PgBridgeClientOptions;
 };
 
-export class BridgeClient extends pg.Client {
+export class PgBridgeClient extends pg.Client {
   private querySubmissionChain: Promise<void> = Promise.resolve();
 
-  constructor(config?: BridgeClientConfig) {
-    const resolved = config ?? ({} as BridgeClientConfig);
-    const { [bridgeClientOptionsKey]: bridge, ...clientConfig } = resolved;
+  static readonly OptionsKey: unique symbol = Symbol('PgBridgeClientOptions');
+
+  constructor(config?: PgBridgeClientConfig) {
+    const resolved = config ?? ({} as PgBridgeClientConfig);
+    const { [PgBridgeClient.OptionsKey]: bridge, ...clientConfig } = resolved;
     if (!bridge) {
-      throw new Error('BridgeClient requires bridge options');
+      throw new Error('PgBridgeClient requires bridge options');
     }
 
     super({

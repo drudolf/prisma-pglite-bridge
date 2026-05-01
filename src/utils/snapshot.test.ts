@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createMockPglite } from '../__tests__/utils/mocks.ts';
+import { createMockPGlite } from '../__tests__/utils/mocks.ts';
 import setupPGlite from '../__tests__/utils/pglite.ts';
 import { createSnapshotManager } from './snapshot.ts';
 
@@ -9,7 +9,7 @@ const pglite = await setupPGlite();
 describe('snapshot manager', () => {
   it('rolls back and drops the snapshot schema if snapshot creation fails', async () => {
     const error = new Error('boom');
-    const pglite = createMockPglite({ query: vi.fn().mockRejectedValue(error) });
+    const pglite = createMockPGlite({ query: vi.fn().mockRejectedValue(error) });
 
     const snapshot = createSnapshotManager(pglite);
 
@@ -89,7 +89,7 @@ describe('snapshot manager', () => {
   });
 
   it('skips truncation work when no user tables exist', async () => {
-    const pglite = createMockPglite();
+    const pglite = createMockPGlite();
 
     const snapshot = createSnapshotManager(pglite);
 

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createTempDir, removeTempDir } from './__tests__/utils/file-system.ts';
 import setupPGlite from './__tests__/utils/pglite.ts';
-import { createPool } from './create-pool.ts';
+import { createPool } from './pool.ts';
 
 const pglite = await setupPGlite();
 
@@ -127,7 +127,7 @@ describe('createPool — rollback on forced client release', () => {
       await c1.query('CREATE TABLE rollback_t (id int)');
       await c1.query('BEGIN');
       await c1.query('INSERT INTO rollback_t VALUES (1)');
-      // release(true) → pg.Pool destroys the underlying BridgeClient/duplex
+      // release(true) → pg.Pool destroys the underlying PgBridgeClient/duplex
       // without sending Terminate. Cleanup must come from PGliteDuplex._destroy.
       c1.release(new Error('forced release'));
 

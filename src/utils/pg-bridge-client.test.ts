@@ -3,16 +3,16 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
 import { describe, expect, it, vi } from 'vitest';
-import { BridgeClient, type BridgePoolConfig, bridgeClientOptionsKey } from './bridge-client.ts';
-import { SessionLock } from './utils/session-lock.ts';
+import { PgBridgeClient, type PgBridgePoolConfig } from './pg-bridge-client.ts';
+import { SessionLock } from './session-lock.ts';
 
 const createBridgePool = async (pglite: PGlite) => {
   await pglite.waitReady;
   const bridgeId = Symbol('bridge');
-  const poolConfig: BridgePoolConfig = {
-    Client: BridgeClient,
+  const poolConfig: PgBridgePoolConfig = {
+    Client: PgBridgeClient,
     max: 1,
-    [bridgeClientOptionsKey]: {
+    [PgBridgeClient.OptionsKey]: {
       pglite,
       sessionLock: new SessionLock(),
       bridgeId,
@@ -28,9 +28,9 @@ const createBridgePool = async (pglite: PGlite) => {
   };
 };
 
-describe('BridgeClient', () => {
+describe('PgBridgeClient', () => {
   it('throws when bridge options are missing', () => {
-    expect(() => new BridgeClient()).toThrow('BridgeClient requires bridge options');
+    expect(() => new PgBridgeClient()).toThrow('PgBridgeClient requires bridge options');
   });
 
   it('forwards deferred callback-form query failures to the callback', async () => {
@@ -38,8 +38,8 @@ describe('BridgeClient', () => {
     await pglite.waitReady;
     const origQuery = pg.Client.prototype.query;
     const expected = new Error('boom');
-    const client = new BridgeClient({
-      [bridgeClientOptionsKey]: {
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
         pglite,
         sessionLock: new SessionLock(),
         bridgeId: Symbol('bridge'),
@@ -74,8 +74,8 @@ describe('BridgeClient', () => {
   it('preserves pg synchronous TypeError for nullish queries', async () => {
     const pglite = new PGlite();
     await pglite.waitReady;
-    const client = new BridgeClient({
-      [bridgeClientOptionsKey]: {
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
         pglite,
         sessionLock: new SessionLock(),
         bridgeId: Symbol('bridge'),

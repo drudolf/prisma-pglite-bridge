@@ -9,7 +9,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
-import { createPool } from '../../src/create-pool.ts';
+import { createPool } from '../../src/pool.ts';
 import { stackProbe } from '../attribution.ts';
 import type { AdapterHarness } from './types.ts';
 
@@ -21,7 +21,7 @@ export const bridge: AdapterHarness = {
     const pglite = new PGlite();
     await pglite.waitReady;
     const { pool, close } = await createPool({ pglite });
-    stackProbe.instrumentBridgePglite(pglite);
+    stackProbe.instrumentBridgePGlite(pglite);
     await pglite.exec(schemaSql);
     const adapterFactory = new PrismaPg(pool);
     const driverAdapter = await adapterFactory.connect();
