@@ -90,6 +90,14 @@ const loadAdapters = async (): Promise<AdapterHarness[]> => {
     const { bridge } = await import('./adapters/bridge.ts');
     all.push(bridge);
   }
+  if (
+    !adapterFilter ||
+    adapterFilter === 'prisma-pglite-bridge-class' ||
+    adapterFilter === 'bridge-class'
+  ) {
+    const { bridgeClass } = await import('./adapters/bridge-class.ts');
+    all.push(bridgeClass);
+  }
   if (!adapterFilter || adapterFilter === 'pglite-prisma-adapter') {
     const { pglitePrismaAdapter } = await import('./adapters/pglite-prisma-adapter.ts');
     all.push(pglitePrismaAdapter);
