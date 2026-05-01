@@ -1,6 +1,6 @@
-import { defineConfig, defineProject } from 'vitest/config';
+import { defineConfig, type ViteUserConfigExport } from 'vitest/config';
 
-export default defineConfig({
+const config: ViteUserConfigExport = defineConfig({
   test: {
     hookTimeout: 20_000,
     testTimeout: 30_000,
@@ -12,11 +12,12 @@ export default defineConfig({
       reporter: ['text', 'html', 'lcov'],
       thresholds: { 100: true },
     },
+    maxWorkers: 8,
     projects: [
-      defineProject({
+      {
         extends: true,
         test: {
-          name: 'default',
+          name: 'unit',
           include: ['src/**/*.test.ts', 'bin/**/*.test.ts'],
           exclude: [
             'node_modules',
@@ -24,17 +25,19 @@ export default defineConfig({
             'src/**/__tests__/**',
             'src/create-pglite-bridge.gc.test.ts',
           ],
+          sequence: { groupOrder: 0 },
         },
-      }),
-      defineProject({
+      },
+      {
         extends: true,
         test: {
           name: 'gc',
           include: ['src/create-pglite-bridge.gc.test.ts'],
           execArgv: ['--expose-gc'],
+          sequence: { groupOrder: 0 },
         },
-      }),
-      defineProject({
+      },
+      {
         extends: true,
         test: {
           name: 'integration',
@@ -43,9 +46,10 @@ export default defineConfig({
           isolate: false,
           pool: 'forks',
           maxWorkers: 4,
+          sequence: { groupOrder: 1 },
         },
-      }),
-      defineProject({
+      },
+      {
         extends: true,
         test: {
           name: 'cli-compat',
@@ -54,8 +58,11 @@ export default defineConfig({
           maxWorkers: 2,
           testTimeout: 60_000,
           hookTimeout: 60_000,
+          sequence: { groupOrder: 2 },
         },
-      }),
+      },
     ],
   },
 });
+
+export default config;
