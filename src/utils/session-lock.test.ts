@@ -1,7 +1,7 @@
 import type pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import setupPGlite from '../__tests__/pglite.ts';
+import setupPGlite from '../__tests__/utils/pglite.ts';
 import { createPool } from '../create-pool.ts';
 import { SessionLock } from './session-lock.ts';
 
