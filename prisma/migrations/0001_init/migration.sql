@@ -184,6 +184,7 @@ CREATE TABLE "Blob" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "data" BYTEA NOT NULL,
+    "chunks" BYTEA[] DEFAULT ARRAY[]::BYTEA[],
     "contentType" TEXT NOT NULL DEFAULT 'application/octet-stream',
     "size" INTEGER NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
