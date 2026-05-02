@@ -4,12 +4,12 @@ import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeEach } from 'vitest';
-import { pushMigrations } from '../../migrations.ts';
+import { pushMigrations } from '../migrations.ts';
 import {
   createPGliteBridge,
   type PGliteBridge,
   type PGliteBridgeOptions,
-} from '../../pglite-bridge.ts';
+} from '../pglite-bridge.ts';
 
 const MIGRATION_SQL = readFileSync(
   join(process.cwd(), 'prisma/migrations/0001_init/migration.sql'),

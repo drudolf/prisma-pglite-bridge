@@ -2,8 +2,8 @@ import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createMockTelemetry } from '../__tests__/utils/mocks.ts';
-import setupPGlite from '../__tests__/utils/pglite.ts';
+import { createMockTelemetry } from '../__tests__/mocks.ts';
+import setupPGlite from '../__tests__/pglite.ts';
 import { createPool } from '../pool.ts';
 import type { TelemetrySink } from '../utils/bridge-stats.ts';
 import { SessionLock } from '../utils/session-lock.ts';

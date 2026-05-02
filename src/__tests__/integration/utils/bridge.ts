@@ -1,7 +1,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
 
-import { createPGliteBridge, pushMigrations } from '../../index.ts';
+import { createPGliteBridge, pushMigrations } from '../../../index.ts';
 
 import { seed } from './seed.ts';
 

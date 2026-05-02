@@ -37,7 +37,7 @@ const config: ViteUserConfigExport = defineConfig({
         test: {
           name: 'integration',
           include: ['src/__tests__/integration/**/*.test.ts'],
-          setupFiles: ['./src/__tests__/integration/setup.ts'],
+          setupFiles: ['./src/__tests__/integration/utils/setup.ts'],
           isolate: false,
           pool: 'forks',
           maxWorkers: 4,

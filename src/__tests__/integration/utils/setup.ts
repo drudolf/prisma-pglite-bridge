@@ -2,7 +2,7 @@ import { beforeEach, vi } from 'vitest';
 
 import getInstance from './bridge.ts';
 
-vi.mock('./app/util/prisma.ts', async () => {
+vi.mock('./prisma.ts', async () => {
   const { default: getInstance } = await import('./bridge.ts');
   const { prisma } = await getInstance();
   return { prisma };

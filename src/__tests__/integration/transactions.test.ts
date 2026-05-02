@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { prisma } from './app/util/prisma.ts';
+import { prisma } from './utils/prisma.ts';
 
 describe('transactions', () => {
   it('commits an interactive $transaction', async () => {
