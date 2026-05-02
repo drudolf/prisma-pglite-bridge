@@ -55,18 +55,24 @@ describe('PGliteServer', () => {
     return { pglite, server, connectionString };
   };
 
-  it('throws when constructed with a not-yet-ready PGlite', () => {
+  it('listen() throws when the PGlite instance is not yet ready', async () => {
+    let server: PGliteServer;
     const notReady = createMockPGlite();
-    Object.assign(notReady, { ready: false, closed: false });
-    expect(() => new PGliteServer({ pglite: notReady })).toThrow(
-      /requires a ready PGlite instance/,
-    );
+    
+    Object.assign(notReady, { ready: false, closed: false, waitReady: Promise.reject('test str') });
+    server = new PGliteServer({ pglite: notReady });
+    await expect(server.listen()).rejects.toThrow(/requires a ready PGlite instance; test str/);
+
+    Object.assign(notReady, { ready: false, closed: false, waitReady: Promise.reject(new Error('test err')) });
+    server = new PGliteServer({ pglite: notReady });
+    await expect(server.listen()).rejects.toThrow(/requires a ready PGlite instance; test err/);
   });
 
-  it('throws when constructed with a closed PGlite', () => {
+  it('listen() throws when the PGlite instance is closed', async () => {
     const closed = createMockPGlite();
     Object.assign(closed, { ready: true, closed: true });
-    expect(() => new PGliteServer({ pglite: closed })).toThrow(/requires an open PGlite instance/);
+    const server = new PGliteServer({ pglite: closed });
+    await expect(server.listen()).rejects.toThrow(/requires an open PGlite instance/);
   });
 
   it('listen() is idempotent and returns the same address', async () => {

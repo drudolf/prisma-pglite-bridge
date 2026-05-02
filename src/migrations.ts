@@ -152,3 +152,57 @@ export const pushMigrations = async (
   }
   return { durationMs: Number(process.hrtime.bigint() - start) / 1e6 };
 };
+
+/**
+ * Returns `true` when the `_prisma_migrations` table exists and has at
+ * least one row with `finished_at IS NOT NULL`. Useful as a "first run"
+ * guard for persistent dataDirs:
+ *
+ * ```typescript
+ * if (!(await hasMigrations(pglite))) {
+ *   await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+ * }
+ * ```
+ *
+ * Awaits `pglite.waitReady` implicitly via `pglite.query(...)`. Detects only
+ * Prisma-managed migrations — `pushSchema` (WASM diff) does not populate
+ * `_prisma_migrations`, so this returns `false` for adapter-applied schemas.
+ */
+export const hasMigrations = async (pglite: PGlite): Promise<boolean> => {
+  const { rows } = await pglite.query<{ exists: boolean }>(
+    `SELECT to_regclass('public._prisma_migrations') IS NOT NULL AS exists`,
+  );
+  if (!rows[0]?.exists) return false;
+
+  const { rows: applied } = await pglite.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM _prisma_migrations WHERE finished_at IS NOT NULL`,
+  );
+  return (applied[0] as { count: number }).count > 0;
+};
+
+/**
+ * Returns `true` when the `public` schema contains at least one user table.
+ * Broader sibling of {@link hasMigrations} — fires for any DDL, regardless of
+ * whether it came from {@link pushMigrations}, {@link pushSchema}, or hand-rolled
+ * SQL. Use as a "first run" guard when you are not using a Prisma migrations
+ * directory:
+ *
+ * ```typescript
+ * if (!(await hasSchema(pglite))) {
+ *   await pushSchema(bridge.adapter, { schema });
+ * }
+ * ```
+ *
+ * Awaits `pglite.waitReady` implicitly via `pglite.query(...)`. The internal
+ * `_pglite_snapshot` schema used by `bridge.snapshotDb()` is excluded — only
+ * the `public` schema is inspected.
+ */
+export const hasSchema = async (pglite: PGlite): Promise<boolean> => {
+  const { rows } = await pglite.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+     ) AS exists`,
+  );
+  return rows[0]?.exists === true;
+};

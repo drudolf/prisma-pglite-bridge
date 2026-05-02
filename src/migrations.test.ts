@@ -2,7 +2,13 @@ import { PGlite } from '@electric-sql/pglite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createTempDir, createTempFile, removeTempDir } from './__tests__/utils/file-system.ts';
-import { getMigrationSQL, pushMigrations, readMigrationFiles } from './migrations.ts';
+import {
+  getMigrationSQL,
+  hasMigrations,
+  hasSchema,
+  pushMigrations,
+  readMigrationFiles,
+} from './migrations.ts';
 import { createPGliteBridge } from './pglite-bridge.ts';
 
 type MigrationsModule = typeof import('./migrations.ts');
@@ -293,5 +299,92 @@ describe('pushMigrations', () => {
     const cause = (error as Error).cause;
     expect(cause).toBeInstanceOf(Error);
     expect(String((cause as Error).message).toLowerCase()).toContain('missing');
+  });
+
+  it('hasMigrations returns false when _prisma_migrations table is absent', async () => {
+    const pglite = new PGlite();
+    try {
+      await expect(hasMigrations(pglite)).resolves.toBe(false);
+    } finally {
+      await pglite.close();
+    }
+  });
+
+  it('hasMigrations returns false when _prisma_migrations exists but no rows are finished', async () => {
+    const pglite = new PGlite();
+    try {
+      await pglite.exec(`
+        CREATE TABLE _prisma_migrations (
+          id text PRIMARY KEY,
+          checksum text NOT NULL,
+          finished_at timestamptz,
+          migration_name text NOT NULL,
+          logs text,
+          rolled_back_at timestamptz,
+          started_at timestamptz NOT NULL DEFAULT now(),
+          applied_steps_count int NOT NULL DEFAULT 0
+        );
+        INSERT INTO _prisma_migrations (id, checksum, migration_name)
+        VALUES ('p', 'c', '0001_pending');
+      `);
+      await expect(hasMigrations(pglite)).resolves.toBe(false);
+    } finally {
+      await pglite.close();
+    }
+  });
+
+  it('hasMigrations returns true when _prisma_migrations has at least one finished row', async () => {
+    const pglite = new PGlite();
+    try {
+      await pglite.exec(`
+        CREATE TABLE _prisma_migrations (
+          id text PRIMARY KEY,
+          checksum text NOT NULL,
+          finished_at timestamptz,
+          migration_name text NOT NULL,
+          logs text,
+          rolled_back_at timestamptz,
+          started_at timestamptz NOT NULL DEFAULT now(),
+          applied_steps_count int NOT NULL DEFAULT 0
+        );
+        INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at)
+        VALUES ('a', 'c', '0001_init', now());
+      `);
+      await expect(hasMigrations(pglite)).resolves.toBe(true);
+    } finally {
+      await pglite.close();
+    }
+  });
+
+  it('hasSchema returns false on an empty database', async () => {
+    const pglite = new PGlite();
+    try {
+      await expect(hasSchema(pglite)).resolves.toBe(false);
+    } finally {
+      await pglite.close();
+    }
+  });
+
+  it('hasSchema returns true when public has at least one user table', async () => {
+    const pglite = new PGlite();
+    try {
+      await pglite.exec('CREATE TABLE "User" (id text PRIMARY KEY)');
+      await expect(hasSchema(pglite)).resolves.toBe(true);
+    } finally {
+      await pglite.close();
+    }
+  });
+
+  it('hasSchema ignores tables outside the public schema', async () => {
+    const pglite = new PGlite();
+    try {
+      await pglite.exec(`
+        CREATE SCHEMA other;
+        CREATE TABLE other.t (id int PRIMARY KEY);
+      `);
+      await expect(hasSchema(pglite)).resolves.toBe(false);
+    } finally {
+      await pglite.close();
+    }
   });
 });

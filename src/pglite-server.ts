@@ -11,12 +11,10 @@
  *
  * The constructor is synchronous; the network bind is exposed as an
  * explicit async `listen()` (mirroring `net.Server`'s API) which resolves
- * to the connection URL. The caller-supplied PGlite must already be ready
- * (`await pglite.waitReady`) and not closed.
+ * to the connection URL. The caller-supplied PGlite must not already closed.
  *
  * ```typescript
  * const pglite = new PGlite();
- * await pglite.waitReady;
  * const server = new PGliteServer({ pglite });
  * const url = await server.listen();
  * console.log(url); // → postgres://postgres@127.0.0.1:54321/postgres
@@ -50,8 +48,8 @@ const resolveSyncToFs = (
 
 export interface PGliteServerOptions {
   /**
-   * PGlite instance to expose. Must be ready (`pglite.ready === true`) and
-   * not closed. The caller owns its lifecycle — `close()` shuts the listener
+   * PGlite instance to expose. Must be not closed.
+   * The caller owns its lifecycle — `close()` shuts the listener
    * and tears down per-connection bridges only.
    */
   pglite: PGlite | PGliteInterface;
@@ -89,7 +87,15 @@ export interface PGliteServerOptions {
 type BridgedSocket = net.Socket & { duplex?: PGliteDuplex };
 
 export class PGliteServer {
-  readonly #options: PGliteServerOptions;
+  /**
+   * The caller-supplied PGlite instance this server fronts. Exposed so
+   * scripts can reach `pglite.dataDir`, `pglite.waitReady`, and pass
+   * the same handle to helpers like {@link pushMigrations} without
+   * threading a separate variable.
+   */
+  readonly pglite: PGlite | PGliteInterface;
+
+  readonly #options: Omit<PGliteServerOptions, 'pglite'>;
   readonly #server: net.Server;
   readonly #sessionLock = new SessionLock();
   readonly #sockets = new Set<BridgedSocket>();
@@ -97,26 +103,20 @@ export class PGliteServer {
   #connectionString: string | undefined;
 
   constructor(options: PGliteServerOptions) {
-    if (!options.pglite.ready) {
-      throw new Error(
-        'PGliteServer requires a ready PGlite instance. ' +
-          'Call `await pglite.waitReady` after `new PGlite(...)` before constructing the server.',
-      );
-    }
-    if (options.pglite.closed) {
-      throw new Error('PGliteServer requires an open PGlite instance; got a closed one.');
-    }
-
     this.#options = options;
     this.#options.host ||= '127.0.0.1';
     this.#options.port ??= !this.#options.dataDir ? 0 : DEFAULT_SOCKET_PORT;
     this.#options.user ||= 'postgres';
 
+    this.pglite = options.pglite;
     this.#server = net.createServer((socket) => this.#onConnection(socket));
   }
 
   listen = async (): Promise<string> => {
     if (this.#connectionString) return this.#connectionString;
+
+    // Wait for pglite to be ready
+    await this.#waitReady();
 
     return await new Promise<string>((resolve, reject) => {
       const onError = (err: Error): void => reject(err);
@@ -162,13 +162,28 @@ export class PGliteServer {
     await Promise.all(sockets.map(({ duplex }) => duplex?.onClose));
   };
 
+  async #waitReady() {
+    if (this.pglite.closed) {
+      throw new Error('PGliteServer requires an open PGlite instance; got a closed one.');
+    }
+
+    if (!this.pglite.ready) {
+      try {
+        await this.pglite.waitReady;
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        throw new Error(`PGliteServer requires a ready PGlite instance; ${msg}`);
+      }
+    }
+  }
+
   #initDuplex(socket: BridgedSocket): PGliteDuplex {
     socket.duplex = new PGliteDuplex(
-      this.#options.pglite,
+      this.pglite,
       this.#sessionLock,
       undefined,
       undefined,
-      resolveSyncToFs(this.#options.pglite, this.#options.syncToFs),
+      resolveSyncToFs(this.pglite, this.#options.syncToFs),
     );
     socket.duplex.on('error', () => socket.destroy());
     socket.once('close', () => {
