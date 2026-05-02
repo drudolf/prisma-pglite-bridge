@@ -1,5 +1,203 @@
 # prisma-pglite-bridge
 
+## 0.7.0
+
+### Minor Changes
+
+- [`c79994d`](https://github.com/drudolf/prisma-pglite-bridge/commit/c79994d4845ba032bc1940631f70456c79724b6e) Thanks [@drudolf](https://github.com/drudolf)! - Add `PGliteDuplex#onClose`, a single-shot `Promise<void>` that
+  resolves once the stream has fully torn down (post-`_final`
+  rollback, post-`_destroy`). Mirrors the `'close'` event but is
+  safe to await even after close has already happened, which makes
+  it convenient for orchestrators that need to wait for in-flight
+  duplexes during shutdown.
+
+- [`342a762`](https://github.com/drudolf/prisma-pglite-bridge/commit/342a7625de202cc6273f31b46aaec71c8b219889) Thanks [@drudolf](https://github.com/drudolf)! - Add `hasMigrations(pglite)` and `hasSchema(pglite)` introspection
+  helpers and expose `PGliteServer#pglite` as a public readonly field.
+
+  `hasMigrations` returns `true` when `_prisma_migrations` exists
+  and has at least one row with `finished_at IS NOT NULL`.
+  `hasSchema` returns `true` when the `public` schema contains at
+  least one user table — broader, fires for `pushSchema` and
+  hand-rolled DDL too. Both await `pglite.waitReady` implicitly via
+  `pglite.query(...)`, so they can be called immediately after
+  `new PGlite(...)`.
+
+  `PGliteServer` now exposes the supplied `pglite` as `server.pglite`
+  (matching `bridge.pglite` on `PGliteBridge`). `listen()` also waits
+  for `pglite.waitReady` internally instead of requiring callers to
+  await it first, and surfaces the underlying rejection on failure.
+
+  Useful as a "first run" guard for persistent `dataDir` setups:
+
+  ```ts
+  const server = new PGliteServer({ pglite: new PGlite("./data/pglite") });
+  if (!(await hasMigrations(server.pglite))) {
+    await pushMigrations(server.pglite, {
+      migrationsPath: "./prisma/migrations",
+    });
+  }
+  await server.listen();
+  ```
+
+- [`a6e84fa`](https://github.com/drudolf/prisma-pglite-bridge/commit/a6e84fabd5016faa9fb098c17f2e6784fb20cc2b) Thanks [@drudolf](https://github.com/drudolf)! - Rename the factory return type: what `createPGliteBridge()` resolves
+  to is now exported as `CreatePGliteBridge` (was `PGliteBridge`). The
+  `PGliteBridge` name is now reserved for the new class-form export.
+
+  **Migration:** rename type imports of `PGliteBridge` (the factory
+  return) to `CreatePGliteBridge`. Runtime behavior unchanged.
+
+- [`5ca2c58`](https://github.com/drudolf/prisma-pglite-bridge/commit/5ca2c58d0bee0f8de928750acd3a1f57428d4430) Thanks [@drudolf](https://github.com/drudolf)! - Rename `CreatePGliteBridgeOptions` to `PGliteBridgeOptions`. The
+  options interface for `createPGliteBridge` now matches the
+  `PGliteBridge` return type — both share the `PGliteBridge` prefix.
+
+  **Migration:** rename any imports of `CreatePGliteBridgeOptions`
+  to `PGliteBridgeOptions`. Behavior is unchanged.
+
+- [`5ca2c58`](https://github.com/drudolf/prisma-pglite-bridge/commit/5ca2c58d0bee0f8de928750acd3a1f57428d4430) Thanks [@drudolf](https://github.com/drudolf)! - Rename `createPool`'s module and options interface:
+  `src/create-pool.ts` → `src/pool.ts`, `CreatePoolOptions` →
+  `PoolOptions`. Aligns with the `create-pglite-bridge` →
+  `pglite-bridge` rename.
+
+  **Migration:** rename imports of `CreatePoolOptions` to
+  `PoolOptions`. Behavior unchanged.
+
+- [`7258c12`](https://github.com/drudolf/prisma-pglite-bridge/commit/7258c1280d9f825754207abd6e41f6ea966a87b4) Thanks [@drudolf](https://github.com/drudolf)! - Remove the `ppb` CLI. The `bin/ppb.ts` entry point and the
+  published `ppb` binary are gone, along with the `citty` runtime
+  dependency.
+
+  **Migration:** spin up a `PGliteServer` and pass its URL to the
+  Prisma CLI. The `prisma db push --url <url>` flow covers the same
+  ground:
+
+  ```ts
+  import { PGlite } from "@electric-sql/pglite";
+  import { PGliteServer } from "prisma-pglite-bridge";
+
+  const server = new PGliteServer({ pglite: new PGlite() });
+  const url = await server.listen();
+  // run: prisma db push --url "$url"
+  ```
+
+- [`148391b`](https://github.com/drudolf/prisma-pglite-bridge/commit/148391b971374871e110272bb93eec177a12f46a) Thanks [@drudolf](https://github.com/drudolf)! - Drop the `SchemaTarget` indirection from `pushMigrations`,
+  `pushSchema`, and `resetSchema`. Each function now takes the
+  underlying handle directly:
+
+  - `pushMigrations(pglite, options)` — was `pushMigrations(bridge, options)`
+  - `pushSchema(adapter, options)` — was `pushSchema(bridge, options)`
+  - `resetSchema(adapter)` — was `resetSchema(bridge)`
+
+  `pushMigrations` runs raw SQL through `pglite.exec`, so it now
+  asks for the `PGlite` instance. `pushSchema` and `resetSchema`
+  go through the Prisma WASM engine, so they take the `PrismaPg`
+  adapter directly. The wrapper that accepted either a bridge or
+  a raw handle is gone.
+
+  The snapshot manager now self-heals when the `_pglite_snapshot`
+  schema is dropped externally (e.g. during a schema reset),
+  removing the cross-module `resetSnapshot` carve-out previously
+  needed in `resetSchema`.
+
+  **Migration:**
+
+  ```ts
+  // before
+  await pushMigrations(bridge, { migrationsPath: "./prisma/migrations" });
+  await pushSchema(bridge, { schema });
+  await resetSchema(bridge);
+
+  // after
+  await pushMigrations(pglite, { migrationsPath: "./prisma/migrations" });
+  await pushSchema(bridge.adapter, { schema });
+  await resetSchema(bridge.adapter);
+  ```
+
+- [`56354c1`](https://github.com/drudolf/prisma-pglite-bridge/commit/56354c1a0617166f5719e7a3de4c41392e0a49e7) Thanks [@drudolf](https://github.com/drudolf)! - Add `PGliteServer` — a TCP or Unix-socket listener that exposes a
+  PGlite instance to standard Postgres clients (`psql`, Prisma CLI
+  shadow DB, DBeaver, Studio). The constructor is synchronous; the
+  network bind happens in an explicit async `listen()` (mirroring
+  `net.Server`'s API), which awaits `pglite.waitReady` internally and
+  resolves to a `postgres://` connection URL.
+
+  ```ts
+  import { PGlite } from "@electric-sql/pglite";
+  import { PGliteServer } from "prisma-pglite-bridge";
+
+  const server = new PGliteServer({ pglite: new PGlite() });
+  const url = await server.listen();
+  // → postgres://postgres@127.0.0.1:54321/postgres
+  ```
+
+  Pass `dataDir` (and optional `port`, default `5432`) for a Unix
+  socket — the library binds the libpq-conventional path
+  `<dataDir>/.s.PGSQL.<port>` so clients connect with just
+  `host=<dataDir>`. Otherwise binds TCP loopback on `host`
+  (default `127.0.0.1`) and `port` (default `0`, ephemeral).
+  Each accepted socket gets its own `PGliteDuplex` sharing a single
+  `SessionLock`, so transactions across connections serialize correctly.
+  No auth — intended for development and the Prisma `migrate dev`
+  shadow DB.
+
+  Also: `PGliteDuplex` now rolls back any open transaction on `_final`,
+  `_destroy`, and `Terminate`. Transaction detection lives on the duplex
+  itself (via the last observed ReadyForQuery status), not on
+  `SessionLock`, so cleanup runs for both locked pools (`max>1`, TCP
+  server) and standalone duplexes (default `max=1` pool). Awaiting any
+  in-flight `pglite.execProtocolRawStream` call before deciding closes
+  the BEGIN-in-flight race where ownership had not yet been recorded.
+  A client disconnect mid-transaction — Terminate, hard-disconnect, or
+  `pool.release(err)` — no longer leaks `T` state into the next
+  connection.
+
+### Patch Changes
+
+- [`3eb6388`](https://github.com/drudolf/prisma-pglite-bridge/commit/3eb638870a636f95fd79337ad435b25f264cf2ee) Thanks [@drudolf](https://github.com/drudolf)! - Add `cli-compat` test project covering `PGliteServer` end-to-end
+  through real CLI binaries:
+
+  - `psql` (skipped when not installed)
+  - `prisma db push`, `db pull`, `db execute`
+  - `prisma migrate dev` (multi-migration), `migrate deploy`,
+    `migrate reset`, `migrate status` — Prisma 7, with the shadow
+    database backed by a second `PGliteServer` instance
+
+  Run with `pnpm test:cli-compat`. Tests are scoped to their own
+  vitest project so the default suite stays fast.
+
+- [`fa55dc6`](https://github.com/drudolf/prisma-pglite-bridge/commit/fa55dc64f44821d8db471561d1074cd197ad2d13) Thanks [@drudolf](https://github.com/drudolf)! - Internal refactor: split the 1109-line `pglite-duplex` module into a
+  `src/duplex/` folder with focused units (constants, RowDescription
+  rewrite, `FrontendMessageBuffer`, `BackendMessageFramer`,
+  `PGliteDuplex`). Tests are co-located per unit. Public API is
+  unchanged — `PGliteDuplex` is still exported from the package root.
+
+- [`0c56668`](https://github.com/drudolf/prisma-pglite-bridge/commit/0c5666844549604b965029c88a2e46bb83b6f28e) Thanks [@drudolf](https://github.com/drudolf)! - Internal cleanup flagged by knip:
+
+  - Drop `export` on six frontend message-type constants in
+    `src/duplex/constants.ts` (`PARSE`, `BIND`, `DESCRIBE`,
+    `EXECUTE`, `CLOSE`, `FLUSH`) — only used to build
+    `EQP_MESSAGES` inside the same file.
+  - Fold `src/duplex/pglite-duplex.ts` into `src/duplex/index.ts`,
+    the only remaining content of the duplex barrel. Dead
+    re-exports of `BackendMessageFramer` and `FrontendMessageBuffer`
+    removed (consumers and tests already imported them directly
+    from their unit files).
+
+  Public API is unchanged — `PGliteDuplex` is still exported from
+  the package root via `./duplex/index.ts`.
+
+- [`5ca2c58`](https://github.com/drudolf/prisma-pglite-bridge/commit/5ca2c58d0bee0f8de928750acd3a1f57428d4430) Thanks [@drudolf](https://github.com/drudolf)! - Internal refactor: move `PgBridgeClient` from `src/` into
+  `src/utils/`, alongside the related primitives (`bridge-stats`,
+  `session-lock`). Public API is unchanged.
+
+- [`5ca2c58`](https://github.com/drudolf/prisma-pglite-bridge/commit/5ca2c58d0bee0f8de928750acd3a1f57428d4430) Thanks [@drudolf](https://github.com/drudolf)! - Internal refactor: rename `BridgeClient` to `PgBridgeClient` (and the
+  matching file, types, and options symbol). The class extends
+  `pg.Client`; the `Pg` prefix marks it as the pg-flavored variant.
+  The standalone `bridgeClientOptionsKey` export is now a
+  `PgBridgeClient.OptionsKey` static property. Public API is unchanged
+  — neither name was exported from the package root.
+
+- [`5ca2c58`](https://github.com/drudolf/prisma-pglite-bridge/commit/5ca2c58d0bee0f8de928750acd3a1f57428d4430) Thanks [@drudolf](https://github.com/drudolf)! - Internal consistency: align `Pglite` identifiers with the canonical
+  `PGlite` casing across test helpers, benchmark instrumentation, and
+  local variables. No public API changes.
+
 ## 0.6.1
 
 ### Patch Changes
