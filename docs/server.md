@@ -27,10 +27,7 @@ or running tools that hard-require a wire-protocol endpoint.
 import { PGlite } from '@electric-sql/pglite';
 import { PGliteServer } from 'prisma-pglite-bridge';
 
-const pglite = new PGlite();
-await pglite.waitReady;
-
-const server = new PGliteServer({ pglite });
+const server = new PGliteServer({ pglite: new PGlite() });
 const url = await server.listen();
 
 console.log(url);
@@ -38,14 +35,17 @@ console.log(url);
 
 // later
 await server.close();
-await pglite.close();
+await server.pglite.close();
 ```
 
-The constructor is synchronous and validates that the PGlite
-instance is ready and open. The network bind happens in the
+The constructor is synchronous. The network bind happens in the
 explicit `listen()` step (mirroring `net.Server`'s API), which
-resolves to a connection URL ready to pass to any
-`pg.Client` / `pg.Pool`.
+awaits `pglite.waitReady` internally and resolves to a connection
+URL ready to pass to any `pg.Client` / `pg.Pool`. The caller-supplied
+PGlite is re-exposed as `server.pglite` so scripts can pass it to
+helpers like [`pushMigrations`](./api.md#pushmigrationspglite-options)
+or [`hasMigrations`](./api.md#hasmigrationspglite) without threading
+a separate variable.
 
 By default the server binds to `127.0.0.1` on an ephemeral port
 (`port: 0`). The actual bound port is reflected in the URL.
@@ -58,7 +58,7 @@ PGlite instance** — you own its lifecycle.
 
 ```typescript
 new PGliteServer({
-  pglite,                 // required — must be ready, not closed
+  pglite,                 // required — must not be closed; `listen()` awaits `waitReady`
   host: '127.0.0.1',      // default '127.0.0.1' (loopback)
   port: 0,                // default 0 (ephemeral) in TCP mode;
                           // 5432 in Unix-socket mode (suffix of the socket file)
@@ -96,12 +96,8 @@ diff schemas. Spin up a second `PGliteServer` instance and point
 Prisma at it — no Docker, no second `pg_ctl` process:
 
 ```typescript
-const mainPglite = new PGlite();
-const shadowPglite = new PGlite();
-await Promise.all([mainPglite.waitReady, shadowPglite.waitReady]);
-
-const main = new PGliteServer({ pglite: mainPglite });
-const shadow = new PGliteServer({ pglite: shadowPglite });
+const main = new PGliteServer({ pglite: new PGlite() });
+const shadow = new PGliteServer({ pglite: new PGlite() });
 
 const [mainUrl, shadowUrl] = await Promise.all([main.listen(), shadow.listen()]);
 

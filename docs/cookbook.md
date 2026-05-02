@@ -12,6 +12,7 @@ For the underlying API, see the [API reference](./api.md).
 - [Using PostgreSQL extensions](#using-postgresql-extensions)
 - [Pre-generated SQL (fastest)](#pre-generated-sql-fastest)
 - [Persistent dev database (optional)](#persistent-dev-database-optional)
+- [Long-lived dev server (Studio, `psql`, `prisma migrate dev`)](#long-lived-dev-server-studio-psql-prisma-migrate-dev)
 - [Long-running script with clean shutdown](#long-running-script-with-clean-shutdown)
 
 ## Replacing your production database in tests
@@ -259,6 +260,91 @@ const prisma = new PrismaClient({ adapter: bridge.adapter });
 after schema changes to pick up new migrations. This gives you a
 local PostgreSQL without Docker — useful for offline development
 or environments where installing PostgreSQL is impractical.
+
+## Long-lived dev server (Studio, `psql`, `prisma migrate dev`)
+
+The persistent recipe above runs PGlite in-process — fine for a
+single Node app, but external tools (`prisma studio`, `psql`,
+DBeaver, the `prisma` CLI itself) need a wire-protocol endpoint.
+Combine `PGliteServer` with a persistent `dataDir` to get a
+long-running local Postgres without Docker:
+
+```typescript
+// scripts/db-dev.ts
+import { PGlite } from '@electric-sql/pglite';
+import { PGliteServer, hasMigrations, pushMigrations } from 'prisma-pglite-bridge';
+
+const server = new PGliteServer({
+  pglite: new PGlite('./data/pglite'),
+  port: 54321,
+});
+
+const shadow = new PGliteServer({
+  pglite: new PGlite('./data/shadow'),
+  port: 54322,
+});
+
+if (!(await hasMigrations(server.pglite))) {
+  await pushMigrations(server.pglite, { migrationsPath: './prisma/migrations' });
+}
+
+const [DATABASE_URL, SHADOW_DATABASE_URL] = await Promise.all([server.listen(), shadow.listen()]);
+
+console.log(`DATABASE_URL=${DATABASE_URL}`);
+console.log(`SHADOW_DATABASE_URL=${SHADOW_DATABASE_URL}`);
+
+const shutdown = async () => {
+  await server.close();
+  await server.pglite.close();
+  await shadow.close();
+  await shadow.pglite.close();
+  process.exit(0);
+};
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+```
+
+Wire it up:
+
+```json
+// package.json
+{
+  "scripts": {
+    "db:dev": "tsx scripts/db-dev.ts"
+  }
+}
+```
+
+```sh
+# .env
+DATABASE_URL=postgres://postgres@127.0.0.1:54321/postgres
+SHADOW_DATABASE_URL=postgres://postgres@127.0.0.1:54322/postgres
+```
+
+```typescript
+// prisma.config.ts
+import { defineConfig } from 'prisma/config';
+
+export default defineConfig({
+  schema: 'prisma/schema.prisma',
+  migrations: {
+    shadowDatabaseUrl: process.env.SHADOW_DATABASE_URL,
+  },
+});
+```
+
+Run `pnpm db:dev` in one terminal, then in another:
+
+```sh
+pnpm prisma migrate dev   # uses the shadow DB
+pnpm prisma studio        # connects to DATABASE_URL
+psql "$DATABASE_URL"      # ad-hoc inspection
+```
+
+Add `data/` to `.gitignore`. Delete the directory to start fresh
+or to pick up new migrations (`hasMigrations` returns `true` once
+any migration has been applied, so subsequent runs skip
+`pushMigrations`).
 
 ## Long-running script with clean shutdown
 

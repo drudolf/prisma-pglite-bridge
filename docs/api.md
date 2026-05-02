@@ -13,6 +13,8 @@ For known limits and runtime warnings see
 - [`pushMigrations(pglite, options)`](#pushmigrationspglite-options)
 - [`pushSchema(adapter, options)`](#pushschemaadapter-options)
 - [`resetSchema(adapter)`](#resetschemaadapter)
+- [`hasMigrations(pglite)`](#hasmigrationspglite)
+- [`hasSchema(pglite)`](#hasschemapglite)
 - [`createPool(options)`](#createpooloptions)
 - [`PGliteServer`](#pgliteserver)
 - [`PGliteDuplex`](#pgliteduplex)
@@ -34,7 +36,10 @@ project layout:
 `pushMigrations` works against any `PGlite` instance directly;
 `pushSchema` / `resetSchema` work against any `PrismaPg` adapter
 (typically `bridge.adapter`). If you reopen a persistent `dataDir`
-that already holds the schema, call neither.
+that already holds the schema, call neither — guard the call with
+[`hasMigrations`](#hasmigrationspglite) (Prisma migrations) or
+[`hasSchema`](#hasschemapglite) (any user table) so the apply step
+runs only on a fresh dataDir.
 
 Schema SQL is executed verbatim with no checksum or signature
 verification. Compose it from trusted, version-controlled source
@@ -44,9 +49,9 @@ directory writable only by trusted processes.
 
 ## `createPGliteBridge(options)`
 
-Creates a `PGliteBridge` — a bundle holding a Prisma driver adapter,
-the underlying PGlite instance, and lifecycle helpers — backed by a
-caller-supplied PGlite instance.
+Creates a `CreatePGliteBridge` — a bundle holding a Prisma driver
+adapter, the underlying PGlite instance, and lifecycle helpers —
+backed by a caller-supplied PGlite instance.
 
 ```typescript
 const pglite = new PGlite(/* dataDir, extensions, ... */);
@@ -64,7 +69,7 @@ To apply schema SQL, pass `bridge.pglite` to
 to [`pushSchema`](#pushschemaadapter-options) — see
 [Populating the database](#populating-the-database).
 
-Returns a `PGliteBridge`:
+Returns a `CreatePGliteBridge`:
 
 - `adapter` — pass to `new PrismaClient({ adapter })`, or to
   `pushSchema` / `resetSchema`
@@ -180,6 +185,56 @@ import { resetSchema } from 'prisma-pglite-bridge';
 
 await resetSchema(bridge.adapter);
 ```
+
+## `hasMigrations(pglite)`
+
+Returns `true` when the `_prisma_migrations` table exists on
+`pglite` and contains at least one row with
+`finished_at IS NOT NULL`. Useful as a "first run" guard for
+persistent `dataDir` setups so [`pushMigrations`](#pushmigrationspglite-options)
+only runs on a fresh database:
+
+```typescript
+import { PGlite } from '@electric-sql/pglite';
+import { hasMigrations, pushMigrations } from 'prisma-pglite-bridge';
+
+const pglite = new PGlite('./data/pglite');
+if (!(await hasMigrations(pglite))) {
+  await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+}
+```
+
+Awaits `pglite.waitReady` implicitly via `pglite.query(...)`, so it
+is safe to call immediately after `new PGlite(...)`. Detects only
+Prisma-managed migrations — [`pushSchema`](#pushschemaadapter-options)
+does not populate `_prisma_migrations`, so this returns `false` for
+adapter-applied schemas. Use [`hasSchema`](#hasschemapglite) for the
+broader check.
+
+## `hasSchema(pglite)`
+
+Returns `true` when the `public` schema contains at least one user
+table. Broader sibling of [`hasMigrations`](#hasmigrationspglite) —
+fires for any DDL, regardless of whether it came from
+[`pushMigrations`](#pushmigrationspglite-options),
+[`pushSchema`](#pushschemaadapter-options), or hand-rolled SQL. Use
+when migrations are not part of the workflow:
+
+```typescript
+import { PGlite } from '@electric-sql/pglite';
+import { createPGliteBridge, hasSchema, pushSchema } from 'prisma-pglite-bridge';
+
+const pglite = new PGlite('./data/pglite');
+const bridge = await createPGliteBridge({ pglite });
+
+if (!(await hasSchema(pglite))) {
+  await pushSchema(bridge.adapter, { schema });
+}
+```
+
+Awaits `pglite.waitReady` implicitly via `pglite.query(...)`. Only
+the `public` schema is inspected — the internal `_pglite_snapshot`
+schema used by `bridge.snapshotDb()` is excluded.
 
 ## `createPool(options)`
 
