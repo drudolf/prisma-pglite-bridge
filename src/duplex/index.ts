@@ -77,6 +77,9 @@ export class PGliteDuplex extends Duplex {
   /** Memoized rollback so concurrent teardown paths (e.g., `_final` then
    *  `_destroy`) don't issue duplicate `ROLLBACK` statements. */
   private rollbackPromise?: Promise<void>;
+  /** Resolves once the stream has fully torn down (post-`_final` rollback,
+   *  post-`_destroy`). Single-shot, mirroring the `'close'` event. */
+  readonly onClose: Promise<void>;
 
   /**
    * @param pglite       PGlite instance to bridge to. The caller owns its lifecycle.
@@ -105,6 +108,7 @@ export class PGliteDuplex extends Duplex {
     this.telemetry = telemetry;
     this.syncToFs = syncToFs;
     this.duplexId = Symbol('duplex');
+    this.onClose = new Promise<void>((resolve) => this.once('close', () => resolve()));
   }
 
   // ── Socket compatibility (called by pg's Connection) ──
