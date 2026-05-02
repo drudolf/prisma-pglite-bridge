@@ -1,24 +1,22 @@
 /**
  * Apply pre-generated SQL (raw or from `prisma/migrations/`) to a PGlite
- * database. Sibling of {@link pushSchema} — same target shape, but no
- * schema engine and no `@prisma/schema-engine-wasm` import. Use when you
- * already have generated SQL and don't need a live schema diff.
+ * database. Sibling of {@link pushSchema} — both populate a database, but
+ * `pushMigrations` takes a `PGlite` directly and bypasses
+ * `@prisma/schema-engine-wasm`. Use when you already have generated SQL
+ * and don't need a live schema diff.
  *
  * @example
  * ```typescript
  * import { PGlite } from '@electric-sql/pglite';
- * import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
+ * import { pushMigrations } from 'prisma-pglite-bridge';
  *
  * const pglite = new PGlite();
- * const bridge = await createPGliteBridge({ pglite });
- * await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
+ * await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
  * ```
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-
-import type { PGliteBridge } from './pglite-bridge.ts';
-import type { SchemaTarget } from './schema.ts';
+import type { PGlite } from '@electric-sql/pglite';
 
 export interface PushMigrationsOptions {
   /** Pre-generated SQL to apply directly. */
@@ -127,35 +125,26 @@ export const getMigrationSQL = async (options: PushMigrationsOptions): Promise<s
   );
 };
 
-const isPGliteBridge = (target: SchemaTarget): target is PGliteBridge =>
-  'pglite' in target && 'adapter' in target;
-
 /**
- * Apply pre-generated SQL to the PGlite instance backing `target`.
+ * Apply pre-generated SQL to a PGlite instance.
  *
- * Runs the SQL through `pglite.exec(...)` directly, bypassing the bridge
- * pool. No schema engine, no WASM module, no diffing.
+ * Runs the SQL through `pglite.exec(...)` directly, bypassing any bridge
+ * pool. No schema engine, no WASM module, no diffing — useful when you
+ * already have a `prisma/migrations` directory or pre-generated SQL.
  *
- * Currently only {@link PGliteBridge} targets are supported. Raw `PrismaPg`
- * targets have no PGlite reference; pass the {@link PGliteBridge} returned
- * by {@link createPGliteBridge} instead.
+ * Pass the same PGlite instance you handed to {@link createPGliteBridge}
+ * (i.e. `bridge.pglite`) — or any standalone `PGlite` you own.
  */
 export const pushMigrations = async (
-  target: SchemaTarget,
+  pglite: PGlite,
   options: PushMigrationsOptions = {},
 ): Promise<PushMigrationsResult> => {
-  if (!isPGliteBridge(target)) {
-    throw new Error(
-      'pushMigrations requires a PGliteBridge target. Raw PrismaPg targets have no PGlite reference; pass the bridge returned by createPGliteBridge().',
-    );
-  }
   const sql = await getMigrationSQL(options);
   const start = process.hrtime.bigint();
   try {
-    await target.pglite.exec(sql);
+    await pglite.exec(sql);
   } catch (err) {
-    const dataDir = (target.pglite as { dataDir?: string }).dataDir;
-    const where = dataDir ? `PGlite(dataDir=${dataDir})` : 'in-memory PGlite';
+    const where = pglite.dataDir ? `PGlite(dataDir=${pglite.dataDir})` : 'in-memory PGlite';
     throw new Error(
       `Failed to apply schema SQL to ${where}. Check your schema or migration files.`,
       { cause: err },

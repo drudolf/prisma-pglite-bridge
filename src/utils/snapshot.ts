@@ -12,6 +12,7 @@ const escapeLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const quoteIdent = (identifier: string): string => `"${identifier.replace(/"/g, '""')}"`;
 
 const SNAPSHOT_SCHEMA_IDENT = quoteIdent(SNAPSHOT_SCHEMA);
+const SNAPSHOT_SCHEMA_LITERAL = escapeLiteral(SNAPSHOT_SCHEMA);
 
 export interface SnapshotManager {
   /**
@@ -114,6 +115,20 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
     await pglite.exec(`DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_IDENT} CASCADE`);
   };
 
+  /**
+   * Self-heal: someone (e.g. `resetSchema`) may drop `_pglite_snapshot`
+   * out from under us. Returns whether the schema actually exists right now,
+   * and clears `hasSnapshot` if it doesn't.
+   */
+  const snapshotSchemaExists = async (): Promise<boolean> => {
+    const { rows } = await pglite.query<{ exists: boolean }>(
+      `SELECT to_regnamespace(${SNAPSHOT_SCHEMA_LITERAL}) IS NOT NULL AS exists`,
+    );
+    const exists = rows[0]?.exists;
+    if (!exists) hasSnapshot = false;
+    return !!exists;
+  };
+
   const withReplicationRoleReplica = async (fn: () => Promise<void>) => {
     try {
       await pglite.exec('SET session_replication_role = replica');
@@ -124,6 +139,8 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
   };
 
   const resetDb = async () => {
+    if (hasSnapshot) await snapshotSchemaExists();
+
     const tables = await getTables();
 
     if (tables) {

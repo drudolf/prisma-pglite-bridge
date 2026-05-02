@@ -15,20 +15,14 @@
  * import { createPGliteBridge, pushSchema } from 'prisma-pglite-bridge';
  *
  * const pglite = new PGlite();
- * const bridge = await createPGliteBridge({ pglite });
+ * const { adapter } = await createPGliteBridge({ pglite });
  *
- * await pushSchema(bridge, {
+ * await pushSchema(adapter, {
  *   schema: await fs.readFile('prisma/schema.prisma', 'utf8'),
  * });
  * ```
  */
 import type { PrismaPg } from '@prisma/adapter-pg';
-
-import type { PGliteBridge } from './pglite-bridge.ts';
-import type { PGliteBridge as PGliteBridgeCls } from './pglite-bridge-class.ts';
-
-/** A schema-apply target. Either a {@link PGliteBridge} from {@link createPGliteBridge} or a raw {@link PrismaPg}. */
-export type SchemaTarget = PGliteBridge | PGliteBridgeCls | PrismaPg;
 
 export interface PushSchemaOptions {
   /** Inline Prisma schema source. */
@@ -64,11 +58,9 @@ export interface PushSchemaResult {
   unexecutable: string[];
 }
 
-const unwrap = (target: SchemaTarget): PrismaPg => ('adapter' in target ? target.adapter : target);
-
-const bindAdapter = async (target: SchemaTarget): Promise<object> => {
+const bindAdapter = async (adapter: PrismaPg): Promise<object> => {
   const { bindMigrationAwareSqlAdapterFactory } = await import('@prisma/driver-adapter-utils');
-  return bindMigrationAwareSqlAdapterFactory(unwrap(target));
+  return bindMigrationAwareSqlAdapterFactory(adapter);
 };
 
 const emptyFilter = (): { externalTables: string[]; externalEnums: string[] } => ({
@@ -88,9 +80,8 @@ const quoteIdent = (name: string): string => `"${name.replace(/"/g, '""')}"`;
  * because `executeScript` splits on `;` and would mis-parse schema names that
  * contain a semicolon.
  */
-const dropAllUserSchemas = async (target: SchemaTarget): Promise<void> => {
-  const factory = unwrap(target);
-  const conn = await factory.connect();
+const dropAllUserSchemas = async (adapter: PrismaPg): Promise<void> => {
+  const conn = await adapter.connect();
   try {
     const result = await conn.queryRaw({
       sql: `SELECT nspname FROM pg_namespace
@@ -115,26 +106,18 @@ const dropAllUserSchemas = async (target: SchemaTarget): Promise<void> => {
   } finally {
     await conn.dispose();
   }
-  // The wrapper's snapshot manager keeps in-memory state about whether
-  // `_pglite_snapshot` exists. Dropping the schema out from under it would
-  // leave `hasSnapshot = true` and the next `resetDb()` call would query a
-  // missing schema. `resetSnapshot()` is idempotent — safe to call when no
-  // snapshot was ever taken.
-  if ('resetSnapshot' in target) {
-    await target.resetSnapshot();
-  }
 };
 
 export const pushSchema = async (
-  target: SchemaTarget,
+  adapter: PrismaPg,
   options: PushSchemaOptions,
 ): Promise<PushSchemaResult> => {
   const filename = options.filename ?? 'schema.prisma';
   if (options.forceReset) {
-    await dropAllUserSchemas(target);
+    await dropAllUserSchemas(adapter);
   }
   const { SchemaEngine } = await import('@prisma/schema-engine-wasm');
-  const bound = await bindAdapter(target);
+  const bound = await bindAdapter(adapter);
 
   const engine = await SchemaEngine.new(
     { datamodels: [[filename, options.schema]] },
@@ -157,6 +140,6 @@ export const pushSchema = async (
   }
 };
 
-export const resetSchema = async (target: SchemaTarget): Promise<void> => {
-  await dropAllUserSchemas(target);
+export const resetSchema = async (adapter: PrismaPg): Promise<void> => {
+  await dropAllUserSchemas(adapter);
 };

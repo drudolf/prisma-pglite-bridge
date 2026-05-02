@@ -11,9 +11,9 @@
  * import { PrismaClient } from '@prisma/client';
  *
  * const pglite = new PGlite();
- * const bridge = await createPGliteBridge({ pglite });
- * await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
+ * await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
  *
+ * const bridge = await createPGliteBridge({ pglite });
  * const prisma = new PrismaClient({ adapter: bridge.adapter });
  * beforeEach(() => bridge.resetDb());
  * ```

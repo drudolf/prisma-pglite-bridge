@@ -41,7 +41,7 @@ import { beforeEach, vi } from 'vitest';
 
 const pglite = new PGlite();
 const bridge = await createPGliteBridge({ pglite });
-await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
+await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 export const testPrisma = new PrismaClient({ adapter: bridge.adapter });
 
 vi.mock('./lib/prisma', () => ({ prisma: testPrisma }));
@@ -82,7 +82,7 @@ jest.mock('./lib/prisma', () => ({
 beforeAll(async () => {
   const pglite = new PGlite();
   const bridge = await createPGliteBridge({ pglite });
-  await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
+  await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
   testPrisma = new PrismaClient({ adapter: bridge.adapter });
   resetDb = bridge.resetDb;
 });
@@ -106,7 +106,7 @@ let resetDb: ResetDbFn;
 beforeAll(async () => {
   const pglite = new PGlite();
   const bridge = await createPGliteBridge({ pglite });
-  await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
+  await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
   prisma = new PrismaClient({ adapter: bridge.adapter });
   resetDb = bridge.resetDb;
 });
@@ -156,7 +156,7 @@ let resetDb: ResetDbFn;
 beforeAll(async () => {
   const pglite = new PGlite();
   const bridge = await createPGliteBridge({ pglite });
-  await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
+  await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
   prisma = new PrismaClient({ adapter: bridge.adapter });
   await seed(prisma);
   await bridge.snapshotDb();
@@ -183,7 +183,7 @@ import { createPGliteBridge, pushSchema } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
 const bridge = await createPGliteBridge({ pglite });
-await pushSchema(bridge, {
+await pushSchema(bridge.adapter, {
   schema: await readFile('prisma/schema.prisma', 'utf8'),
 });
 ```
@@ -201,7 +201,7 @@ import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
 
 const pglite = new PGlite({ extensions: { uuid_ossp, pgcrypto } });
 const bridge = await createPGliteBridge({ pglite });
-await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
+await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 ```
 
 Extensions are included in the `@electric-sql/pglite` package —
@@ -221,7 +221,7 @@ import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
 const bridge = await createPGliteBridge({ pglite });
-await pushMigrations(bridge, {
+await pushMigrations(pglite, {
   sql: `
     CREATE TABLE "User" (id text PRIMARY KEY, name text NOT NULL);
     CREATE TABLE "Post" (
@@ -251,7 +251,7 @@ const firstRun = !existsSync(join(dataDir, 'PG_VERSION'));
 
 const pglite = new PGlite(dataDir);
 const bridge = await createPGliteBridge({ pglite });
-if (firstRun) await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
+if (firstRun) await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 ```
 
@@ -268,7 +268,7 @@ import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
 const bridge = await createPGliteBridge({ pglite });
-await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
+await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 
 try {

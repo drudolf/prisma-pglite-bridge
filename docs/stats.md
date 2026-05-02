@@ -31,11 +31,12 @@ import { PGlite } from '@electric-sql/pglite';
 import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
+await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+
 const bridge = await createPGliteBridge({
   pglite,
   statsLevel: 'basic', // or 'full'
 });
-await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 
 afterAll(async () => {
