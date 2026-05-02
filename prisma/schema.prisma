@@ -219,6 +219,7 @@ model Blob {
   id          String   @id @default(cuid())
   name        String
   data        Bytes                         // binary column
+  chunks      Bytes[]  @default([])         // bytea[] for array decoder benchmarks
   contentType String   @default("application/octet-stream")
   size        Int
   createdAt   DateTime @default(now())
