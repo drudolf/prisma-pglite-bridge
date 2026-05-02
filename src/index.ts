@@ -18,7 +18,7 @@
  */
 
 export type { PushMigrationsOptions, PushMigrationsResult } from './migrations.ts';
-export { pushMigrations } from './migrations.ts';
+export { hasMigrations, hasSchema, pushMigrations } from './migrations.ts';
 // ── High-level API (most users only need this) ──
 export type {
   CloseFn,
