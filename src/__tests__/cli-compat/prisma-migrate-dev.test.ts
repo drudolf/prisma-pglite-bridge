@@ -12,7 +12,7 @@ import {
 import { runCli } from './utils/run-cli.ts';
 import { type StartedServer, startServer } from './utils/start-server.ts';
 
-describe('prisma migrate dev against createPGliteServer', () => {
+describe('prisma migrate dev against PGliteServer', () => {
   const started: StartedServer[] = [];
   let project: PrismaProject | undefined;
 
@@ -39,8 +39,8 @@ model Sprocket {
     project = await setupPrismaProject(initialSchema);
     const env = {
       PRISMA_HIDE_UPDATE_MESSAGE: '1',
-      DATABASE_URL: main.url,
-      SHADOW_DATABASE_URL: shadow.url,
+      DATABASE_URL: await main.server.listen(),
+      SHADOW_DATABASE_URL: await shadow.server.listen(),
     };
 
     const initResult = await runCli(PRISMA_BIN, ['migrate', 'dev', '--name', 'init'], {
@@ -88,7 +88,7 @@ model Sprocket {
     expect(addColorSql).toMatch(/ALTER TABLE "Sprocket"/);
     expect(addColorSql).toMatch(/ADD COLUMN\s+"color"/);
 
-    const client = new pg.Client({ connectionString: main.url });
+    const client = new pg.Client(env.DATABASE_URL);
     await client.connect();
     try {
       // Both migrations recorded in _prisma_migrations and finished.

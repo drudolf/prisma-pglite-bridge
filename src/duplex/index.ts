@@ -17,7 +17,7 @@
  * keeping only the final ReadyForQuery after Sync.
  */
 import { Duplex } from 'node:stream';
-import type { PGlite } from '@electric-sql/pglite';
+import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 import type { TelemetrySink } from '../utils/bridge-stats.ts';
 import { lockWaitChannel, queryChannel } from '../utils/diagnostics.ts';
 import type { BridgeId as DuplexId, SessionLock } from '../utils/session-lock.ts';
@@ -49,7 +49,7 @@ import { FrontendMessageBuffer } from './frontend-buffer.ts';
  * ```
  */
 export class PGliteDuplex extends Duplex {
-  private readonly pglite: PGlite;
+  private readonly pglite: PGlite | PGliteInterface;
   private readonly sessionLock?: SessionLock;
   private readonly bridgeId?: symbol;
   private readonly telemetry?: TelemetrySink;
@@ -95,7 +95,7 @@ export class PGliteDuplex extends Duplex {
    *                     higher throughput / lower RSS is worth weaker durability.
    */
   constructor(
-    pglite: PGlite,
+    pglite: PGlite | PGliteInterface,
     sessionLock?: SessionLock,
     bridgeId?: symbol,
     telemetry?: TelemetrySink,

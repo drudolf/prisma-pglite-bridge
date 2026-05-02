@@ -12,7 +12,7 @@ import {
 import { runCli } from './utils/run-cli.ts';
 import { type StartedServer, startServer } from './utils/start-server.ts';
 
-describe('prisma db execute against createPGliteServer', () => {
+describe('prisma db execute against PGliteServer', () => {
   let started: StartedServer | undefined;
   let project: PrismaProject | undefined;
 
@@ -36,17 +36,18 @@ INSERT INTO "Spring" (tension) VALUES (10), (20), (30);
       'utf8',
     );
 
+    const DATABASE_URL = await started.server.listen();
     const result = await runCli(PRISMA_BIN, ['db', 'execute', '--file', sqlPath], {
       cwd: project.dir,
       env: {
         PRISMA_HIDE_UPDATE_MESSAGE: '1',
-        DATABASE_URL: started.url,
+        DATABASE_URL,
       },
       timeoutMs: 30_000,
     });
     expect(result.code, result.stderr).toBe(0);
 
-    const client = new pg.Client({ connectionString: started.url });
+    const client = new pg.Client(DATABASE_URL);
     await client.connect();
     try {
       const r = await client.query<{ tension: number }>(

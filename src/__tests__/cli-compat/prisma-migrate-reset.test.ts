@@ -10,7 +10,7 @@ import {
 import { runCli } from './utils/run-cli.ts';
 import { type StartedServer, startServer } from './utils/start-server.ts';
 
-describe('prisma migrate reset against createPGliteServer', () => {
+describe('prisma migrate reset against PGliteServer', () => {
   const started: StartedServer[] = [];
   let project: PrismaProject | undefined;
 
@@ -37,8 +37,8 @@ model Cog {
     project = await setupPrismaProject(schema);
     const env = {
       PRISMA_HIDE_UPDATE_MESSAGE: '1',
-      DATABASE_URL: main.url,
-      SHADOW_DATABASE_URL: shadow.url,
+      DATABASE_URL: await main.server.listen(),
+      SHADOW_DATABASE_URL: await shadow.server.listen(),
       // Prisma 7 detects AI-agent invocation and blocks destructive ops
       // unless this consent var is set. Tests target an ephemeral PGlite —
       // no real-DB risk.
@@ -54,7 +54,7 @@ model Cog {
     });
     expect(dev.code, dev.stderr).toBe(0);
 
-    const seed = new pg.Client({ connectionString: main.url });
+    const seed = new pg.Client(env.DATABASE_URL);
     await seed.connect();
     try {
       await seed.query('INSERT INTO "Cog" (teeth) VALUES (12), (24)');
@@ -74,7 +74,7 @@ model Cog {
     });
     expect(reset.code, reset.stderr).toBe(0);
 
-    const verify = new pg.Client({ connectionString: main.url });
+    const verify = new pg.Client(env.DATABASE_URL);
     await verify.connect();
     try {
       const tableExists = await verify.query<{ table_name: string }>(

@@ -14,7 +14,7 @@ For known limits and runtime warnings see
 - [`pushSchema(target, options)`](#pushschematarget-options)
 - [`resetSchema(target)`](#resetschematarget)
 - [`createPool(options)`](#createpooloptions)
-- [`createPGliteServer(options)`](#createpgliteserveroptions)
+- [`PGliteServer`](#pgliteserver)
 - [`PGliteDuplex`](#pgliteduplex)
 - [`SessionLock`](#sessionlock)
 - [Diagnostics channel exports](#diagnostics-channel-exports)
@@ -197,20 +197,21 @@ Returns `pool` (pg.Pool), `bridgeId` (a unique `symbol` for
 PGlite instance is not closed). Accepts `pglite` (required),
 `max`, `bridgeId`, and `syncToFs`.
 
-## `createPGliteServer(options)`
+## `PGliteServer`
 
 Exposes a PGlite instance over TCP or a Unix domain socket so
 standard PostgreSQL clients can connect. Useful for the Prisma CLI
 shadow database, `psql`, and SQL GUIs.
 
 ```typescript
-import { createPGliteServer } from 'prisma-pglite-bridge';
+import { PGliteServer } from 'prisma-pglite-bridge';
 
-const server = await createPGliteServer({ pglite });
-// server.url → 'postgres://127.0.0.1:54321/postgres'
+const server = new PGliteServer({ pglite });
+const url = await server.listen();
+// url → 'postgres://postgres@127.0.0.1:54321/postgres'
 ```
 
-See the dedicated guide: [`createPGliteServer`](./server.md) —
+See the dedicated guide: [`PGliteServer`](./server.md) —
 options, Unix-socket mode, shadow-database wiring, and security
 notes.
 

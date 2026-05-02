@@ -9,7 +9,7 @@ import {
 import { runCli } from './utils/run-cli.ts';
 import { type StartedServer, startServer } from './utils/start-server.ts';
 
-describe('prisma migrate status against createPGliteServer', () => {
+describe('prisma migrate status against PGliteServer', () => {
   const started: StartedServer[] = [];
   let project: PrismaProject | undefined;
 
@@ -35,8 +35,8 @@ model Latch {
     project = await setupPrismaProject(schema);
     const env = {
       PRISMA_HIDE_UPDATE_MESSAGE: '1',
-      DATABASE_URL: main.url,
-      SHADOW_DATABASE_URL: shadow.url,
+      DATABASE_URL: await main.server.listen(),
+      SHADOW_DATABASE_URL: await shadow.server.listen(),
     };
 
     const dev = await runCli(PRISMA_BIN, ['migrate', 'dev', '--name', 'init'], {

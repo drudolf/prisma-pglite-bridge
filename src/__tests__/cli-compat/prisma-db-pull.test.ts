@@ -10,7 +10,7 @@ import {
 import { runCli } from './utils/run-cli.ts';
 import { type StartedServer, startServer } from './utils/start-server.ts';
 
-describe('prisma db pull against createPGliteServer', () => {
+describe('prisma db pull against PGliteServer', () => {
   let started: StartedServer | undefined;
   let project: PrismaProject | undefined;
 
@@ -36,7 +36,7 @@ describe('prisma db pull against createPGliteServer', () => {
       cwd: project.dir,
       env: {
         PRISMA_HIDE_UPDATE_MESSAGE: '1',
-        DATABASE_URL: started.url,
+        DATABASE_URL: await started.server.listen(),
       },
       timeoutMs: 60_000,
     });
