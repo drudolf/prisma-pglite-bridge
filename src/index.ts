@@ -22,7 +22,7 @@ export { hasMigrations, hasSchema, pushMigrations } from './migrations.ts';
 // ── High-level API (most users only need this) ──
 export type {
   CloseFn,
-  PGliteBridge,
+  PGliteBridge as CreatePGliteBridge,
   PGliteBridgeOptions,
   ResetDbFn,
   ResetSnapshotFn,
@@ -30,7 +30,7 @@ export type {
   StatsFn,
 } from './pglite-bridge.ts';
 export { createPGliteBridge } from './pglite-bridge.ts';
-export { PGliteBridge as PGliteBridgeCls } from './pglite-bridge-class.ts';
+export { PGliteBridge } from './pglite-bridge-class.ts';
 export type { PushSchemaOptions, PushSchemaResult } from './schema.ts';
 export { pushSchema, resetSchema } from './schema.ts';
 

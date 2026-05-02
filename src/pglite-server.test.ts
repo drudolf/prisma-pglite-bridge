@@ -58,12 +58,16 @@ describe('PGliteServer', () => {
   it('listen() throws when the PGlite instance is not yet ready', async () => {
     let server: PGliteServer;
     const notReady = createMockPGlite();
-    
+
     Object.assign(notReady, { ready: false, closed: false, waitReady: Promise.reject('test str') });
     server = new PGliteServer({ pglite: notReady });
     await expect(server.listen()).rejects.toThrow(/requires a ready PGlite instance; test str/);
 
-    Object.assign(notReady, { ready: false, closed: false, waitReady: Promise.reject(new Error('test err')) });
+    Object.assign(notReady, {
+      ready: false,
+      closed: false,
+      waitReady: Promise.reject(new Error('test err')),
+    });
     server = new PGliteServer({ pglite: notReady });
     await expect(server.listen()).rejects.toThrow(/requires a ready PGlite instance; test err/);
   });

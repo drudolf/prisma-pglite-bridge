@@ -1,6 +1,7 @@
 /**
- * Creates a PGliteBridge: a Prisma adapter, the underlying PGlite instance,
- * and lifecycle helpers, all backed by a caller-supplied PGlite instance.
+ * Creates a CreatePGliteBridge: a Prisma adapter, the underlying PGlite
+ * instance, and lifecycle helpers, all backed by a caller-supplied PGlite
+ * instance.
  *
  * No TCP, no Docker, no worker threads — everything runs in the same process.
  * Works for testing, development, seeding, and scripts.
@@ -151,9 +152,9 @@ export interface PGliteBridge {
 }
 
 /**
- * Creates a `PGliteBridge` — a bundle holding a Prisma driver adapter,
- * the underlying PGlite instance, and lifecycle helpers — backed by a
- * caller-supplied PGlite instance.
+ * Creates a `CreatePGliteBridge` — a bundle holding a Prisma driver
+ * adapter, the underlying PGlite instance, and lifecycle helpers —
+ * backed by a caller-supplied PGlite instance.
  *
  * Schema application is a separate concern — call {@link pushMigrations}
  * (raw SQL / migrations directory) or {@link pushSchema} (WASM-engine

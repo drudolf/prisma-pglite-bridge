@@ -10,12 +10,12 @@
  * — this is a development tool, not a hardened endpoint.
  *
  * The constructor is synchronous; the network bind is exposed as an
- * explicit async `listen()` (mirroring `net.Server`'s API) which resolves
- * to the connection URL. The caller-supplied PGlite must not already closed.
+ * explicit async `listen()` (mirroring `net.Server`'s API) which awaits
+ * `pglite.waitReady` internally and resolves to the connection URL.
+ * The caller-supplied PGlite must not be closed.
  *
  * ```typescript
- * const pglite = new PGlite();
- * const server = new PGliteServer({ pglite });
+ * const server = new PGliteServer({ pglite: new PGlite() });
  * const url = await server.listen();
  * console.log(url); // → postgres://postgres@127.0.0.1:54321/postgres
  * ```
@@ -48,9 +48,10 @@ const resolveSyncToFs = (
 
 export interface PGliteServerOptions {
   /**
-   * PGlite instance to expose. Must be not closed.
-   * The caller owns its lifecycle — `close()` shuts the listener
-   * and tears down per-connection bridges only.
+   * PGlite instance to expose. Must not be closed; `listen()` awaits
+   * `pglite.waitReady` internally, so it does not have to be ready at
+   * construction time. The caller owns its lifecycle — `close()` shuts
+   * the listener and tears down per-connection bridges only.
    */
   pglite: PGlite | PGliteInterface;
   /** Bind host. Default `'127.0.0.1'` (loopback only). Ignored when `dataDir` is set. */
