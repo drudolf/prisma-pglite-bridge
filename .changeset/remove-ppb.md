@@ -1,5 +1,5 @@
 ---
-"prisma-pglite-bridge": major
+"prisma-pglite-bridge": minor
 ---
 
 Remove the `ppb` CLI. The `bin/ppb.ts` entry point and the

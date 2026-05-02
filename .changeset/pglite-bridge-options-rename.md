@@ -1,5 +1,5 @@
 ---
-"prisma-pglite-bridge": major
+"prisma-pglite-bridge": minor
 ---
 
 Rename `CreatePGliteBridgeOptions` to `PGliteBridgeOptions`. The
