@@ -14,9 +14,9 @@
   clears more of this between tests via `DISCARD ALL`. The default
   `max: 1` avoids extra bridge connections and session-lock overhead.
 - **Schema source required** — pick one of
-  [`pushMigrations`](./api.md#pushmigrationstarget-options) (run
+  [`pushMigrations`](./api.md#pushmigrationspglite-options) (run
   `prisma migrate dev` first or pass `sql` directly) or
-  [`pushSchema`](./api.md#pushschematarget-options) (apply
+  [`pushSchema`](./api.md#pushschemaadapter-options) (apply
   `schema.prisma` directly). `createPGliteBridge` alone returns
   an empty database.
 
@@ -55,7 +55,7 @@ Emitted by Node when `pushSchema` / `resetSchema` loads
 imports. The warning is harmless and prints once per Node process.
 
 If you only need to apply already-generated migration SQL, use
-[`pushMigrations`](./api.md#pushmigrationstarget-options) instead — it does
+[`pushMigrations`](./api.md#pushmigrationspglite-options) instead — it does
 not load the schema engine, so the warning never fires.
 
 To silence it in tests or CI, pass Node's `--disable-warning` flag:

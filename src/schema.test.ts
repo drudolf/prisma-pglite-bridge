@@ -77,7 +77,7 @@ describe('pushSchema', () => {
   it('applies a schema and creates tables (PGliteBridge target)', async () => {
     const { pglite, bridge } = await makeBridge();
 
-    const result = await pushSchema(bridge, { schema: SCHEMA_BASE });
+    const result = await pushSchema(bridge.adapter, { schema: SCHEMA_BASE });
 
     expect(result.executedSteps).toBeGreaterThan(0);
     expect(result.warnings).toEqual([]);
@@ -106,7 +106,7 @@ describe('pushSchema', () => {
     await pglite.exec(`CREATE TABLE legacy ("id" INT PRIMARY KEY)`);
     expect(await listTables(pglite)).toContain('legacy');
 
-    await pushSchema(bridge, { schema: SCHEMA_BASE, forceReset: true });
+    await pushSchema(bridge.adapter, { schema: SCHEMA_BASE, forceReset: true });
 
     const tables = await listTables(pglite);
     expect(tables).toContain('Widget');
@@ -115,11 +115,11 @@ describe('pushSchema', () => {
 
   it('forceReset clears snapshot manager state', async () => {
     const { pglite, bridge } = await makeBridge();
-    await pushSchema(bridge, { schema: SCHEMA_BASE });
+    await pushSchema(bridge.adapter, { schema: SCHEMA_BASE });
     await pglite.exec(`INSERT INTO "Widget" ("name") VALUES ('seed')`);
     await bridge.snapshotDb();
 
-    await pushSchema(bridge, { schema: SCHEMA_BASE, forceReset: true });
+    await pushSchema(bridge.adapter, { schema: SCHEMA_BASE, forceReset: true });
 
     await expect(bridge.resetDb()).resolves.toBeUndefined();
   });
@@ -129,7 +129,7 @@ describe('pushSchema', () => {
     await pglite.exec(`CREATE SCHEMA "semi;name"`);
     await pglite.exec(`CREATE TABLE "semi;name"."t" ("id" INT PRIMARY KEY)`);
 
-    await pushSchema(bridge, { schema: SCHEMA_BASE, forceReset: true });
+    await pushSchema(bridge.adapter, { schema: SCHEMA_BASE, forceReset: true });
 
     const left = await pglite.query<{ schemaname: string }>(`
       SELECT schemaname FROM pg_tables WHERE schemaname = 'semi;name'
@@ -144,7 +144,7 @@ describe('pushSchema', () => {
       CREATE TABLE base."A" ("id" INT PRIMARY KEY);
     `);
 
-    await pushSchema(bridge, { schema: SCHEMA_BASE, forceReset: true });
+    await pushSchema(bridge.adapter, { schema: SCHEMA_BASE, forceReset: true });
 
     const left = await pglite.query<{ schemaname: string; tablename: string }>(`
       SELECT schemaname, tablename FROM pg_tables
@@ -156,10 +156,10 @@ describe('pushSchema', () => {
 
   it('returns warnings without throwing for destructive change when acceptDataLoss is false', async () => {
     const { pglite, bridge } = await makeBridge();
-    await pushSchema(bridge, { schema: SCHEMA_BASE });
+    await pushSchema(bridge.adapter, { schema: SCHEMA_BASE });
     await pglite.exec(`INSERT INTO "Widget" ("name") VALUES ('a'), ('b')`);
 
-    const result = await pushSchema(bridge, { schema: SCHEMA_DROP_COLUMN });
+    const result = await pushSchema(bridge.adapter, { schema: SCHEMA_DROP_COLUMN });
 
     expect(result.warnings.length).toBeGreaterThan(0);
     expect(result.unexecutable).toEqual([]);
@@ -174,10 +174,10 @@ describe('pushSchema', () => {
 
   it('applies destructive change with acceptDataLoss=true', async () => {
     const { pglite, bridge } = await makeBridge();
-    await pushSchema(bridge, { schema: SCHEMA_BASE });
+    await pushSchema(bridge.adapter, { schema: SCHEMA_BASE });
     await pglite.exec(`INSERT INTO "Widget" ("name") VALUES ('a'), ('b')`);
 
-    const result = await pushSchema(bridge, {
+    const result = await pushSchema(bridge.adapter, {
       schema: SCHEMA_DROP_COLUMN,
       acceptDataLoss: true,
     });
@@ -205,7 +205,7 @@ describe('resetSchema', () => {
         CREATE TABLE public."B" ("id" INT PRIMARY KEY);
       `);
 
-      await resetSchema(bridge);
+      await resetSchema(bridge.adapter);
 
       const left = await pglite.query<{ schemaname: string; tablename: string }>(`
         SELECT schemaname, tablename FROM pg_tables
@@ -224,10 +224,10 @@ describe('resetSchema', () => {
     const bridge = await createPGliteBridge({ pglite });
 
     try {
-      await pushSchema(bridge, { schema: SCHEMA_BASE });
+      await pushSchema(bridge.adapter, { schema: SCHEMA_BASE });
       expect(await listTables(pglite)).toContain('Widget');
 
-      await resetSchema(bridge);
+      await resetSchema(bridge.adapter);
 
       expect(await listTables(pglite)).not.toContain('Widget');
     } finally {

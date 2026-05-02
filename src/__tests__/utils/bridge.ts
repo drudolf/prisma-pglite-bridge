@@ -31,7 +31,7 @@ const createTestPGliteBridge = async (options: TestOptions = {}): Promise<PGlite
   const bridge = await createPGliteBridge({ ...bridgeOptions, pglite });
 
   if (migrationsSql !== null) {
-    await pushMigrations(bridge, { sql: migrationsSql ?? MIGRATION_SQL });
+    await pushMigrations(pglite, { sql: migrationsSql ?? MIGRATION_SQL });
   }
 
   return bridge;

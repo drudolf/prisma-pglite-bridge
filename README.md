@@ -24,9 +24,9 @@ import { PrismaClient } from '@prisma/client';
 import seed from './seed.ts'; // user-provided: (prisma: PrismaClient) => Promise<void>
 
 const pglite = new PGlite();
-const bridge = await createPGliteBridge({ pglite });
-await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
+await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 
+const bridge = await createPGliteBridge({ pglite });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 await seed(prisma);
 await bridge.snapshotDb();

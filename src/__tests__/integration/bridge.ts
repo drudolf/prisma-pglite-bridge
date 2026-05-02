@@ -17,7 +17,7 @@ const createInstance = async (): Promise<Bridge> => {
   const pglite = new PGlite();
   const bridge = await createPGliteBridge({ pglite });
 
-  await pushMigrations(bridge, { configRoot: process.cwd() });
+  await pushMigrations(pglite, { configRoot: process.cwd() });
 
   const prisma = new PrismaClient({ adapter: bridge.adapter });
   await seed(prisma);

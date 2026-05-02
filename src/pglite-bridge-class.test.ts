@@ -32,7 +32,7 @@ const setupSuite = async (
 ): Promise<{ pglite: PGlite; bridge: PGliteBridge; prisma: PrismaClient }> => {
   const pglite = options.pglite ?? (await createReadyPGlite());
   const bridge = new PGliteBridge({ ...options, pglite });
-  await pushMigrations(bridge, { sql: MIGRATION_SQL });
+  await pushMigrations(pglite, { sql: MIGRATION_SQL });
   const prisma = new PrismaClient({ adapter: bridge.adapter });
 
   beforeEach(async () => {
@@ -111,7 +111,7 @@ describe('PGliteBridge (class)', () => {
 
     const firstPGlite = await createReadyPGlite(dataDir);
     const first = new PGliteBridge({ pglite: firstPGlite, statsLevel: 'basic' });
-    await pushMigrations(first, {
+    await pushMigrations(firstPGlite, {
       sql: 'CREATE TABLE IF NOT EXISTS "Tenant" ("id" TEXT PRIMARY KEY, "name" TEXT NOT NULL, "slug" TEXT NOT NULL)',
     });
     const firstPrisma = new PrismaClient({ adapter: first.adapter });

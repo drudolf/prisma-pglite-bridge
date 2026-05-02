@@ -92,7 +92,7 @@ describe('createPGliteBridge', () => {
 
     const firstPGlite = new PGlite(dataDir);
     const first = await createPGliteBridge({ pglite: firstPGlite, statsLevel: 'basic' });
-    await pushMigrations(first, {
+    await pushMigrations(firstPGlite, {
       sql: 'CREATE TABLE IF NOT EXISTS "Tenant" ("id" TEXT PRIMARY KEY, "name" TEXT NOT NULL, "slug" TEXT NOT NULL)',
     });
     const firstPrisma = new PrismaClient({ adapter: first.adapter });

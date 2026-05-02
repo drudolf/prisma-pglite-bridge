@@ -8,9 +8,9 @@
  * import { PrismaClient } from '@prisma/client';
  *
  * const pglite = new PGlite();
- * const bridge = await createPGliteBridge({ pglite });
- * await pushMigrations(bridge, { migrationsPath: './prisma/migrations' });
+ * await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
  *
+ * const bridge = await createPGliteBridge({ pglite });
  * const prisma = new PrismaClient({ adapter: bridge.adapter });
  * ```
  *
@@ -31,7 +31,7 @@ export type {
 } from './pglite-bridge.ts';
 export { createPGliteBridge } from './pglite-bridge.ts';
 export { PGliteBridge as PGliteBridgeCls } from './pglite-bridge-class.ts';
-export type { PushSchemaOptions, PushSchemaResult, SchemaTarget } from './schema.ts';
+export type { PushSchemaOptions, PushSchemaResult } from './schema.ts';
 export { pushSchema, resetSchema } from './schema.ts';
 
 // ── Low-level building blocks ──
