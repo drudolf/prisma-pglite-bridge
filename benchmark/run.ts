@@ -147,6 +147,10 @@ const loadScenarios = async (): Promise<[string, Scenario][]> => {
     const { repeatedLargeReads } = await import('./scenarios/repeated-large-reads.ts');
     all.push(['repeated-large-reads', repeatedLargeReads]);
   }
+  if (scenarioFilter === 'bytes-sweep') {
+    const { bytesSweep } = await import('./scenarios/bytes-sweep.ts');
+    all.push(['bytes-sweep', bytesSweep]);
+  }
 
   return all;
 };
