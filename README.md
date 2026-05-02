@@ -56,7 +56,7 @@ database](./docs/api.md#populating-the-database) for the
 - **[Cookbook](./docs/cookbook.md)** — Vitest / Jest setup,
   per-test isolation, seed sharing, extensions, persistent dev
   database, clean shutdown.
-- **[`createPGliteServer`](./docs/server.md)** — TCP / Unix-socket
+- **[`PGliteServer`](./docs/server.md)** — TCP / Unix-socket
   front for PGlite. Use for the Prisma CLI shadow database, `psql`,
   and SQL GUIs.
 - **[Stats and diagnostics](./docs/stats.md)** — `stats()`

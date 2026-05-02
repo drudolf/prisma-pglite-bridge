@@ -1,11 +1,11 @@
-# `createPGliteServer`
+# `PGliteServer`
 
 Expose a PGlite instance over TCP or a Unix domain socket so
 standard PostgreSQL clients (`psql`, Prisma CLI, DBeaver, Studio,
 etc.) can connect to it.
 
 The bridge already pipes Prisma's queries through PGlite in-process
-without a network hop — `createPGliteServer` is for the cases where
+without a network hop — `PGliteServer` is for the cases where
 you need an actual `host:port` (or socket path): driving the Prisma
 CLI's shadow database, attaching a SQL GUI to inspect test state,
 or running tools that hard-require a wire-protocol endpoint.
@@ -14,7 +14,7 @@ or running tools that hard-require a wire-protocol endpoint.
 
 - [Quickstart](#quickstart)
 - [Options](#options)
-- [Return value](#return-value)
+- [The connection URL](#the-connection-url)
 - [Use cases](#use-cases)
   - [Prisma CLI shadow database](#prisma-cli-shadow-database)
   - [`psql` and SQL GUIs](#psql-and-sql-guis)
@@ -25,22 +25,30 @@ or running tools that hard-require a wire-protocol endpoint.
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteServer } from 'prisma-pglite-bridge';
+import { PGliteServer } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
-const server = await createPGliteServer({ pglite });
+await pglite.waitReady;
 
-console.log(server.url);
-// → postgres://127.0.0.1:54321/postgres
+const server = new PGliteServer({ pglite });
+const url = await server.listen();
+
+console.log(url);
+// → postgres://postgres@127.0.0.1:54321/postgres
 
 // later
 await server.close();
 await pglite.close();
 ```
 
+The constructor is synchronous and validates that the PGlite
+instance is ready and open. The network bind happens in the
+explicit `listen()` step (mirroring `net.Server`'s API), which
+resolves to a connection URL ready to pass to any
+`pg.Client` / `pg.Pool`.
+
 By default the server binds to `127.0.0.1` on an ephemeral port
-(`port: 0`). Read the actual bound port from `server.port` or use
-`server.url` directly with any `pg.Client` / `pg.Pool`.
+(`port: 0`). The actual bound port is reflected in the URL.
 
 `server.close()` stops accepting connections, force-closes active
 sockets, and awaits per-connection cleanup. **It does not close the
@@ -49,71 +57,63 @@ PGlite instance** — you own its lifecycle.
 ## Options
 
 ```typescript
-await createPGliteServer({
-  pglite,                 // required — caller owns lifecycle
+new PGliteServer({
+  pglite,                 // required — must be ready, not closed
   host: '127.0.0.1',      // default '127.0.0.1' (loopback)
-  port: 0,                // default 0 (ephemeral)
-  socketDir: undefined,   // optional — switch to Unix socket mode
-  socketPort: 5432,       // socket file suffix; ignored unless socketDir set
+  port: 0,                // default 0 (ephemeral) in TCP mode;
+                          // 5432 in Unix-socket mode (suffix of the socket file)
+  dataDir: undefined,     // optional — switches to Unix-socket mode
+  user: 'postgres',       // default 'postgres' — embedded in the URL
   syncToFs: 'auto',       // 'auto' | true | false (same policy as the bridge)
 });
 ```
 
-When `socketDir` is set, `host` and `port` are ignored. The server
-binds the libpq-conventional path
-`<socketDir>/.s.PGSQL.<socketPort>` so `psql -h <socketDir>`
+When `dataDir` is set, `host` is ignored and the server binds the
+libpq-conventional path `<dataDir>/.s.PGSQL.<port>` so `psql -h <dataDir>`
 connects without an explicit `port`.
 
-## Return value
+PGlite has no real authentication, but Prisma 7's schema engine
+rejects URLs without a username (P1010), so `user` is always
+emitted in the URL and defaults to `'postgres'`.
 
-```typescript
-interface PGliteServer {
-  url: string;            // postgres:// connection string ready for pg.Client
-  port: number;           // bound TCP port (or socketPort for Unix)
-  host: string;           // bound host (empty string for Unix sockets)
-  socketPath?: string;    // bound Unix socket file, when applicable
-  close: () => Promise<void>;
-}
-```
+## The connection URL
 
-The `url` is library-emitted and safe to pass to `pg.Client({
-connectionString })`:
+`listen()` returns a `postgres://` URL safe to pass straight to
+`pg.Client({ connectionString })`:
 
-- IPv4 TCP → `postgres://127.0.0.1:54321/postgres`
-- IPv6 TCP → `postgres:///postgres?host=%3A%3A1&port=54321`
+- IPv4 TCP → `postgres://postgres@127.0.0.1:54321/postgres`
+- IPv6 TCP → `postgres://postgres@/postgres?host=%3A%3A1&port=54321`
   (libpq query form — sidesteps `pg-connection-string`'s broken
   bracketed-IPv6 parsing)
-- Unix → `postgres:///postgres?host=%2Ftmp%2Fpgl&port=5432`
-
-The server has no authentication, so the URL has no user. Prisma
-7's schema engine rejects URLs without a username (P1010); inject
-one before handing the URL to Prisma:
-
-```typescript
-const prismaUrl = server.url.replace('://', '://postgres@');
-```
+- Unix → `postgres://postgres@/postgres?host=%2Ftmp%2Fpgl&port=5432`
 
 ## Use cases
 
 ### Prisma CLI shadow database
 
 `prisma migrate dev` requires a separate **shadow database** to
-diff schemas. Spin up a second `createPGliteServer` instance and
-point Prisma at it — no Docker, no second `pg_ctl` process:
+diff schemas. Spin up a second `PGliteServer` instance and point
+Prisma at it — no Docker, no second `pg_ctl` process:
 
 ```typescript
-const main = await createPGliteServer({ pglite: new PGlite() });
-const shadow = await createPGliteServer({ pglite: new PGlite() });
+const mainPglite = new PGlite();
+const shadowPglite = new PGlite();
+await Promise.all([mainPglite.waitReady, shadowPglite.waitReady]);
+
+const main = new PGliteServer({ pglite: mainPglite });
+const shadow = new PGliteServer({ pglite: shadowPglite });
+
+const [mainUrl, shadowUrl] = await Promise.all([main.listen(), shadow.listen()]);
 
 // prisma.config.ts
 export default defineConfig({
   schema: 'prisma/schema.prisma',
   migrations: {
-    shadowDatabaseUrl: shadow.url.replace('://', '://postgres@'),
+    shadowDatabaseUrl: shadowUrl,
   },
 });
 
-process.env.DATABASE_URL = main.url.replace('://', '://postgres@');
+process.env.DATABASE_URL = mainUrl;
 ```
 
 End-to-end usage — spawning `prisma migrate dev`, `prisma db
@@ -130,7 +130,7 @@ psql "postgres://postgres@127.0.0.1:54321/postgres"
 ```
 
 DBeaver / Prisma Studio / TablePlus connect the same way — point
-them at `server.host` and `server.port` (user `postgres`, no
+them at the host and port from the URL (user `postgres`, no
 password). PGlite still runs single-user, so the GUI's queries
 serialize through the same `SessionLock` as the test.
 
@@ -144,11 +144,12 @@ sandboxed environments without network namespaces):
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
-const socketDir = mkdtempSync(`${tmpdir()}/pgl-`);
-const server = await createPGliteServer({ pglite, socketDir });
+const dataDir = mkdtempSync(`${tmpdir()}/pgl-`);
+const server = new PGliteServer({ pglite, dataDir });
+const url = await server.listen();
 
 // psql -h /var/folders/…/pgl-XXXXXX
-// node: pg.Client({ connectionString: server.url })
+// node: pg.Client({ connectionString: url })
 ```
 
 `close()` does **not** unlink the socket file. If a previous
@@ -165,7 +166,7 @@ plaintext. This is a development tool, not a hardened endpoint:
 
 - Bind to loopback only (the default `host: '127.0.0.1'`). Do not
   expose `0.0.0.0` or a routable address.
-- For Unix sockets, place `socketDir` somewhere only your user can
+- For Unix sockets, place `dataDir` somewhere only your user can
   write to — `fs.mkdtemp` defaults to `0700`.
 - Treat the URL like any other secret-bearing string: don't log it
   to shared infrastructure.

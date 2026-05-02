@@ -8,10 +8,24 @@
  * SSL / GSS pre-negotiation is rejected with a single `N` byte so clients
  * fall back to plaintext; there is no authentication. Bind to loopback only
  * — this is a development tool, not a hardened endpoint.
+ *
+ * The constructor is synchronous; the network bind is exposed as an
+ * explicit async `listen()` (mirroring `net.Server`'s API) which resolves
+ * to the connection URL. The caller-supplied PGlite must already be ready
+ * (`await pglite.waitReady`) and not closed.
+ *
+ * ```typescript
+ * const pglite = new PGlite();
+ * await pglite.waitReady;
+ * const server = new PGliteServer({ pglite });
+ * const url = await server.listen();
+ * console.log(url); // → postgres://postgres@127.0.0.1:54321/postgres
+ * ```
  */
 import net from 'node:net';
 import nodePath from 'node:path';
-import type { PGlite } from '@electric-sql/pglite';
+import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
+
 import { PGliteDuplex } from './duplex/index.ts';
 import type { SyncToFsMode } from './pool.ts';
 import { SessionLock } from './utils/session-lock.ts';
@@ -22,229 +36,191 @@ const CANCEL_REQUEST_CODE = 80877102;
 const PRELUDE_HEADER_BYTES = 8;
 const DEFAULT_SOCKET_PORT = 5432;
 
-export interface PGliteServerOptions {
-  /**
-   * PGlite instance to expose. Caller owns its lifecycle — `close()` shuts
-   * the listener and tears down per-connection bridges only.
-   */
-  pglite: PGlite;
-  /** Bind host. Default `'127.0.0.1'` (loopback only). Ignored when `socketDir` is set. */
-  host?: string;
-  /** Listen port. Default `0` (ephemeral — read back via `server.port`). Ignored when `socketDir` is set. */
-  port?: number;
-  /**
-   * Unix domain socket directory. If set, takes precedence over `host`/`port`.
-   * The library binds the libpq-conventional path
-   * `<socketDir>/.s.PGSQL.<socketPort>` so `psql` and `pg.Client` connect with
-   * just `host=<socketDir>`.
-   *
-   * The caller is responsible for the directory's writability and access
-   * mode: `close()` does not remove the socket file, and `listen()` will
-   * fail with `EADDRINUSE` if the socket exists from a previous crashed
-   * process — unlink first. Since the server has no auth, place the
-   * directory somewhere only you can write to (e.g., `fs.mkdtemp` defaults
-   * to `0700`).
-   */
-  socketDir?: string;
-  /** Port suffix for the Unix socket file. Default `5432`. Ignored unless `socketDir` is set. */
-  socketPort?: number;
-  /** Filesystem sync policy. See {@link SyncToFsMode}. Default `'auto'`. */
-  syncToFs?: SyncToFsMode;
-}
-
-export interface PGliteServer {
-  /**
-   * Connection URL. For IPv4 TCP: `postgres://host:port/postgres`.
-   * For Unix sockets and IPv6 TCP: libpq query-form
-   * `postgres:///postgres?host=<host>&port=<port>`. IPv6 uses query-form
-   * because `pg-connection-string` mishandles bracketed `[::1]` hostnames.
-   * Safe to pass to `pg.Client({ connectionString })` in all cases.
-   */
-  url: string;
-  /** Bound TCP port for TCP servers, or `socketPort` for Unix-socket servers. */
-  port: number;
-  /** Bound TCP host, or empty string for Unix-socket servers. */
-  host: string;
-  /** Bound Unix socket file (`<socketDir>/.s.PGSQL.<socketPort>`), or `undefined` for TCP servers. */
-  socketPath?: string;
-  /** Stop accepting, force-close active sockets, await per-socket cleanup. Does not close PGlite. */
-  close: () => Promise<void>;
-}
-
-const resolveSyncToFs = (pglite: PGlite, mode: SyncToFsMode | undefined): boolean => {
+const resolveSyncToFs = (
+  pglite: PGlite | PGliteInterface,
+  mode: SyncToFsMode | undefined,
+): boolean => {
   if (mode === true || mode === false) return mode;
-  const dataDir = pglite.dataDir;
-  if (dataDir === undefined) return false;
-  // PGlite construction rejects an empty-string dataDir, so this branch is
-  // defensive — keep the guard, exclude it from coverage.
+  if (pglite.dataDir === undefined) return false;
   /* v8 ignore next */
-  if (dataDir === '') return false;
-  if (dataDir.startsWith('memory://')) return false;
+  if (pglite.dataDir === '') return false;
+  if (pglite.dataDir.startsWith('memory://')) return false;
   return true;
 };
 
-/**
- * Start a server that serves the PGlite wire protocol over TCP or a Unix
- * socket.
- *
- * ```ts
- * const server = await createPGliteServer({ pglite });
- * // server.url === 'postgres://127.0.0.1:54321/postgres'
- *
- * const unix = await createPGliteServer({ pglite, socketDir: '/tmp/pgl' });
- * // unix.url === 'postgres:///postgres?host=%2Ftmp%2Fpgl&port=5432'
- * ```
- */
-export const createPGliteServer = async (options: PGliteServerOptions): Promise<PGliteServer> => {
-  const { pglite, socketDir, host = '127.0.0.1', port = 0 } = options;
-  const socketPort = options.socketPort ?? DEFAULT_SOCKET_PORT;
-  const syncToFs = resolveSyncToFs(pglite, options.syncToFs);
+export interface PGliteServerOptions {
+  /**
+   * PGlite instance to expose. Must be ready (`pglite.ready === true`) and
+   * not closed. The caller owns its lifecycle — `close()` shuts the listener
+   * and tears down per-connection bridges only.
+   */
+  pglite: PGlite | PGliteInterface;
+  /** Bind host. Default `'127.0.0.1'` (loopback only). Ignored when `dataDir` is set. */
+  host?: string;
+  /**
+   * In TCP mode: the listen port. Default `0` (ephemeral — read back from
+   * the URL returned by `listen()`).
+   *
+   * In Unix-socket mode (when `dataDir` is set): the libpq port-suffix used
+   * to build the socket filename `<dataDir>/.s.PGSQL.<port>`. Default `5432`.
+   */
+  port?: number;
+  /**
+   * If set, switches to Unix-socket mode. The server binds the
+   * libpq-conventional path `<dataDir>/.s.PGSQL.<port>` so `psql` and
+   * `pg.Client` can connect with just `host=<dataDir>`. Takes precedence
+   * over `host`. The caller is responsible for the directory's writability
+   * and access mode; `close()` does not remove the socket file, and
+   * `listen()` will fail with `EADDRINUSE` if a stale socket remains —
+   * unlink first.
+   */
+  dataDir?: string;
+  /** Filesystem sync policy. See {@link SyncToFsMode}. Default `'auto'`. */
+  syncToFs?: SyncToFsMode;
+  /**
+   * Username embedded in the connection URL returned by `listen()`.
+   * Default `'postgres'`. PGlite ignores this — there is no authentication —
+   * but Prisma 7's schema engine rejects URLs without a user (P1010), so a
+   * value is always emitted.
+   */
+  user?: string;
+}
 
-  await pglite.waitReady;
+type BridgedSocket = net.Socket & { duplex?: PGliteDuplex };
 
-  const sessionLock = new SessionLock();
-  const activeSockets = new Set<net.Socket>();
-  const activeDuplexes = new Set<PGliteDuplex>();
+export class PGliteServer {
+  readonly #options: PGliteServerOptions;
+  readonly #server: net.Server;
+  readonly #sessionLock = new SessionLock();
+  readonly #sockets = new Set<BridgedSocket>();
 
-  const startBridge = (socket: net.Socket, initial: Buffer): void => {
-    const duplex = new PGliteDuplex(pglite, sessionLock, undefined, undefined, syncToFs);
-    // Rollback-on-disconnect lives in PGliteDuplex._final/_destroy — letting
-    // the duplex own its session-lock teardown avoids races with this handler.
-    activeDuplexes.add(duplex);
-    duplex.once('close', () => activeDuplexes.delete(duplex));
-    // PGliteDuplex never emits 'error' under normal flow — the handler is a
-    // safety net that tears down the socket if the duplex ever does.
-    /* v8 ignore next */
-    duplex.on('error', () => socket.destroy());
-    // socket.pipe forwards 'end' but not 'close', so a forced socket.destroy()
-    // never reaches the duplex. We must drive teardown ourselves. Use destroy()
-    // (not end()) so duplexes blocked in SessionLock.acquire() are cancelled
-    // synchronously rather than waiting for their queued query to drain after
-    // the lock frees — otherwise a disconnected client's query would still
-    // execute against the next bridge's session.
-    socket.once('close', () => {
-      if (!duplex.destroyed) duplex.destroy();
-    });
-    socket.pipe(duplex).pipe(socket);
-    // startBridge is only called from the StartupMessage path, where we've
-    // already validated `preludeBuf.length >= PRELUDE_HEADER_BYTES`. The guard
-    // is defensive — the empty-initial branch is unreachable in practice.
-    /* v8 ignore next */
-    if (initial.length > 0) duplex.write(initial);
-  };
+  #connectionString: string | undefined;
 
-  const handleConnection = (socket: net.Socket): void => {
-    socket.setNoDelay(true);
-    activeSockets.add(socket);
-    socket.on('close', () => activeSockets.delete(socket));
-    // Raw socket errors (e.g., abrupt RST while idle) are rare; the handler
-    // ensures we tear down rather than letting Node throw an uncaught error.
-    /* v8 ignore next */
-    socket.on('error', () => socket.destroy());
+  constructor(options: PGliteServerOptions) {
+    if (!options.pglite.ready) {
+      throw new Error(
+        'PGliteServer requires a ready PGlite instance. ' +
+          'Call `await pglite.waitReady` after `new PGlite(...)` before constructing the server.',
+      );
+    }
+    if (options.pglite.closed) {
+      throw new Error('PGliteServer requires an open PGlite instance; got a closed one.');
+    }
 
-    let preludeBuf: Buffer = Buffer.alloc(0);
+    this.#options = options;
+    this.#options.host ||= '127.0.0.1';
+    this.#options.port ??= !this.#options.dataDir ? 0 : DEFAULT_SOCKET_PORT;
+    this.#options.user ||= 'postgres';
 
-    const onData = (chunk: Buffer): void => {
-      preludeBuf = preludeBuf.length === 0 ? chunk : Buffer.concat([preludeBuf, chunk]);
+    this.#server = net.createServer((socket) => this.#onConnection(socket));
+  }
 
-      // Stay in pre-startup mode across multiple negotiations. libpq with
-      // `gssencmode=prefer sslmode=prefer` chains GSSENCRequest then SSLRequest
-      // before sending StartupMessage, possibly coalesced in one buffer.
-      while (preludeBuf.length >= PRELUDE_HEADER_BYTES) {
-        const len = preludeBuf.readInt32BE(0);
-        const code = preludeBuf.readInt32BE(4);
+  listen = async (): Promise<string> => {
+    if (this.#connectionString) return this.#connectionString;
 
-        if (len === 8 && (code === SSL_REQUEST_CODE || code === GSSENC_REQUEST_CODE)) {
-          socket.write('N');
-          preludeBuf = preludeBuf.subarray(8);
-          continue;
-        }
+    return await new Promise<string>((resolve, reject) => {
+      const onError = (err: Error): void => reject(err);
+      this.#server.once('error', onError);
 
-        if (len === 16 && code === CANCEL_REQUEST_CODE) {
-          // Wait for the full 16-byte frame before closing — even though we
-          // drop the request, parsing on a partial buffer would be wrong.
-          if (preludeBuf.length < 16) return;
-          socket.removeListener('data', onData);
-          socket.end();
-          return;
-        }
+      const user = encodeURIComponent(this.#options.user as string);
 
-        // Direct StartupMessage. Hand off whatever is buffered to the duplex.
-        socket.removeListener('data', onData);
-        socket.pause();
-        startBridge(socket, preludeBuf);
-        socket.resume();
+      // Socket
+      if (this.#options.dataDir) {
+        const { dataDir } = this.#options;
+
+        this.#server.listen(nodePath.join(dataDir, `.s.PGSQL.${this.#options.port}`), () => {
+          this.#server.removeListener('error', onError);
+          this.#connectionString = `postgres://${user}@/postgres?host=${encodeURIComponent(dataDir)}&port=${this.#options.port}`;
+          return resolve(this.#connectionString);
+        });
+
         return;
       }
+
+      // TCP
+      this.#server.listen(this.#options.port, this.#options.host, () => {
+        this.#server.removeListener('error', onError);
+
+        const { address, family, port } = this.#server.address() as net.AddressInfo;
+        this.#connectionString =
+          family === 'IPv6'
+            ? `postgres://${user}@/postgres?host=${encodeURIComponent(address)}&port=${port}`
+            : `postgres://${user}@${address}:${port}/postgres`;
+        this.#options.port = port; // re-assign used port
+
+        return resolve(this.#connectionString);
+      });
+    });
+  };
+
+  close = async (): Promise<void> => {
+    const sockets = [...this.#sockets];
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve, reject) => {
+      this.#server.close((err) => (err ? reject(err) : resolve()));
+    });
+    await Promise.all(sockets.map(({ duplex }) => duplex?.onClose));
+  };
+
+  #initDuplex(socket: BridgedSocket): PGliteDuplex {
+    socket.duplex = new PGliteDuplex(
+      this.#options.pglite,
+      this.#sessionLock,
+      undefined,
+      undefined,
+      resolveSyncToFs(this.#options.pglite, this.#options.syncToFs),
+    );
+    socket.duplex.on('error', () => socket.destroy());
+    socket.once('close', () => {
+      const { duplex } = socket;
+      if (duplex && !duplex.destroyed) duplex.destroy();
+    });
+    socket.pipe(socket.duplex).pipe(socket);
+    return socket.duplex;
+  }
+
+  #onConnection(socket: BridgedSocket): void {
+    socket.setNoDelay(true);
+    this.#sockets.add(socket);
+    socket.on('close', () => this.#sockets.delete(socket));
+    socket.on('error', () => socket.destroy());
+
+    let buffer: Buffer = Buffer.alloc(0);
+
+    const onData = (chunk: Buffer): void => {
+      buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
+
+      // Drain SSL/GSS preludes; libpq may chain them before StartupMessage.
+      while (buffer.length >= PRELUDE_HEADER_BYTES) {
+        const len = buffer.readInt32BE(0);
+        const code = buffer.readInt32BE(4);
+        if (len === 8 && (code === SSL_REQUEST_CODE || code === GSSENC_REQUEST_CODE)) {
+          socket.write('N');
+          buffer = buffer.subarray(8);
+          continue;
+        }
+        break;
+      }
+      if (buffer.length < PRELUDE_HEADER_BYTES) return;
+
+      const len = buffer.readInt32BE(0);
+      const code = buffer.readInt32BE(4);
+
+      if (len === 16 && code === CANCEL_REQUEST_CODE) {
+        if (buffer.length < 16) return;
+        socket.removeListener('data', onData);
+        socket.end();
+        return;
+      }
+
+      socket.removeListener('data', onData);
+
+      // Hand over to duplex stream
+      socket.pause();
+      this.#initDuplex(socket).write(buffer);
+      socket.resume();
     };
 
     socket.on('data', onData);
-  };
-
-  const server = net.createServer(handleConnection);
-
-  const socketPath =
-    socketDir === undefined ? undefined : nodePath.join(socketDir, `.s.PGSQL.${socketPort}`);
-
-  await new Promise<void>((resolve, reject) => {
-    const onError = (err: Error): void => reject(err);
-    server.once('error', onError);
-    const onListening = (): void => {
-      server.removeListener('error', onError);
-      resolve();
-    };
-    if (socketPath !== undefined) {
-      server.listen(socketPath, onListening);
-    } else {
-      server.listen(port, host, onListening);
-    }
-  });
-
-  const close = async (): Promise<void> => {
-    const closed = new Promise<void>((resolve, reject) => {
-      // server.close() only errors when the server isn't running — `close` is
-      // not exposed before listen() resolves, so the err branch is unreachable.
-      /* v8 ignore next */
-      server.close((err) => (err ? reject(err) : resolve()));
-    });
-    const duplexClosings = [...activeDuplexes].map(
-      (duplex) =>
-        new Promise<void>((resolve) => {
-          duplex.once('close', () => resolve());
-        }),
-    );
-    for (const socket of activeSockets) {
-      socket.destroy();
-    }
-    await closed;
-    // Wait for any in-flight rollback / lock release inside _final to finish
-    // before we hand control back to the caller (who likely closes PGlite next).
-    await Promise.all(duplexClosings);
-  };
-
-  if (socketPath !== undefined) {
-    return {
-      url: `postgres:///postgres?host=${encodeURIComponent(socketDir as string)}&port=${socketPort}`,
-      port: socketPort,
-      host: '',
-      socketPath,
-      close,
-    };
   }
-
-  // Non-null after a successful TCP listen() — see net.Server#address docs.
-  const address = server.address() as net.AddressInfo;
-  // IPv6 uses libpq query-form because `pg-connection-string` keeps brackets in
-  // `hostname` when parsing `postgres://[::1]:port/...`, which then breaks the
-  // DNS lookup. Query-form sidesteps URL hostname parsing entirely.
-  const url =
-    address.family === 'IPv6'
-      ? `postgres:///postgres?host=${encodeURIComponent(address.address)}&port=${address.port}`
-      : `postgres://${address.address}:${address.port}/postgres`;
-  return {
-    url,
-    port: address.port,
-    host: address.address,
-    close,
-  };
-};
+}

@@ -7,11 +7,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { createTempDir, removeTempDir } from './__tests__/utils/file-system.ts';
 import { createMockPGlite } from './__tests__/utils/mocks.ts';
 import { pushMigrations } from './migrations.ts';
-import {
-  emitBridgeLeakWarning,
-  PGliteBridge,
-  type PGliteBridgeOptions,
-} from './pglite-bridge-class.ts';
+import type { PGliteBridgeOptions } from './pglite-bridge.ts';
+import { emitBridgeLeakWarning, PGliteBridge } from './pglite-bridge-class.ts';
 
 const MIGRATION_SQL = readFileSync(
   join(process.cwd(), 'prisma/migrations/0001_init/migration.sql'),

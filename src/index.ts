@@ -30,6 +30,7 @@ export type {
   StatsFn,
 } from './pglite-bridge.ts';
 export { createPGliteBridge } from './pglite-bridge.ts';
+export { PGliteBridge as PGliteBridgeCls } from './pglite-bridge-class.ts';
 export type { PushSchemaOptions, PushSchemaResult, SchemaTarget } from './schema.ts';
 export { pushSchema, resetSchema } from './schema.ts';
 
@@ -64,8 +65,8 @@ export type { SyncToFsMode } from './pool.ts';
 export const createPool = async (options: PoolOptions): Promise<PoolResult> =>
   createBasePool(options);
 export { PGliteDuplex } from './duplex';
-export type { PGliteServer, PGliteServerOptions } from './pglite-server.ts';
-export { createPGliteServer } from './pglite-server.ts';
+export type { PGliteServerOptions } from './pglite-server.ts';
+export { PGliteServer } from './pglite-server.ts';
 export type { Stats, StatsBasic, StatsFull, StatsLevel } from './utils/bridge-stats.ts';
 // ── Diagnostics channels (public observability surface) ──
 export {

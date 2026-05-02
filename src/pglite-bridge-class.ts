@@ -25,8 +25,10 @@
 import type { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
+
+import type { PGliteBridgeOptions } from './pglite-bridge.ts';
 import type { SyncToFsMode } from './pool.ts';
-import { BridgeStats, type Stats, type StatsLevel } from './utils/bridge-stats.ts';
+import { BridgeStats, type Stats } from './utils/bridge-stats.ts';
 import { PgBridgeClient, type PgBridgePoolConfig } from './utils/pg-bridge-client.ts';
 import { SessionLock } from './utils/session-lock.ts';
 import { createSnapshotManager, type SnapshotManager } from './utils/snapshot.ts';
@@ -47,21 +49,6 @@ export const emitBridgeLeakWarning = (): void => {
 };
 
 const leakRegistry = new FinalizationRegistry<void>(emitBridgeLeakWarning);
-
-export interface PGliteBridgeOptions {
-  /**
-   * PGlite instance to bridge to. Must be ready (`pglite.ready === true`)
-   * and not closed. The caller owns its lifecycle — `close()` shuts down
-   * the pool only.
-   */
-  pglite: PGlite;
-  /** Maximum pool connections (default: 1). See {@link createPGliteBridge}. */
-  max?: number;
-  /** Telemetry level (default `'off'`). */
-  statsLevel?: StatsLevel;
-  /** Filesystem sync policy (default `'auto'`). */
-  syncToFs?: SyncToFsMode;
-}
 
 export class PGliteBridge {
   readonly adapter: PrismaPg;

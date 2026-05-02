@@ -10,7 +10,7 @@ import {
 import { runCli } from './utils/run-cli.ts';
 import { type StartedServer, startServer } from './utils/start-server.ts';
 
-describe('prisma db push against createPGliteServer', () => {
+describe('prisma db push against PGliteServer', () => {
   let started: StartedServer | undefined;
   let project: PrismaProject | undefined;
 
@@ -31,17 +31,18 @@ model Widget {
 `;
     project = await setupPrismaProject(schema);
 
+    const DATABASE_URL = await started.server.listen();
     const result = await runCli(PRISMA_BIN, ['db', 'push'], {
       cwd: project.dir,
       env: {
         PRISMA_HIDE_UPDATE_MESSAGE: '1',
-        DATABASE_URL: started.url,
+        DATABASE_URL,
       },
       timeoutMs: 60_000,
     });
     expect(result.code, result.stderr).toBe(0);
 
-    const client = new pg.Client({ connectionString: started.url });
+    const client = new pg.Client(DATABASE_URL);
     await client.connect();
     try {
       const r = await client.query<{ table_name: string }>(
