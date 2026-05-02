@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createMockPGlite } from '../__tests__/utils/mocks.ts';
+import { createMockPGlite } from '../__tests__/mocks.ts';
 import { BridgeStats, QUERY_DURATION_WINDOW_SIZE } from './bridge-stats.ts';
 
 let pglite: Parameters<BridgeStats['snapshot']>[0];

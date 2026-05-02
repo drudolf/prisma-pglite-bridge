@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { prisma } from './app/util/prisma.ts';
+import { prisma } from './utils/prisma.ts';
 
 describe('dependencies + batches + snapshots', () => {
   it('reads seeded dependency on the active job', async () => {

@@ -1,7 +1,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createTempDir, createTempFile, removeTempDir } from './__tests__/utils/file-system.ts';
+import { createTempDir, createTempFile, removeTempDir } from './__tests__/file-system.ts';
 import {
   getMigrationSQL,
   hasMigrations,

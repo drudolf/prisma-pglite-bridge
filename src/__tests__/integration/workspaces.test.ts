@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { prisma } from './app/util/prisma.ts';
+import { prisma } from './utils/prisma.ts';
 
 describe('workspaces', () => {
   it('reads seeded workspace with tenant include', async () => {

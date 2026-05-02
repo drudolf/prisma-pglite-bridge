@@ -6,7 +6,7 @@ import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import pg from 'pg';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createMockPGlite } from './__tests__/utils/mocks.ts';
+import { createMockPGlite } from './__tests__/mocks.ts';
 import { PGliteServer, type PGliteServerOptions } from './pglite-server.ts';
 
 const SSL_REQUEST_CODE = 80877103;
