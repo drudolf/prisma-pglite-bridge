@@ -151,6 +151,10 @@ const loadScenarios = async (): Promise<[string, Scenario][]> => {
     const { bytesSweep } = await import('./scenarios/bytes-sweep.ts');
     all.push(['bytes-sweep', bytesSweep]);
   }
+  if (scenarioFilter === 'text-array-sweep') {
+    const { textArraySweep } = await import('./scenarios/text-array-sweep.ts');
+    all.push(['text-array-sweep', textArraySweep]);
+  }
 
   return all;
 };
