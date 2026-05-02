@@ -2,6 +2,7 @@ import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { PGliteDuplex } from '../duplex';
 import type { TelemetrySink } from './bridge-stats.ts';
+import { type TypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 import type { SessionLock } from './session-lock.ts';
 
 interface PgBridgeClientOptions {
@@ -62,6 +63,19 @@ export class PgBridgeClient extends pg.Client {
     // still trip the pg queue deprecation.
     if (typeof (first as { submit?: unknown }).submit === 'function') {
       return callSuper();
+    }
+
+    if (
+      typeof first === 'object' &&
+      first !== null &&
+      'types' in first &&
+      first.types !== null &&
+      typeof (first.types as TypesLike | null)?.getTypeParser === 'function'
+    ) {
+      args[0] = {
+        ...(first as object),
+        types: wrapTypesWithFastArrayParsers(first.types as TypesLike),
+      };
     }
 
     const prior = this.querySubmissionChain;

@@ -14,6 +14,9 @@ importers:
       '@prisma/schema-engine-wasm':
         specifier: 7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a
         version: 7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a
+      postgres-array:
+        specifier: ^3.0.4
+        version: 3.0.4
     devDependencies:
       '@arethetypeswrong/cli':
         specifier: ^0.18.2
