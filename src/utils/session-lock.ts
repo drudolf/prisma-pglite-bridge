@@ -19,9 +19,6 @@ const STATUS_IDLE = 0x49; // 'I' — no transaction
 const STATUS_IN_TRANSACTION = 0x54; // 'T' — in transaction block
 const STATUS_FAILED = 0x45; // 'E' — failed transaction block
 
-/** Opaque bridge identity token */
-export type BridgeId = symbol;
-
 /**
  * Coordinates PGlite access across concurrent pool connections.
  *
@@ -33,15 +30,15 @@ export type BridgeId = symbol;
  * if building a custom pool setup.
  */
 export class SessionLock {
-  private owner?: BridgeId;
-  private waitQueue: Array<{ id: BridgeId; resolve: () => void; reject: (error: Error) => void }> =
+  private owner?: symbol;
+  private waitQueue: Array<{ id: symbol; resolve: () => void; reject: (error: Error) => void }> =
     [];
 
   /**
    * Acquire access to PGlite. Resolves immediately if no transaction is
    * active or if this bridge owns the current transaction. Queues otherwise.
    */
-  async acquire(id: BridgeId): Promise<void> {
+  async acquire(id: symbol): Promise<void> {
     // Free slot or re-entrant — pass through
     if (this.owner === undefined || this.owner === id) return;
 
@@ -56,7 +53,7 @@ export class SessionLock {
   }
 
   /** Returns `true` if `id` currently holds the session (e.g., is mid-transaction). */
-  isOwner(id: BridgeId): boolean {
+  isOwner(id: symbol): boolean {
     return this.owner === id;
   }
 
@@ -68,7 +65,7 @@ export class SessionLock {
    *   released). `false` for no-op updates (e.g., re-entrant status within
    *   the same transaction, or IDLE from a non-owning bridge).
    */
-  updateStatus(id: BridgeId, status: number): boolean {
+  updateStatus(id: symbol, status: number): boolean {
     if (status === STATUS_IN_TRANSACTION || status === STATUS_FAILED) {
       if (this.owner === id) return false;
       this.owner = id;
@@ -91,7 +88,7 @@ export class SessionLock {
    * @returns `true` if this bridge held ownership and released it. `false`
    *   if another bridge (or no one) owned the session.
    */
-  release(id: BridgeId): boolean {
+  release(id: symbol): boolean {
     if (this.owner === id) {
       this.owner = undefined;
       this.drainWaitQueue();
@@ -107,7 +104,7 @@ export class SessionLock {
    * Used when a bridge is torn down while blocked in `acquire()` so it cannot
    * later be granted ownership after destruction.
    */
-  cancel(id: BridgeId, error: Error = new Error('Session lock acquire cancelled')): boolean {
+  cancel(id: symbol, error: Error = new Error('Session lock acquire cancelled')): boolean {
     let cancelled = false;
 
     if (this.owner === id) {

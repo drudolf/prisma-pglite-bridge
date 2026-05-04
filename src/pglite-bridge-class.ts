@@ -27,17 +27,11 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
 
 import type { PGliteBridgeOptions } from './pglite-bridge.ts';
-import type { SyncToFsMode } from './pool.ts';
 import { BridgeStats, type Stats } from './utils/bridge-stats.ts';
 import { PgBridgeClient, type PgBridgePoolConfig } from './utils/pg-bridge-client.ts';
+import { resolveSyncToFs } from './utils/resolve-sync-to-fs.ts';
 import { SessionLock } from './utils/session-lock.ts';
 import { createSnapshotManager, type SnapshotManager } from './utils/snapshot.ts';
-
-const resolveSyncToFs = (pglite: PGlite, mode: SyncToFsMode | undefined): boolean => {
-  if (mode === true || mode === false) return mode;
-  const dataDir = pglite.dataDir;
-  return !(dataDir === undefined || dataDir === '' || dataDir.startsWith('memory://'));
-};
 
 /** @internal Exported for testing. */
 export const emitBridgeLeakWarning = (): void => {
@@ -110,15 +104,15 @@ export class PGliteBridge {
 
   resetDb = async (): Promise<void> => {
     this.#stats?.incrementResetDb();
-    await this.#snapshot.resetDb();
+    return this.#snapshot.resetDb();
   };
 
   snapshotDb = async (): Promise<void> => {
-    await this.#snapshot.snapshotDb();
+    return this.#snapshot.snapshotDb();
   };
 
   resetSnapshot = async (): Promise<void> => {
-    await this.#snapshot.resetSnapshot();
+    return this.#snapshot.resetSnapshot();
   };
 
   close = async (): Promise<void> => {
@@ -126,8 +120,8 @@ export class PGliteBridge {
       this.#closing = (async () => {
         const closeEntry = this.#stats ? process.hrtime.bigint() : undefined;
         await this.#pool.end();
-        if (this.#stats && closeEntry !== undefined) {
-          await this.#stats.freeze(this.pglite, closeEntry);
+        if (closeEntry !== undefined) {
+          await this.#stats?.freeze(this.pglite, closeEntry);
         }
         leakRegistry.unregister(this.#leakToken);
       })();

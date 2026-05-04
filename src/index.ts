@@ -50,7 +50,7 @@ export type { PoolResult };
  * {@link LOCK_WAIT_CHANNEL}).
  */
 export type PoolOptions = Omit<BasePoolOptions, 'telemetry'>;
-export type { SyncToFsMode } from './pool.ts';
+export type { SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
 
 /**
  * Build a `pg.Pool` backed by a caller-supplied PGlite instance. Each pool

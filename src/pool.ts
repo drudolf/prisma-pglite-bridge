@@ -12,16 +12,8 @@ import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import type { TelemetrySink } from './utils/bridge-stats.ts';
 import { PgBridgeClient, type PgBridgePoolConfig } from './utils/pg-bridge-client.ts';
+import { resolveSyncToFs, type SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
 import { SessionLock } from './utils/session-lock.ts';
-
-export type SyncToFsMode = 'auto' | boolean;
-
-const resolveSyncToFs = (pglite: PGlite, mode: SyncToFsMode | undefined): boolean => {
-  if (mode === true || mode === false) return mode;
-
-  const dataDir = pglite.dataDir;
-  return !(dataDir === undefined || dataDir === '' || dataDir.startsWith('memory://'));
-};
 
 export interface PoolOptions {
   /** PGlite instance to bridge to. The caller owns its lifecycle. */
