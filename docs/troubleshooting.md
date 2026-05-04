@@ -4,9 +4,9 @@
 
 - **Node.js 20+ only** — requires `node:stream` and `node:fs`.
   Does not work in browsers despite PGlite's browser support.
-- **WASM cold start** — first `createPGliteBridge()` call takes
-  ~2s for PGlite WASM compilation. Subsequent calls in the same
-  process reuse the compiled module.
+- **WASM cold start** — the first PGlite query through a
+  `PGliteBridge` takes ~2s for PGlite WASM compilation. Subsequent
+  calls in the same process reuse the compiled module.
 - **Single PostgreSQL session** — PGlite runs in single-user mode.
   All pool connections share one session. With `max > 1`, a
   `SessionLock` serializes transactions (one at a time), but `SET`
@@ -17,7 +17,7 @@
   [`pushMigrations`](./api.md#pushmigrationspglite-options) (run
   `prisma migrate dev` first or pass `sql` directly) or
   [`pushSchema`](./api.md#pushschemaadapter-options) (apply
-  `schema.prisma` directly). `createPGliteBridge` alone returns
+  `schema.prisma` directly). `new PGliteBridge(...)` alone wraps
   an empty database.
 
 ## `this.pglite.execProtocolRawStream is not a function`

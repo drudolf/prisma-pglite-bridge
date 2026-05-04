@@ -19,14 +19,14 @@ TypeScript users also need `@types/pg`.
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import seed from './seed.ts'; // user-provided: (prisma: PrismaClient) => Promise<void>
 
 const pglite = new PGlite();
 await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 
-const bridge = await createPGliteBridge({ pglite });
+const bridge = new PGliteBridge({ pglite });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 await seed(prisma);
 await bridge.snapshotDb();

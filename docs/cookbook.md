@@ -36,12 +36,12 @@ the in-memory PGlite version:
 ```typescript
 // vitest.setup.ts
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { beforeEach, vi } from 'vitest';
 
 const pglite = new PGlite();
-const bridge = await createPGliteBridge({ pglite });
+const bridge = new PGliteBridge({ pglite });
 await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 export const testPrisma = new PrismaClient({ adapter: bridge.adapter });
 
@@ -70,7 +70,7 @@ the top level, not inside `beforeAll`:
 ```typescript
 // jest.setup.ts
 const { PGlite } = require('@electric-sql/pglite');
-const { createPGliteBridge, pushMigrations } = require('prisma-pglite-bridge');
+const { PGliteBridge, pushMigrations } = require('prisma-pglite-bridge');
 const { PrismaClient } = require('@prisma/client');
 
 let testPrisma;
@@ -82,7 +82,7 @@ jest.mock('./lib/prisma', () => ({
 
 beforeAll(async () => {
   const pglite = new PGlite();
-  const bridge = await createPGliteBridge({ pglite });
+  const bridge = new PGliteBridge({ pglite });
   await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
   testPrisma = new PrismaClient({ adapter: bridge.adapter });
   resetDb = bridge.resetDb;
@@ -97,16 +97,16 @@ If your code accepts `PrismaClient` as a parameter:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteBridge, pushMigrations, type ResetDbFn } from 'prisma-pglite-bridge';
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, beforeEach, it, expect } from 'vitest';
 
 let prisma: PrismaClient;
-let resetDb: ResetDbFn;
+let resetDb: PGliteBridge['resetDb'];
 
 beforeAll(async () => {
   const pglite = new PGlite();
-  const bridge = await createPGliteBridge({ pglite });
+  const bridge = new PGliteBridge({ pglite });
   await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
   prisma = new PrismaClient({ adapter: bridge.adapter });
   resetDb = bridge.resetDb;
@@ -147,16 +147,16 @@ Then reuse it in tests:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteBridge, pushMigrations, type ResetDbFn } from 'prisma-pglite-bridge';
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { seed } from '../prisma/seed';
 
 let prisma: PrismaClient;
-let resetDb: ResetDbFn;
+let resetDb: PGliteBridge['resetDb'];
 
 beforeAll(async () => {
   const pglite = new PGlite();
-  const bridge = await createPGliteBridge({ pglite });
+  const bridge = new PGliteBridge({ pglite });
   await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
   prisma = new PrismaClient({ adapter: bridge.adapter });
   await seed(prisma);
@@ -180,10 +180,10 @@ For test fixtures or prototypes without `prisma/migrations`, swap
 ```typescript
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteBridge, pushSchema } from 'prisma-pglite-bridge';
+import { PGliteBridge, pushSchema } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
-const bridge = await createPGliteBridge({ pglite });
+const bridge = new PGliteBridge({ pglite });
 await pushSchema(bridge.adapter, {
   schema: await readFile('prisma/schema.prisma', 'utf8'),
 });
@@ -196,12 +196,12 @@ pass them via the `extensions` option:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
 import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
 
 const pglite = new PGlite({ extensions: { uuid_ossp, pgcrypto } });
-const bridge = await createPGliteBridge({ pglite });
+const bridge = new PGliteBridge({ pglite });
 await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 ```
 
@@ -218,10 +218,10 @@ that cross a trust boundary.
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
-const bridge = await createPGliteBridge({ pglite });
+const bridge = new PGliteBridge({ pglite });
 await pushMigrations(pglite, {
   sql: `
     CREATE TABLE "User" (id text PRIMARY KEY, name text NOT NULL);
@@ -251,7 +251,7 @@ const dataDir = './data/pglite';
 const firstRun = !existsSync(join(dataDir, 'PG_VERSION'));
 
 const pglite = new PGlite(dataDir);
-const bridge = await createPGliteBridge({ pglite });
+const bridge = new PGliteBridge({ pglite });
 if (firstRun) await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 ```
@@ -350,10 +350,10 @@ any migration has been applied, so subsequent runs skip
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
-const bridge = await createPGliteBridge({ pglite });
+const bridge = new PGliteBridge({ pglite });
 await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 
