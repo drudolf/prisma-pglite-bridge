@@ -18,11 +18,11 @@ CLI must be resolvable (`pnpm install` takes care of that).
 
 ## Adapters
 
-| Flag value                        | What it benchmarks                                                 |
-| --------------------------------- | ------------------------------------------------------------------ |
-| `prisma-pglite-bridge` / `bridge` | This package — PGlite behind `@prisma/adapter-pg` via `createPool` |
-| `pglite-prisma-adapter`           | Third-party direct adapter — same PGlite engine, no pg protocol    |
-| `postgres-pg` / `postgres`        | Real PostgreSQL over node-postgres                                 |
+| Flag value                        | What it benchmarks                                                   |
+| --------------------------------- | -------------------------------------------------------------------- |
+| `prisma-pglite-bridge` / `bridge` | This package — PGlite behind `@prisma/adapter-pg` via `PgBridgePool` |
+| `pglite-prisma-adapter`           | Third-party direct adapter — same PGlite engine, no pg protocol      |
+| `postgres-pg` / `postgres`        | Real PostgreSQL over node-postgres                                   |
 
 Pick one with `--adapter <name>`. Omit the flag to run all three.
 

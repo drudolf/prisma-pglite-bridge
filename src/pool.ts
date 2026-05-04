@@ -1,5 +1,5 @@
 /**
- * Pool factory — creates a pg.Pool backed by a caller-supplied PGlite instance.
+ * `PgBridgePool` — a `pg.Pool` subclass backed by a caller-supplied PGlite instance.
  *
  * Each pool connection gets its own PGliteDuplex stream, all sharing the
  * same PGlite WASM instance. Pools with multiple connections also share a

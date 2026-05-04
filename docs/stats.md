@@ -28,12 +28,12 @@ external consumer subscribes to the public
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
 await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 
-const bridge = await createPGliteBridge({
+const bridge = new PGliteBridge({
   pglite,
   statsLevel: 'basic', // or 'full'
 });
@@ -110,12 +110,12 @@ Subscribing opts you in to that work.
 ```typescript
 import diagnostics_channel from 'node:diagnostics_channel';
 import {
-  createPGliteBridge,
+  PGliteBridge,
   QUERY_CHANNEL,
   type QueryEvent,
 } from 'prisma-pglite-bridge';
 
-const { bridgeId } = await createPGliteBridge({ /* ... */ });
+const { bridgeId } = new PGliteBridge({ /* ... */ });
 
 const listener = (msg: unknown) => {
   const e = msg as QueryEvent;
@@ -137,5 +137,5 @@ Channels:
   waited before the lock was granted.
 
 Filter on `bridgeId` to isolate events when multiple bridges
-share a process. Obtain it from the `createPGliteBridge()` or
-`createPool()` return value.
+share a process. Read it from `bridge.bridgeId` (on
+`PGliteBridge`) or `pool.bridgeId` (on `PgBridgePool`).

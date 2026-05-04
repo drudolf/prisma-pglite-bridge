@@ -9,13 +9,13 @@ For known limits and runtime warnings see
 ## Contents
 
 - [Populating the database](#populating-the-database)
-- [`createPGliteBridge(options)`](#createpglitebridgeoptions)
+- [`PGliteBridge`](#pglitebridge)
 - [`pushMigrations(pglite, options)`](#pushmigrationspglite-options)
 - [`pushSchema(adapter, options)`](#pushschemaadapter-options)
 - [`resetSchema(adapter)`](#resetschemaadapter)
 - [`hasMigrations(pglite)`](#hasmigrationspglite)
 - [`hasSchema(pglite)`](#hasschemapglite)
-- [`createPool(options)`](#createpooloptions)
+- [`PgBridgePool`](#pgbridgepool)
 - [`PGliteServer`](#pgliteserver)
 - [`PGliteDuplex`](#pgliteduplex)
 - [`SessionLock`](#sessionlock)
@@ -24,7 +24,7 @@ For known limits and runtime warnings see
 
 ## Populating the database
 
-`createPGliteBridge` returns an empty database. The bridge offers
+`new PGliteBridge(...)` wraps an empty database. The bridge offers
 two helpers to populate it — pick the one that matches your
 project layout:
 
@@ -47,16 +47,19 @@ only — never from environment variables, network input, or any
 value that crosses a trust boundary, and keep the migrations
 directory writable only by trusted processes.
 
-## `createPGliteBridge(options)`
+## `PGliteBridge`
 
-Creates a `CreatePGliteBridge` — a bundle holding a Prisma driver
-adapter, the underlying PGlite instance, and lifecycle helpers —
-backed by a caller-supplied PGlite instance.
+A class bundling a Prisma driver adapter, the underlying PGlite
+instance, and lifecycle helpers — backed by a caller-supplied
+PGlite instance. Construct synchronously; the bridge awaits
+`pglite.waitReady` internally on the first operation.
 
 ```typescript
+import { PGliteBridge } from 'prisma-pglite-bridge';
+
 const pglite = new PGlite(/* dataDir, extensions, ... */);
 
-const bridge = await createPGliteBridge({
+const bridge = new PGliteBridge({
   pglite,                     // required — caller owns lifecycle
   max: 1,                     // pool connections (default: 1)
   statsLevel: 'off',          // 'off' | 'basic' | 'full' (default: 'off')
@@ -64,38 +67,44 @@ const bridge = await createPGliteBridge({
 });
 ```
 
-To apply schema SQL, pass `bridge.pglite` to
+The constructor takes a `PGliteBridgeConfig` (also exported). To
+apply schema SQL, pass `bridge.pglite` to
 [`pushMigrations`](#pushmigrationspglite-options) or `bridge.adapter`
 to [`pushSchema`](#pushschemaadapter-options) — see
 [Populating the database](#populating-the-database).
 
-Returns a `CreatePGliteBridge`:
+Instance members:
 
-- `adapter` — pass to `new PrismaClient({ adapter })`, or to
-  `pushSchema` / `resetSchema`
+- `adapter` — `PrismaPg` adapter; pass to
+  `new PrismaClient({ adapter })`, or to `pushSchema` /
+  `resetSchema`.
 - `pglite` — the caller-supplied PGlite instance, re-exposed for
-  passing to `pushMigrations`
+  passing to `pushMigrations`.
+- `bridgeId` — a unique `symbol` identifying this bridge. Use it
+  to filter events from the public
+  [diagnostics channels](./stats.md#diagnostics-channels) when multiple
+  bridges share a process.
 - `resetDb()` — truncates all user tables and discards
   session-local state via `DISCARD ALL` (for example `SET`
   variables, prepared statements, temp tables, and `LISTEN`
   registrations). Call in `beforeEach` for per-test isolation.
   Note: this clears all data including seed data — re-seed after
-  reset if needed.
-- `close()` — shuts down the pool. The caller-supplied PGlite
-  instance is not closed — you own its lifecycle. Recommended in
-  explicit test teardown, long-running scripts, and dev servers so
-  the pool is released promptly and leak warnings do not fire.
-- `stats()` — returns telemetry when `statsLevel` is `'basic'` or
-  `'full'`, else `undefined`. See [stats collection](./stats.md#stats-collection).
-- `bridgeId` — a unique `symbol` identifying this bridge. Use it
-  to filter events from the public
-  [diagnostics channels](./stats.md#diagnostics-channels) when multiple
-  bridges share a process.
+  reset (or use `snapshotDb()` first) if needed.
 - `snapshotDb()` — captures the current DB contents into an internal
   snapshot so later `resetDb()` calls restore to that state instead of
   truncating to empty.
 - `resetSnapshot()` — discards the current snapshot so later
   `resetDb()` calls truncate back to empty again.
+- `stats()` — returns telemetry when `statsLevel` is `'basic'` or
+  `'full'`, else `undefined`. See [stats collection](./stats.md#stats-collection).
+- `close()` — shuts down the pool. The caller-supplied PGlite
+  instance is not closed — you own its lifecycle. Recommended in
+  explicit test teardown, long-running scripts, and dev servers so
+  the pool is released promptly and leak warnings do not fire.
+
+Methods are arrow-function class fields, so destructuring stays
+safe: `const { resetDb } = bridge; await resetDb();` works as
+expected.
 
 ## `pushMigrations(pglite, options)`
 
@@ -151,10 +160,10 @@ adapter wired to the target database works.
 ```typescript
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteBridge, pushSchema } from 'prisma-pglite-bridge';
+import { PGliteBridge, pushSchema } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite();
-const bridge = await createPGliteBridge({ pglite });
+const bridge = new PGliteBridge({ pglite });
 
 await pushSchema(bridge.adapter, {
   schema: await readFile('prisma/schema.prisma', 'utf8'),
@@ -222,10 +231,10 @@ when migrations are not part of the workflow:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPGliteBridge, hasSchema, pushSchema } from 'prisma-pglite-bridge';
+import { PGliteBridge, hasSchema, pushSchema } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite('./data/pglite');
-const bridge = await createPGliteBridge({ pglite });
+const bridge = new PGliteBridge({ pglite });
 
 if (!(await hasSchema(pglite))) {
   await pushSchema(bridge.adapter, { schema });
@@ -236,27 +245,33 @@ Awaits `pglite.waitReady` implicitly via `pglite.query(...)`. Only
 the `public` schema is inspected — the internal `_pglite_snapshot`
 schema used by `bridge.snapshotDb()` is excluded.
 
-## `createPool(options)`
+## `PgBridgePool`
 
-Lower-level escape hatch. Creates a `pg.Pool` backed by PGlite
-without schema handling — useful for custom Prisma setups,
-other ORMs, or raw SQL.
+Lower-level escape hatch. Subclass of `pg.Pool` where every
+connection is a PGlite-backed bridge. Useful for custom Prisma
+setups, other ORMs, or raw SQL — no schema management, no
+`resetDb`/`snapshotDb` lifecycle.
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { createPool } from 'prisma-pglite-bridge';
+import { PgBridgePool } from 'prisma-pglite-bridge';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 const pglite = new PGlite();
-const { pool, close } = await createPool({ pglite });
+const pool = new PgBridgePool({ pglite });
 const adapter = new PrismaPg(pool);
+// later: await pool.end();
 ```
 
-Returns `pool` (pg.Pool), `bridgeId` (a unique `symbol` for
-[diagnostics channel](./stats.md#diagnostics-channels) filtering), and
-`close()` (which shuts down the pool only — the caller-supplied
-PGlite instance is not closed). Accepts `pglite` (required),
-`max`, `bridgeId`, and `syncToFs`.
+The constructor takes a `PgBridgePoolConfig` (also exported)
+accepting `pglite` (required), `max`, `bridgeId`, `syncToFs`, and
+`timeout`. Use `pool.end()` to shut the pool down — the
+caller-supplied PGlite instance is not closed. The instance also
+exposes a `bridgeId` field (a unique `symbol`) for filtering
+events from the [diagnostics channels](./stats.md#diagnostics-channels).
+
+Most users should prefer [`PGliteBridge`](#pglitebridge), which
+wraps this class and adds schema/reset/snapshot lifecycle.
 
 ## `PGliteServer`
 
@@ -292,18 +307,18 @@ import pg from 'pg';
 const pglite = new PGlite();
 await pglite.waitReady;
 
-const lock = new SessionLock();
+const sessionLock = new SessionLock();
 const client = new pg.Client({
-  stream: () => new PGliteDuplex(pglite, lock),
+  stream: () => new PGliteDuplex(pglite, { sessionLock }),
 });
 ```
 
 ## `SessionLock`
 
 An async mutex that serializes PGlite access across multiple
-duplex streams sharing one PGlite instance. `createPGliteBridge`
-and `createPool` install one automatically; export it for custom
-multi-duplex setups built on top of `PGliteDuplex`.
+duplex streams sharing one PGlite instance. `PGliteBridge` and
+`PgBridgePool` install one automatically when `max > 1`; export
+it for custom multi-duplex setups built on top of `PGliteDuplex`.
 
 ## Diagnostics channel exports
 
