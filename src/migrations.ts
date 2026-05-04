@@ -132,7 +132,7 @@ export const getMigrationSQL = async (options: PushMigrationsOptions): Promise<s
  * pool. No schema engine, no WASM module, no diffing — useful when you
  * already have a `prisma/migrations` directory or pre-generated SQL.
  *
- * Pass the same PGlite instance you handed to {@link createPGliteBridge}
+ * Pass the same PGlite instance you handed to {@link PGliteBridge}
  * (i.e. `bridge.pglite`) — or any standalone `PGlite` you own.
  */
 export const pushMigrations = async (

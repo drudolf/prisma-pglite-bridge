@@ -192,7 +192,7 @@ describe('session lock integration', async () => {
       CREATE TABLE session_test (id serial PRIMARY KEY, val text);
     `);
 
-    pool = new PgBridgePool({ bridgeId: Symbol('bridge'), pglite, max: 2 });
+    pool = new PgBridgePool({ pglite, max: 2 });
   });
 
   beforeEach(async () => {

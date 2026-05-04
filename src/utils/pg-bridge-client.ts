@@ -35,14 +35,13 @@ export class PgBridgeClient extends pg.Client {
       user: 'postgres',
       database: 'postgres',
       stream: () =>
-        new PGliteDuplex(
-          bridge.pglite,
-          bridge.sessionLock,
-          bridge.bridgeId,
-          bridge.telemetry,
-          bridge.timeout,
-          bridge.syncToFs,
-        ),
+        new PGliteDuplex(bridge.pglite, {
+          sessionLock: bridge.sessionLock,
+          bridgeId: bridge.bridgeId,
+          telemetry: bridge.telemetry,
+          timeout: bridge.timeout,
+          syncToFs: bridge.syncToFs,
+        }),
     });
   }
 

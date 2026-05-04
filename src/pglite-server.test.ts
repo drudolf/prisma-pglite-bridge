@@ -55,6 +55,13 @@ describe('PGliteServer', () => {
     return { pglite, server, connectionString };
   };
 
+  it('listen() throws when the PGlite instance is closed', async () => {
+    const closed = createMockPGlite();
+    Object.assign(closed, { ready: true, closed: true });
+    const server = new PGliteServer({ pglite: closed });
+    await expect(server.listen()).rejects.toThrow(/requires an open PGlite instance/);
+  });
+
   it('listen() is idempotent and returns the same address', async () => {
     const { server, connectionString } = await startServer();
     expect(await server.listen()).toBe(connectionString);

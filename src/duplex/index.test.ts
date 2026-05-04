@@ -24,7 +24,7 @@ const createClient = (bridgeId?: symbol, telemetry?: TelemetrySink) =>
   new pg.Client({
     user: 'postgres',
     database: 'postgres',
-    stream: () => new PGliteDuplex(pglite, undefined, bridgeId, telemetry),
+    stream: () => new PGliteDuplex(pglite, { bridgeId, telemetry }),
   });
 
 describe('PGliteDuplex', () => {
@@ -190,7 +190,7 @@ describe('PGliteDuplex error paths', () => {
     });
     const lock = new SessionLock();
     const releaseSpy = vi.spyOn(lock, 'release');
-    const bridge = new PGliteDuplex(mock, lock);
+    const bridge = new PGliteDuplex(mock, { sessionLock: lock });
     bridge.on('error', () => {});
 
     const err = await writeAndAwait(bridge, startupBytes());
@@ -215,7 +215,7 @@ describe('PGliteDuplex error paths', () => {
 
     const telemetry = createMockTelemetry();
 
-    const bridge = new PGliteDuplex(mock, undefined, Symbol('bridge'), telemetry);
+    const bridge = new PGliteDuplex(mock, { telemetry });
     bridge.on('error', () => {});
 
     const startupErr = await writeAndAwait(bridge, startupBytes());
@@ -272,7 +272,7 @@ describe('PGliteDuplex error paths', () => {
     const mock = createMockPGlite({});
     const lock = new SessionLock();
     const releaseSpy = vi.spyOn(lock, 'release');
-    const bridge = new PGliteDuplex(mock, lock);
+    const bridge = new PGliteDuplex(mock, { sessionLock: lock });
     bridge.on('error', () => {});
 
     await writeAndAwait(bridge, startupBytes());
@@ -353,7 +353,7 @@ describe('PGliteDuplex error paths', () => {
       waitReady: new Promise<void>(() => {}), // never resolves
     });
     const TIMEOUT_MS = 5;
-    const bridge = new PGliteDuplex(mock, undefined, undefined, undefined, TIMEOUT_MS);
+    const bridge = new PGliteDuplex(mock, { timeout: TIMEOUT_MS });
     bridge.on('error', () => {});
 
     const err = await writeAndAwait(bridge, startupBytes());
@@ -473,7 +473,7 @@ describe('PGliteDuplex error paths', () => {
           await fn();
         }),
       }),
-      lock,
+      { sessionLock: lock },
     );
     blockedBridge.on('error', () => {});
 
@@ -496,7 +496,7 @@ describe('PGliteDuplex error paths', () => {
           await fn();
         }),
       }),
-      lock,
+      { sessionLock: lock },
     );
     nextBridge.on('error', () => {});
 

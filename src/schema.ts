@@ -12,10 +12,10 @@
  * @example
  * ```typescript
  * import { PGlite } from '@electric-sql/pglite';
- * import { createPGliteBridge, pushSchema } from 'prisma-pglite-bridge';
+ * import { PGliteBridge, pushSchema } from 'prisma-pglite-bridge';
  *
  * const pglite = new PGlite();
- * const { adapter } = await createPGliteBridge({ pglite });
+ * const { adapter } = new PGliteBridge({ pglite });
  *
  * await pushSchema(adapter, {
  *   schema: await fs.readFile('prisma/schema.prisma', 'utf8'),
