@@ -34,9 +34,23 @@ export const isTypesLike = (value: unknown): value is TypesLike => {
   return isObject(value) && 'getTypeParser' in value && typeof value.getTypeParser === 'function';
 };
 
-// Array OID → element scalar OID. `undefined` means no element transform —
-// pg-types only registers a `String(val)` no-op for these (text-likes).
-const ARRAY_OID_TO_ELEMENT_OID: ReadonlyMap<number, number | undefined> = new Map([
+// Array OIDs whose elements pg-types parses as raw strings (no transform).
+// We can hand back a cached parser without consulting `originalGetTypeParser`.
+const ARRAY_OID_TEXT_LIKE: ReadonlySet<number> = new Set([
+  1002, // _char
+  1009, // _text
+  1014, // _bpchar
+  1015, // _varchar
+  1040, // _macaddr
+  1041, // _inet
+  1270, // _timetz
+  2951, // _uuid
+  651, // _cidr
+  3907, // _numrange
+]);
+
+// Array OID → element scalar OID for OIDs that need a real element parser.
+const ARRAY_OID_WITH_ELEMENT: ReadonlyMap<number, number> = new Map([
   [1000, 16], // _bool
   [1001, 17], // _bytea
   [1005, 21], // _int2
@@ -47,32 +61,20 @@ const ARRAY_OID_TO_ELEMENT_OID: ReadonlyMap<number, number | undefined> = new Ma
   [1022, 701], // _float8
   [1028, 26], // _oid
   [1187, 1186], // _interval
-  [1002, undefined], // _char
-  [1009, undefined], // _text
-  [1014, undefined], // _bpchar
-  [1015, undefined], // _varchar
-  [1040, undefined], // _macaddr
-  [1041, undefined], // _inet
-  [1270, undefined], // _timetz
-  [2951, undefined], // _uuid
-  [651, undefined], // _cidr
-  [3907, undefined], // _numrange
 ]);
 
-const buildFastParser = (
-  originalGetTypeParser: GetTypeParser,
-  elementOid: number | undefined,
-): Parser => {
-  if (elementOid === undefined) return (raw) => parseArrayV3(raw);
-  const elementParser = originalGetTypeParser(elementOid, 'text');
-  return (raw) => parseArrayV3(raw, elementParser);
-};
+const FAST_TEXT_ARRAY_PARSER: Parser = (raw) => parseArrayV3(raw);
 
 export const wrapTypesWithFastArrayParsers = <T extends TypesLike>(types: T): T => {
   const original = types.getTypeParser;
   const wrapped: GetTypeParser = (oid, format = 'text') => {
-    if (format === 'text' && ARRAY_OID_TO_ELEMENT_OID.has(oid)) {
-      return buildFastParser(original, ARRAY_OID_TO_ELEMENT_OID.get(oid));
+    if (format === 'text') {
+      if (ARRAY_OID_TEXT_LIKE.has(oid)) return FAST_TEXT_ARRAY_PARSER;
+      const elementOid = ARRAY_OID_WITH_ELEMENT.get(oid);
+      if (elementOid !== undefined) {
+        const elementParser = original(elementOid, 'text');
+        return (raw) => parseArrayV3(raw, elementParser);
+      }
     }
     return original(oid, format);
   };
