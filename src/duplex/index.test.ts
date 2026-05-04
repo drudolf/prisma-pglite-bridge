@@ -302,6 +302,94 @@ describe('PGliteDuplex error paths', () => {
     bridge.destroy();
   });
 
+  it('surfaces the error when waitPGliteReady throws because pglite is closed', async () => {
+    const mock = createMockPGlite({ ready: false, closed: true });
+    const bridge = new PGliteDuplex(mock);
+    bridge.on('error', () => {});
+
+    const err = await writeAndAwait(bridge, startupBytes());
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toBe('PGlite instance closed');
+
+    bridge.destroy();
+  });
+
+  it('surfaces the error when pglite.waitReady rejects', async () => {
+    const mock = createMockPGlite({
+      ready: false,
+      closed: false,
+      waitReady: Promise.reject(new Error('startup failed')),
+    });
+    const bridge = new PGliteDuplex(mock);
+    bridge.on('error', () => {});
+
+    const err = await writeAndAwait(bridge, startupBytes());
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toBe('PGlite instance not ready: startup failed');
+
+    bridge.destroy();
+  });
+
+  it('surfaces a stringified message when pglite.waitReady rejects with a non-Error', async () => {
+    const mock = createMockPGlite({
+      ready: false,
+      closed: false,
+      waitReady: Promise.reject('plain string reason'),
+    });
+    const bridge = new PGliteDuplex(mock);
+    bridge.on('error', () => {});
+
+    const err = await writeAndAwait(bridge, startupBytes());
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toBe('PGlite instance not ready: plain string reason');
+
+    bridge.destroy();
+  });
+
+  it('surfaces the error when waitPGliteReady times out', async () => {
+    const mock = createMockPGlite({
+      ready: false,
+      closed: false,
+      waitReady: new Promise<void>(() => {}), // never resolves
+    });
+    const TIMEOUT_MS = 5;
+    const bridge = new PGliteDuplex(mock, undefined, undefined, undefined, TIMEOUT_MS);
+    bridge.on('error', () => {});
+
+    const err = await writeAndAwait(bridge, startupBytes());
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toBe(
+      `PGlite instance not ready: Operation timed out after ${TIMEOUT_MS}ms`,
+    );
+
+    bridge.destroy();
+  });
+
+  it('surfaces the error when waitPGliteReady throws inside streamProtocol', async () => {
+    // First waitPGliteReady (in runUnderRunExclusive) passes; runExclusive's
+    // callback flips `closed` to true so the second waitPGliteReady (inside
+    // streamProtocol) throws — exercises the second call site.
+    let closed = false;
+    const mock = createMockPGlite({
+      ready: false,
+      waitReady: Promise.resolve(),
+      runExclusive: vi.fn(async (fn) => {
+        closed = true;
+        await fn();
+      }),
+    });
+    Object.defineProperty(mock, 'closed', { get: () => closed, configurable: true });
+
+    const bridge = new PGliteDuplex(mock);
+    bridge.on('error', () => {});
+
+    const err = await writeAndAwait(bridge, startupBytes());
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toBe('PGlite instance closed');
+
+    bridge.destroy();
+  });
+
   it('queues additional writes while a drain is already running', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {

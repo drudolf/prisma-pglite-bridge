@@ -1,8 +1,8 @@
 import { PGlite } from '@electric-sql/pglite';
 import { describe, expect, it, vi } from 'vitest';
-import { createPGliteBridge } from './pglite-bridge.ts';
+import PGliteBridge from './pglite-bridge.ts';
 
-describe('createPGliteBridge leak detection', () => {
+describe('PGliteBridge (class) leak detection', () => {
   it('does not emit a leak warning while the pool is still reachable via the adapter', async () => {
     const gc = (globalThis as { gc?: () => void }).gc;
     if (typeof gc !== 'function') {
@@ -11,11 +11,12 @@ describe('createPGliteBridge leak detection', () => {
 
     const warnSpy = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
     const livePGlite = new PGlite();
+    await livePGlite.waitReady;
     let closeBridge: (() => Promise<void>) | undefined;
     try {
       let adapterRef: unknown;
       await (async () => {
-        const result = await createPGliteBridge({ pglite: livePGlite });
+        const result = new PGliteBridge({ pglite: livePGlite });
         adapterRef = result.adapter;
         closeBridge = result.close;
       })();

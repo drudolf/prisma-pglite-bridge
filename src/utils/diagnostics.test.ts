@@ -2,34 +2,32 @@ import diagnostics_channel from 'node:diagnostics_channel';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import setupPGlite from '../__tests__/pglite.ts';
+import PgBridgePool from '../pool.ts';
 import {
-  createPool,
   LOCK_WAIT_CHANNEL,
   type LockWaitEvent,
   QUERY_CHANNEL,
   type QueryEvent,
-} from '../index.ts';
+} from './diagnostics.ts';
 
 const queryCh = diagnostics_channel.channel(QUERY_CHANNEL);
 const lockWaitCh = diagnostics_channel.channel(LOCK_WAIT_CHANNEL);
 const pglite = await setupPGlite();
 
-type PoolResult = Awaited<ReturnType<typeof createPool>>;
+let queryPool: PgBridgePool;
+let queryPoolB: PgBridgePool;
+let lockWaitPool: PgBridgePool;
 
-let queryPool: PoolResult;
-let queryPoolB: PoolResult;
-let lockWaitPool: PoolResult;
-
-beforeAll(async () => {
-  queryPool = await createPool({ pglite });
-  queryPoolB = await createPool({ pglite });
-  lockWaitPool = await createPool({ pglite, max: 2 });
+beforeAll(() => {
+  queryPool = new PgBridgePool({ pglite });
+  queryPoolB = new PgBridgePool({ pglite });
+  lockWaitPool = new PgBridgePool({ pglite, max: 2 });
 });
 
 afterAll(async () => {
-  await queryPool.close();
-  await queryPoolB.close();
-  await lockWaitPool.close();
+  await queryPool.end();
+  await queryPoolB.end();
+  await lockWaitPool.end();
 });
 
 describe('QUERY_CHANNEL end-to-end', () => {
@@ -38,7 +36,7 @@ describe('QUERY_CHANNEL end-to-end', () => {
     const listener = (msg: unknown) => events.push(msg as QueryEvent);
     queryCh.subscribe(listener);
     try {
-      await queryPool.pool.query('SELECT 1 AS n');
+      await queryPool.query('SELECT 1 AS n');
       await new Promise((r) => setImmediate(r));
 
       const mine = events.filter((e) => e.bridgeId === queryPool.bridgeId);
@@ -59,9 +57,7 @@ describe('QUERY_CHANNEL end-to-end', () => {
     const listener = (msg: unknown) => events.push(msg as QueryEvent);
     queryCh.subscribe(listener);
     try {
-      await expect(
-        queryPool.pool.query('SELECT * FROM definitely_not_a_table'),
-      ).rejects.toBeDefined();
+      await expect(queryPool.query('SELECT * FROM definitely_not_a_table')).rejects.toBeDefined();
       await new Promise((r) => setImmediate(r));
 
       const mine = events.filter((e) => e.bridgeId === queryPool.bridgeId);
@@ -77,8 +73,8 @@ describe('QUERY_CHANNEL end-to-end', () => {
     const listener = (msg: unknown) => events.push(msg as QueryEvent);
     queryCh.subscribe(listener);
     try {
-      await queryPool.pool.query('SELECT 1');
-      await queryPoolB.pool.query('SELECT 1');
+      await queryPool.query('SELECT 1');
+      await queryPoolB.query('SELECT 1');
       await new Promise((r) => setImmediate(r));
 
       const fromA = events.filter((e) => e.bridgeId === queryPool.bridgeId);
@@ -99,12 +95,12 @@ describe('LOCK_WAIT_CHANNEL end-to-end', () => {
     const listener = (msg: unknown) => events.push(msg as LockWaitEvent);
     lockWaitCh.subscribe(listener);
     try {
-      const a = await lockWaitPool.pool.connect();
+      const a = await lockWaitPool.connect();
       try {
         await a.query('BEGIN');
 
         // B's query blocks until A commits. Schedule a release shortly.
-        const other = lockWaitPool.pool.query('SELECT 1 AS n');
+        const other = lockWaitPool.query('SELECT 1 AS n');
         await new Promise((r) => setTimeout(r, 1));
         await a.query('COMMIT');
         await other;

@@ -9,7 +9,7 @@ import {
   pushMigrations,
   readMigrationFiles,
 } from './migrations.ts';
-import { createPGliteBridge } from './pglite-bridge.ts';
+import PGliteBridge from './pglite-bridge.ts';
 
 type MigrationsModule = typeof import('./migrations.ts');
 
@@ -218,7 +218,7 @@ describe('pushMigrations', () => {
   const makeBridge = async (dataDir?: string) => {
     const pglite = new PGlite(dataDir);
     await pglite.waitReady;
-    const bridge = await createPGliteBridge({ pglite });
+    const bridge = new PGliteBridge({ pglite });
     cleanups.push(async () => {
       await bridge.close();
       await pglite.close();

@@ -1,8 +1,8 @@
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createPGliteBridge, type PGliteBridge } from './pglite-bridge.ts';
-import { createPool } from './pool.ts';
+import PGliteBridge from './pglite-bridge.ts';
+import PgBridePool from './pool.ts';
 import { pushSchema, resetSchema } from './schema.ts';
 
 const SCHEMA_BASE = `
@@ -66,7 +66,7 @@ describe('pushSchema', () => {
   const makeBridge = async (): Promise<{ pglite: PGlite; bridge: PGliteBridge }> => {
     const pglite = new PGlite();
     await pglite.waitReady;
-    const bridge = await createPGliteBridge({ pglite });
+    const bridge = new PGliteBridge({ pglite });
     cleanups.push(async () => {
       await bridge.close();
       await pglite.close();
@@ -88,7 +88,7 @@ describe('pushSchema', () => {
   it('accepts a raw PrismaPg target', async () => {
     const pglite = new PGlite();
     await pglite.waitReady;
-    const { pool } = await createPool({ pglite });
+    const pool = new PgBridePool({ pglite });
     const prismaPg = new PrismaPg(pool);
     cleanups.push(async () => {
       await pool.end();
@@ -197,7 +197,7 @@ describe('resetSchema', () => {
   it('drops tables in non-public user schemas', async () => {
     const pglite = new PGlite();
     await pglite.waitReady;
-    const bridge = await createPGliteBridge({ pglite });
+    const bridge = new PGliteBridge({ pglite });
     try {
       await pglite.exec(`
         CREATE SCHEMA base;
@@ -221,7 +221,7 @@ describe('resetSchema', () => {
   it('drops all user tables', async () => {
     const pglite = new PGlite();
     await pglite.waitReady;
-    const bridge = await createPGliteBridge({ pglite });
+    const bridge = new PGliteBridge({ pglite });
 
     try {
       await pushSchema(bridge.adapter, { schema: SCHEMA_BASE });

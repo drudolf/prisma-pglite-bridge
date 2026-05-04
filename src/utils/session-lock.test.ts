@@ -2,7 +2,7 @@ import type pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import setupPGlite from '../__tests__/pglite.ts';
-import { createPool } from '../pool.ts';
+import PgBridgePool from '../pool.ts';
 import { SessionLock } from './session-lock.ts';
 
 const drainMicrotasks = async () => {
@@ -185,7 +185,6 @@ describe('SessionLock', () => {
 
 describe('session lock integration', async () => {
   let pool: pg.Pool;
-  let close: () => Promise<void>;
   const pglite = await setupPGlite();
 
   beforeAll(async () => {
@@ -193,7 +192,7 @@ describe('session lock integration', async () => {
       CREATE TABLE session_test (id serial PRIMARY KEY, val text);
     `);
 
-    ({ pool, close } = await createPool({ pglite, max: 2 }));
+    pool = new PgBridgePool({ bridgeId: Symbol('bridge'), pglite, max: 2 });
   });
 
   beforeEach(async () => {
@@ -201,7 +200,7 @@ describe('session lock integration', async () => {
   });
 
   afterAll(async () => {
-    await close();
+    await pool?.end();
   });
 
   it('concurrent transactions do not interleave', async () => {

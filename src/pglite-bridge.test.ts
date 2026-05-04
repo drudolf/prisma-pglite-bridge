@@ -1,63 +1,63 @@
+/** biome-ignore-all lint/style/noNonNullAssertion: test files only */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
-import type { Mock } from 'vitest';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import setupTestSuite from './__tests__/bridge.ts';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
 import { createMockPGlite } from './__tests__/mocks.ts';
 import { pushMigrations } from './migrations.ts';
-import { createPGliteBridge, emitBridgeLeakWarning } from './pglite-bridge.ts';
+import type { PGliteBridgeConfig } from './pglite-bridge.ts';
+import PGliteBridge, { emitBridgeLeakWarning } from './pglite-bridge.ts';
 
-const { pglite, prisma, bridge } = await setupTestSuite({
-  options: { statsLevel: 'basic' },
-});
+const MIGRATION_SQL = readFileSync(
+  join(process.cwd(), 'prisma/migrations/0001_init/migration.sql'),
+  'utf8',
+);
 
-type CreatePGliteBridgeModule = typeof import('./pglite-bridge.ts');
-
-const loadCreatePGliteBridgeWithMocks = async ({
-  poolEnd = vi.fn().mockResolvedValue(undefined),
-  prismaPg = vi.fn().mockImplementation(function MockPrismaPg() {
-    return { mocked: true };
-  }),
-}: {
-  poolEnd?: Mock;
-  prismaPg?: Mock;
-} = {}): Promise<{
-  createPool: Mock;
-  module: CreatePGliteBridgeModule;
-  pool: { end: Mock };
-  prismaPg: Mock;
-}> => {
-  vi.resetModules();
-  const pool = { end: poolEnd };
-  const createPool = vi.fn().mockResolvedValue({
-    pool,
-    bridgeId: Symbol('mock'),
-    close: vi.fn().mockResolvedValue(undefined),
-  });
-  vi.doMock('./pool.ts', () => ({
-    createPool,
-  }));
-  vi.doMock('@prisma/adapter-pg', () => ({
-    PrismaPg: prismaPg,
-  }));
-  return { createPool, module: await import('./pglite-bridge.ts'), pool, prismaPg };
+const createReadyMockPGlite = (): PGlite => {
+  const mock = createMockPGlite();
+  Object.assign(mock, { ready: true, closed: false, dataDir: undefined });
+  return mock;
 };
 
-afterEach(() => {
-  vi.doUnmock('./pool.ts');
-  vi.doUnmock('@prisma/adapter-pg');
-  vi.resetModules();
-});
+const createReadyPGlite = async (dataDir?: string): Promise<PGlite> => {
+  const pglite = dataDir === undefined ? new PGlite() : new PGlite(dataDir);
+  await pglite.waitReady;
+  return pglite;
+};
 
-describe('createPGliteBridge', () => {
-  it('rejects invalid stats levels', async () => {
-    await expect(
-      createPGliteBridge({
-        pglite,
-        statsLevel: 'invalid' as 'basic',
-      }),
-    ).rejects.toThrow(`statsLevel must be 'off', 'basic', or 'full'; got invalid`);
+const setupSuite = async (
+  options: Partial<PGliteBridgeConfig> = {},
+): Promise<{ pglite: PGlite; bridge: PGliteBridge; prisma: PrismaClient }> => {
+  const pglite = options.pglite ?? (await createReadyPGlite());
+  const bridge = new PGliteBridge({ ...options, pglite });
+  await pushMigrations(pglite, { sql: MIGRATION_SQL });
+  const prisma = new PrismaClient({ adapter: bridge.adapter });
+
+  beforeEach(async () => {
+    await bridge.resetDb();
+  });
+  afterAll(async () => {
+    await prisma.$disconnect();
+    await bridge.close();
+    await pglite.close();
+  });
+
+  return { pglite, bridge, prisma };
+};
+
+const { pglite, prisma, bridge } = await setupSuite({ statsLevel: 'basic' });
+
+describe('PGliteBridge (class)', () => {
+  it('rejects invalid stats levels', () => {
+    expect(
+      () =>
+        new PGliteBridge({
+          pglite,
+          statsLevel: 'invalid' as 'basic',
+        }),
+    ).toThrow(`statsLevel must be 'off', 'basic', or 'full'; got invalid`);
   });
 
   it('returns telemetry when stats are enabled', async () => {
@@ -68,9 +68,14 @@ describe('createPGliteBridge', () => {
   });
 
   it(`returns undefined stats when statsLevel is 'off'`, async () => {
-    const { close, stats } = await createPGliteBridge({ pglite });
-    await expect(stats()).resolves.toBeUndefined();
-    close();
+    const local = await createReadyPGlite();
+    const localBridge = new PGliteBridge({ pglite: local });
+    try {
+      await expect(localBridge.stats()).resolves.toBeUndefined();
+    } finally {
+      await localBridge.close();
+      await local.close();
+    }
   });
 
   it('exposes the underlying pglite instance', () => {
@@ -88,10 +93,10 @@ describe('createPGliteBridge', () => {
   });
 
   it('reuses an initialized persistent dataDir without re-applying migrations', async () => {
-    const { parent, path: dataDir } = createTempDir('bridge-data');
+    const { parent, path: dataDir } = createTempDir('bridge-class-data');
 
-    const firstPGlite = new PGlite(dataDir);
-    const first = await createPGliteBridge({ pglite: firstPGlite, statsLevel: 'basic' });
+    const firstPGlite = await createReadyPGlite(dataDir);
+    const first = new PGliteBridge({ pglite: firstPGlite, statsLevel: 'basic' });
     await pushMigrations(firstPGlite, {
       sql: 'CREATE TABLE IF NOT EXISTS "Tenant" ("id" TEXT PRIMARY KEY, "name" TEXT NOT NULL, "slug" TEXT NOT NULL)',
     });
@@ -105,8 +110,8 @@ describe('createPGliteBridge', () => {
     await first.close();
     await firstPGlite.close();
 
-    const secondPGlite = new PGlite(dataDir);
-    const second = await createPGliteBridge({ pglite: secondPGlite, statsLevel: 'basic' });
+    const secondPGlite = await createReadyPGlite(dataDir);
+    const second = new PGliteBridge({ pglite: secondPGlite, statsLevel: 'basic' });
     const secondPrisma = new PrismaClient({ adapter: second.adapter });
 
     try {
@@ -158,47 +163,6 @@ describe('createPGliteBridge', () => {
     await expect(prisma.tenant.count()).resolves.toBe(0);
   });
 
-  it('close is idempotent while shutdown is already in progress', async () => {
-    let releaseEnd: (() => void) | undefined;
-    const poolEnd = vi.fn().mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          releaseEnd = resolve;
-        }),
-    );
-    const pglite = createMockPGlite();
-    const { module } = await loadCreatePGliteBridgeWithMocks({ poolEnd });
-    const { createPGliteBridge } = module;
-    const created = await createPGliteBridge({ pglite });
-
-    const closingA = created.close();
-    const closingB = created.close();
-    releaseEnd?.();
-
-    await Promise.all([closingA, closingB]);
-
-    expect(poolEnd).toHaveBeenCalledTimes(1);
-  });
-
-  it('forwards syncToFs to createPool', async () => {
-    const pglite = createMockPGlite();
-    const { createPool, module, pool, prismaPg } = await loadCreatePGliteBridgeWithMocks();
-    const { createPGliteBridge } = module;
-
-    const { adapter, close } = await createPGliteBridge({ pglite, syncToFs: false });
-
-    expect(createPool).toHaveBeenCalledWith(
-      expect.objectContaining({
-        pglite,
-        syncToFs: false,
-      }),
-    );
-    expect(prismaPg).toHaveBeenCalledWith(pool);
-    expect(adapter).toEqual({ mocked: true });
-
-    await close();
-  });
-
   it('emitBridgeLeakWarning emits a typed process warning', () => {
     const spy = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
     try {
@@ -217,21 +181,118 @@ describe('createPGliteBridge', () => {
     const registerSpy = vi.spyOn(FinalizationRegistry.prototype, 'register');
     const unregisterSpy = vi.spyOn(FinalizationRegistry.prototype, 'unregister');
     try {
-      const pglite = createMockPGlite();
-      const { module } = await loadCreatePGliteBridgeWithMocks();
-      const { createPGliteBridge } = module;
-      const created = await createPGliteBridge({ pglite });
+      const local = await createReadyPGlite();
+      const created = new PGliteBridge({ pglite: local });
 
       expect(registerSpy).toHaveBeenCalled();
       const registeredToken = registerSpy.mock.calls.at(-1)?.[2];
       expect(registeredToken).toBeDefined();
 
       await created.close();
+      await local.close();
 
       expect(unregisterSpy).toHaveBeenCalledWith(registeredToken);
     } finally {
       registerSpy.mockRestore();
       unregisterSpy.mockRestore();
     }
+  });
+});
+
+describe('PGliteBridge (class) — mocked pg.Pool', () => {
+  type ClassModule = typeof import('./pglite-bridge.ts');
+
+  const loadClassWithMocks = async ({
+    poolEnd = vi.fn().mockResolvedValue(undefined),
+    prismaPg = vi.fn().mockImplementation(function MockPrismaPg() {
+      return { mocked: true };
+    }),
+  }: {
+    poolEnd?: ReturnType<typeof vi.fn>;
+    prismaPg?: ReturnType<typeof vi.fn>;
+  } = {}): Promise<{
+    PoolCtor: ReturnType<typeof vi.fn>;
+    module: ClassModule;
+    poolEnd: ReturnType<typeof vi.fn>;
+    prismaPg: ReturnType<typeof vi.fn>;
+  }> => {
+    vi.resetModules();
+    const PoolCtor = vi.fn().mockImplementation(function MockPool() {
+      return { end: poolEnd };
+    });
+    const actualPg = (await vi.importActual<typeof import('pg')>('pg')).default;
+    vi.doMock('pg', () => ({
+      default: { ...actualPg, Pool: PoolCtor },
+    }));
+    vi.doMock('@prisma/adapter-pg', () => ({
+      PrismaPg: prismaPg,
+    }));
+    return {
+      PoolCtor,
+      module: await import('./pglite-bridge.ts'),
+      poolEnd,
+      prismaPg,
+    };
+  };
+
+  afterEach(() => {
+    vi.doUnmock('pg');
+    vi.doUnmock('@prisma/adapter-pg');
+    vi.resetModules();
+  });
+
+  it('close is idempotent while shutdown is already in progress', async () => {
+    let releaseEnd: (() => void) | undefined;
+    const poolEnd = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseEnd = resolve;
+        }),
+    );
+    const mockPglite = createReadyMockPGlite();
+    const { module } = await loadClassWithMocks({ poolEnd });
+    const created = new module.default({ pglite: mockPglite });
+
+    const closingA = created.close();
+    const closingB = created.close();
+    releaseEnd?.();
+
+    await Promise.all([closingA, closingB]);
+
+    expect(poolEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('installs a SessionLock when max > 1', async () => {
+    const mockPglite = createReadyMockPGlite();
+    const { PoolCtor, module } = await loadClassWithMocks();
+
+    const created = new module.default({ pglite: mockPglite, max: 2 });
+
+    const poolConfig = PoolCtor.mock.calls[0]?.[0] as Record<symbol, { sessionLock: unknown }>;
+    const optionsKey = Object.getOwnPropertySymbols(poolConfig).find(
+      (sym) => sym.description === 'PgBridgeClientOptions',
+    );
+    expect(poolConfig[optionsKey!]?.sessionLock).toBeDefined();
+
+    await created.close();
+  });
+
+  it('forwards syncToFs to the pool client options', async () => {
+    const mockPglite = createReadyMockPGlite();
+    const { PoolCtor, module, prismaPg } = await loadClassWithMocks();
+
+    const created = new module.default({ pglite: mockPglite, syncToFs: false });
+
+    expect(PoolCtor).toHaveBeenCalledTimes(1);
+    const poolConfig = PoolCtor.mock.calls[0]?.[0] as Record<symbol, { syncToFs: boolean }>;
+    const optionsKey = Object.getOwnPropertySymbols(poolConfig).find(
+      (sym) => sym.description === 'PgBridgeClientOptions',
+    );
+    expect(optionsKey).toBeDefined();
+    expect(poolConfig[optionsKey!]?.syncToFs).toBe(false);
+    expect(prismaPg).toHaveBeenCalled();
+    expect(created.adapter).toEqual({ mocked: true });
+
+    await created.close();
   });
 });

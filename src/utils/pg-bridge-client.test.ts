@@ -3,13 +3,13 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
 import { describe, expect, it, vi } from 'vitest';
-import { PgBridgeClient, type PgBridgePoolConfig } from './pg-bridge-client.ts';
+import { PgBridgeClient } from './pg-bridge-client.ts';
 import { SessionLock } from './session-lock.ts';
 
 const createBridgePool = async (pglite: PGlite) => {
   await pglite.waitReady;
   const bridgeId = Symbol('bridge');
-  const poolConfig: PgBridgePoolConfig = {
+  const poolConfig = {
     Client: PgBridgeClient,
     max: 1,
     [PgBridgeClient.OptionsKey]: {

@@ -34,6 +34,8 @@ const CANCEL_REQUEST_CODE = 80877102;
 const PRELUDE_HEADER_BYTES = 8;
 const DEFAULT_SOCKET_PORT = 5432;
 
+type RequiredBy<T, K extends keyof T> = Omit<T, K> & Required<Pick<T, K>>;
+
 export interface PGliteServerOptions {
   /**
    * PGlite instance to expose. Must not be closed; `listen()` awaits
@@ -64,6 +66,8 @@ export interface PGliteServerOptions {
   dataDir?: string;
   /** Filesystem sync policy. See {@link SyncToFsMode}. Default `'auto'`. */
   syncToFs?: SyncToFsMode;
+  /** timeout for PGlite waitReady */
+  timeout?: number;
   /**
    * Username embedded in the connection URL returned by `listen()`.
    * Default `'postgres'`. PGlite ignores this — there is no authentication —
@@ -84,7 +88,7 @@ export class PGliteServer {
    */
   readonly pglite: PGlite | PGliteInterface;
 
-  readonly #options: Omit<PGliteServerOptions, 'pglite'>;
+  readonly #options: RequiredBy<Omit<PGliteServerOptions, 'pglite'>, 'host' | 'port' | 'user'>;
   readonly #server: net.Server;
   readonly #sessionLock = new SessionLock();
   readonly #sockets = new Set<BridgedSocket>();
@@ -92,34 +96,32 @@ export class PGliteServer {
   #connectionString: string | undefined;
 
   constructor(options: PGliteServerOptions) {
-    this.#options = options;
-    this.#options.host ||= '127.0.0.1';
-    this.#options.port ??= !this.#options.dataDir ? 0 : DEFAULT_SOCKET_PORT;
-    this.#options.user ||= 'postgres';
+    const { pglite, ...rest } = options;
 
-    this.pglite = options.pglite;
+    this.pglite = pglite;
+    this.#options = {
+      ...rest,
+      host: rest.host || '127.0.0.1',
+      port: rest.port ?? (!rest.dataDir ? 0 : DEFAULT_SOCKET_PORT),
+      user: rest.user ? encodeURIComponent(rest.user) : 'postgres',
+    };
     this.#server = net.createServer((socket) => this.#onConnection(socket));
   }
 
   listen = async (): Promise<string> => {
     if (this.#connectionString) return this.#connectionString;
 
-    // Wait for pglite to be ready
-    await this.#waitReady();
-
-    return await new Promise<string>((resolve, reject) => {
+    return new Promise<string>((resolve, reject) => {
       const onError = (err: Error): void => reject(err);
       this.#server.once('error', onError);
 
-      const user = encodeURIComponent(this.#options.user as string);
-
       // Socket
       if (this.#options.dataDir) {
-        const { dataDir } = this.#options;
+        const { dataDir, port, user } = this.#options;
 
-        this.#server.listen(nodePath.join(dataDir, `.s.PGSQL.${this.#options.port}`), () => {
+        this.#server.listen(nodePath.join(dataDir, `.s.PGSQL.${port}`), () => {
           this.#server.removeListener('error', onError);
-          this.#connectionString = `postgres://${user}@/postgres?host=${encodeURIComponent(dataDir)}&port=${this.#options.port}`;
+          this.#connectionString = `postgres://${user}@/postgres?host=${encodeURIComponent(dataDir)}&port=${port}`;
           return resolve(this.#connectionString);
         });
 
@@ -130,7 +132,9 @@ export class PGliteServer {
       this.#server.listen(this.#options.port, this.#options.host, () => {
         this.#server.removeListener('error', onError);
 
+        const { user } = this.#options;
         const { address, family, port } = this.#server.address() as net.AddressInfo;
+
         this.#connectionString =
           family === 'IPv6'
             ? `postgres://${user}@/postgres?host=${encodeURIComponent(address)}&port=${port}`
@@ -151,27 +155,13 @@ export class PGliteServer {
     await Promise.all(sockets.map(({ duplex }) => duplex?.onClose));
   };
 
-  async #waitReady() {
-    if (this.pglite.closed) {
-      throw new Error('PGliteServer requires an open PGlite instance; got a closed one.');
-    }
-
-    if (!this.pglite.ready) {
-      try {
-        await this.pglite.waitReady;
-      } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error);
-        throw new Error(`PGliteServer requires a ready PGlite instance; ${msg}`);
-      }
-    }
-  }
-
   #initDuplex(socket: BridgedSocket): PGliteDuplex {
     socket.duplex = new PGliteDuplex(
       this.pglite,
       this.#sessionLock,
       undefined,
       undefined,
+      this.#options.timeout,
       resolveSyncToFs(this.pglite, this.#options.syncToFs),
     );
     socket.duplex.on('error', () => socket.destroy());

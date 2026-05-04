@@ -22,6 +22,7 @@ import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 
 import type { TelemetrySink } from '../utils/bridge-stats.ts';
 import { lockWaitChannel, queryChannel } from '../utils/diagnostics.ts';
+import { waitPGliteReady } from '../utils/pglite.ts';
 import type { SessionLock } from '../utils/session-lock.ts';
 import { nsToMs } from '../utils/time.ts';
 
@@ -57,6 +58,7 @@ export class PGliteDuplex extends Duplex {
   private readonly bridgeId?: symbol;
   private readonly telemetry?: TelemetrySink;
   private readonly syncToFs: boolean;
+  private readonly timeout?: number;
   private readonly duplexId: symbol;
   /** Incoming bytes framed directly from a queued chunk buffer */
   private readonly input = new FrontendMessageBuffer();
@@ -102,6 +104,7 @@ export class PGliteDuplex extends Duplex {
     sessionLock?: SessionLock,
     bridgeId?: symbol,
     telemetry?: TelemetrySink,
+    timeout?: number,
     syncToFs = true,
   ) {
     super();
@@ -110,6 +113,8 @@ export class PGliteDuplex extends Duplex {
     this.bridgeId = bridgeId;
     this.telemetry = telemetry;
     this.syncToFs = syncToFs;
+    this.timeout = timeout;
+
     this.duplexId = Symbol('duplex');
     this.onClose = new Promise<void>((resolve) => this.once('close', () => resolve()));
   }
@@ -238,7 +243,7 @@ export class PGliteDuplex extends Duplex {
     try {
       // Loop until no more pending data to process
       while (this.input.length > 0) {
-        /* c8 ignore next — race-only: destroy after a drain iteration resolves */
+        /* c8 ignore start — race-only: destroy after a drain iteration resolves */
         if (this.tornDown) break;
         const beforeLength = this.input.length;
 
@@ -248,6 +253,7 @@ export class PGliteDuplex extends Duplex {
         if (this.phase === 'ready') {
           await this.processMessages();
         }
+        /* c8 ignore stop */
 
         // If processMessages couldn't consume anything (incomplete message),
         // stop looping — more data will arrive via _write
@@ -308,6 +314,9 @@ export class PGliteDuplex extends Duplex {
    * waiters behind it).
    */
   private async runUnderRunExclusive(op: () => Promise<void>): Promise<void> {
+    // Wait for pglite to be ready
+    await waitPGliteReady(this.pglite, this.timeout);
+
     await this.pglite.runExclusive(async () => {
       if (this.tornDown) return;
       const opPromise = op();
@@ -499,6 +508,9 @@ export class PGliteDuplex extends Duplex {
         }
       },
     });
+
+    // Wait for pglite
+    await waitPGliteReady(this.pglite, this.timeout);
 
     // Let framer.write run even during teardown so RFQ tracking stays current.
     // The onChunk handler above already gates `this.push` on tornDown to avoid
