@@ -116,7 +116,7 @@ describe('PgBridgeClient — wraps types in pool.query', () => {
   });
 
   it('round-trips INT4[], TEXT[], BOOL[] correctly', async () => {
-    const pool = new PgBridgePool({ bridgeId: Symbol('bridge'), pglite });
+    const pool = new PgBridgePool({ pglite });
     try {
       await pool.query('CREATE TABLE arr_t (ints int[], txts text[], bools bool[])');
       await pool.query("INSERT INTO arr_t VALUES ('{1,2,3}', '{a,b,c}', '{true,false,true}')");
@@ -130,7 +130,7 @@ describe('PgBridgeClient — wraps types in pool.query', () => {
   });
 
   it('preserves a caller-supplied types.getTypeParser for non-array OIDs', async () => {
-    const pool = new PgBridgePool({ bridgeId: Symbol('bridge'), pglite });
+    const pool = new PgBridgePool({ pglite });
     try {
       await pool.query('CREATE TABLE scalar_t (n int)');
       await pool.query('INSERT INTO scalar_t VALUES (42)');

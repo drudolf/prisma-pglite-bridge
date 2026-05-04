@@ -9,11 +9,13 @@
  * through PGlite's runExclusive mutex.
  */
 import pg from 'pg';
+import type { TelemetrySink } from './utils/bridge-stats.ts';
 import { PgBridgeClient, type PgBridgeClientOptions } from './utils/pg-bridge-client.ts';
 import { resolveSyncToFs, type SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
-export interface PgBridgePoolConfig extends Omit<PgBridgeClientOptions, 'bridgeId' | 'syncToFs'> {
+export interface PgBridgePoolConfig
+  extends Omit<PgBridgeClientOptions, 'bridgeId' | 'syncToFs' | 'telemetry'> {
   /**
    * Identity tag published with every diagnostics-channel event. Subscribers
    * filter on this to distinguish events from different bridges in the
@@ -47,13 +49,19 @@ export interface PgBridgePoolConfig extends Omit<PgBridgeClientOptions, 'bridgeI
    * persistent `fs` without a meaningful `dataDir`, pass `true` explicitly.
    */
   syncToFs?: SyncToFsMode;
+
+  /**
+   * Maximum milliseconds to wait for the PGlite instance to become ready
+   * before each bridge operation. Defaults to no timeout (waits indefinitely).
+   */
+  timeout?: number;
 }
 
 /**
  * A pg.Pool where every connection is an in-process PGlite bridge.
  *
- * Most users should prefer {@link createPGliteBridge}, which wraps this
- * function and also handles schema application and reset/snapshot lifecycle.
+ * Most users should prefer {@link PGliteBridge}, which wraps this class and
+ * also handles schema application and reset/snapshot lifecycle.
  *
  * ```typescript
  * import { PGlite } from '@electric-sql/pglite';
@@ -66,7 +74,7 @@ export interface PgBridgePoolConfig extends Omit<PgBridgeClientOptions, 'bridgeI
  * const prisma = new PrismaClient({ adapter });
  * ```
  *
- * @see {@link createPGliteBridge} for the higher-level API with schema management.
+ * @see {@link PGliteBridge} for the higher-level API with schema management.
  */
 class PgBridgePool extends pg.Pool {
   readonly bridgeId: symbol;
@@ -78,7 +86,10 @@ class PgBridgePool extends pg.Pool {
     telemetry,
     timeout,
     syncToFs,
-  }: PgBridgePoolConfig) {
+  }: PgBridgePoolConfig & { telemetry?: TelemetrySink }) {
+    // Load-bearing: pg.Pool forwards this config object verbatim to
+    // `new Client(config)`, including the symbol-keyed property below.
+    // PgBridgeClient reads its bridge options from the same symbol.
     const poolConfig = {
       Client: PgBridgeClient,
       max,

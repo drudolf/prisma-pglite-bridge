@@ -35,6 +35,12 @@ const setupSuite = async (
   await pushMigrations(pglite, { sql: MIGRATION_SQL });
   const prisma = new PrismaClient({ adapter: bridge.adapter });
 
+  return { pglite, bridge, prisma };
+};
+
+const { pglite, prisma, bridge } = await setupSuite({ statsLevel: 'basic' });
+
+describe('PGliteBridge (class)', () => {
   beforeEach(async () => {
     await bridge.resetDb();
   });
@@ -44,12 +50,6 @@ const setupSuite = async (
     await pglite.close();
   });
 
-  return { pglite, bridge, prisma };
-};
-
-const { pglite, prisma, bridge } = await setupSuite({ statsLevel: 'basic' });
-
-describe('PGliteBridge (class)', () => {
   it('rejects invalid stats levels', () => {
     expect(
       () =>
@@ -61,10 +61,12 @@ describe('PGliteBridge (class)', () => {
   });
 
   it('returns telemetry when stats are enabled', async () => {
+    await prisma.tenant.count();
     const stats = await bridge.stats();
 
     expect(stats).toBeDefined();
     expect(stats?.statsLevel).toBe('basic');
+    expect(stats?.queryCount).toBeGreaterThan(0);
   });
 
   it(`returns undefined stats when statsLevel is 'off'`, async () => {

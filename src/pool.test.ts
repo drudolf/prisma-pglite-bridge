@@ -3,14 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
 import setupPGlite from './__tests__/pglite.ts';
-import PgBridePool from './pool.ts';
+import PgBridgePool from './pool.ts';
 
 const pglite = await setupPGlite();
 
-describe('createPool — bridgeId', async () => {
+describe('PgBridgePool — bridgeId', async () => {
   it('returns a symbol, unique per call when omitted', async () => {
-    const a = new PgBridePool({ pglite });
-    const b = new PgBridePool({ pglite });
+    const a = new PgBridgePool({ pglite });
+    const b = new PgBridgePool({ pglite });
     try {
       expect(typeof a.bridgeId).toBe('symbol');
       expect(typeof b.bridgeId).toBe('symbol');
@@ -23,7 +23,7 @@ describe('createPool — bridgeId', async () => {
 
   it('honors the bridgeId passed in options', async () => {
     const bridgeId = Symbol('custom');
-    const pool = new PgBridePool({ pglite, bridgeId });
+    const pool = new PgBridgePool({ pglite, bridgeId });
     try {
       expect(pool.bridgeId).toBe(bridgeId);
     } finally {
@@ -32,9 +32,9 @@ describe('createPool — bridgeId', async () => {
   });
 });
 
-describe('createPool — max default', () => {
+describe('PgBridgePool — max default', () => {
   it(`defaults max to 1 when the option is omitted`, async () => {
-    const pool = new PgBridePool({ pglite });
+    const pool = new PgBridgePool({ pglite });
     try {
       expect(pool.options.max).toBe(1);
     } finally {
@@ -43,7 +43,7 @@ describe('createPool — max default', () => {
   });
 
   it('honors an explicit max override', async () => {
-    const pool = new PgBridePool({ pglite, max: 3 });
+    const pool = new PgBridgePool({ pglite, max: 3 });
     try {
       expect(pool.options.max).toBe(3);
     } finally {
@@ -52,7 +52,7 @@ describe('createPool — max default', () => {
   });
 });
 
-describe('createPool — syncToFs', () => {
+describe('PgBridgePool — syncToFs', () => {
   it('defaults to false for in-memory PGlite', async () => {
     const seen: boolean[] = [];
     const original = pglite.execProtocolRawStream.bind(pglite);
@@ -61,7 +61,7 @@ describe('createPool — syncToFs', () => {
       return original(message, options);
     }) as typeof pglite.execProtocolRawStream;
 
-    const pool = new PgBridePool({ pglite });
+    const pool = new PgBridgePool({ pglite });
     try {
       await pool.query('SELECT 1');
       expect(seen).toContain(false);
@@ -81,7 +81,7 @@ describe('createPool — syncToFs', () => {
       return original(message, options);
     }) as typeof persistent.execProtocolRawStream;
 
-    const pool = new PgBridePool({ pglite: persistent });
+    const pool = new PgBridgePool({ pglite: persistent });
     try {
       await pool.query('SELECT 1');
       expect(seen).toContain(true);
@@ -103,7 +103,7 @@ describe('createPool — syncToFs', () => {
       return original(message, options);
     }) as typeof persistent.execProtocolRawStream;
 
-    const pool = new PgBridePool({ pglite: persistent, syncToFs: false });
+    const pool = new PgBridgePool({ pglite: persistent, syncToFs: false });
     try {
       await pool.query('SELECT 1');
       expect(seen).toContain(false);
@@ -116,12 +116,12 @@ describe('createPool — syncToFs', () => {
   });
 });
 
-describe('createPool — rollback on forced client release', () => {
+describe('PgBridgePool — rollback on forced client release', () => {
   it('rolls back uncommitted state when a max=1 client is destroyed mid-transaction', async () => {
     // max=1 → no SessionLock. Rollback must still run on destroy, otherwise
     // PGlite is left in 'T' state and the next connection inherits it.
     const local = new PGlite();
-    const pool = new PgBridePool({ pglite: local });
+    const pool = new PgBridgePool({ pglite: local });
     try {
       const c1 = await pool.connect();
       await c1.query('CREATE TABLE rollback_t (id int)');
@@ -157,7 +157,7 @@ describe('createPool — rollback on forced client release', () => {
 // upstream and cannot be repaired by the bridge. The assertion below pins what
 // scoping IS responsible for — that bridged queries on user "char" data
 // behave the same as querying PGlite directly.
-describe('createPool — "char" oid 18 parity on user tables', () => {
+describe('PgBridgePool — "char" oid 18 parity on user tables', () => {
   it('matches native PGlite output for a non-ASCII byte in a user "char" column', async () => {
     const local = new PGlite();
     await local.waitReady;
@@ -168,7 +168,7 @@ describe('createPool — "char" oid 18 parity on user tables', () => {
     const nativeValue = native.rows[0]?.c;
     expect(nativeValue).toBeDefined();
 
-    const pool = new PgBridePool({ pglite: local });
+    const pool = new PgBridgePool({ pglite: local });
     try {
       const bridged = await pool.query<{ c: string }>('SELECT c FROM t');
       const bridgedValue = bridged.rows[0]?.c;

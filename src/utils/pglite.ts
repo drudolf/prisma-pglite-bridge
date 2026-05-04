@@ -16,13 +16,13 @@ const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
 
 export const waitPGliteReady = async (
   pglite: PGlite | PGliteInterface,
-  ms = 5000,
+  ms: number = Number.POSITIVE_INFINITY,
 ): Promise<void> => {
   if (pglite.ready) return;
   if (pglite.closed) throw new Error('PGlite instance closed');
 
   try {
-    await withTimeout(pglite.waitReady, ms);
+    await (Number.isFinite(ms) ? withTimeout(pglite.waitReady, ms) : pglite.waitReady);
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     throw new Error(`PGlite instance not ready: ${msg}`);

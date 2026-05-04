@@ -2,7 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { afterEach, describe, expect, it } from 'vitest';
 import PGliteBridge from './pglite-bridge.ts';
-import PgBridePool from './pool.ts';
+import PgBridgePool from './pool.ts';
 import { pushSchema, resetSchema } from './schema.ts';
 
 const SCHEMA_BASE = `
@@ -88,7 +88,7 @@ describe('pushSchema', () => {
   it('accepts a raw PrismaPg target', async () => {
     const pglite = new PGlite();
     await pglite.waitReady;
-    const pool = new PgBridePool({ pglite });
+    const pool = new PgBridgePool({ pglite });
     const prismaPg = new PrismaPg(pool);
     cleanups.push(async () => {
       await pool.end();

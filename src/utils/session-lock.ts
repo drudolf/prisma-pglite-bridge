@@ -26,7 +26,7 @@ const STATUS_FAILED = 0x45; // 'E' — failed transaction block
  * PGlite runs PostgreSQL in single-user mode — one session shared by all
  * bridges. The session lock tracks which bridge owns the session during
  * transactions, preventing interleaving. Used internally by {@link PGliteDuplex}
- * and created automatically by {@link createPool}. Only instantiate directly
+ * and created automatically by {@link PgBridgePool}. Only instantiate directly
  * if building a custom pool setup.
  */
 export class SessionLock {

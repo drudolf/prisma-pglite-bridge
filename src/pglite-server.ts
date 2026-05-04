@@ -66,7 +66,10 @@ export interface PGliteServerOptions {
   dataDir?: string;
   /** Filesystem sync policy. See {@link SyncToFsMode}. Default `'auto'`. */
   syncToFs?: SyncToFsMode;
-  /** timeout for PGlite waitReady */
+  /**
+   * Maximum milliseconds to wait for the PGlite instance to become ready
+   * before each bridge operation. Defaults to no timeout (waits indefinitely).
+   */
   timeout?: number;
   /**
    * Username embedded in the connection URL returned by `listen()`.
@@ -110,6 +113,9 @@ export class PGliteServer {
 
   listen = async (): Promise<string> => {
     if (this.#connectionString) return this.#connectionString;
+    if (this.pglite.closed) {
+      throw new Error('PGliteServer requires an open PGlite instance; got a closed one.');
+    }
 
     return new Promise<string>((resolve, reject) => {
       const onError = (err: Error): void => reject(err);
@@ -156,14 +162,11 @@ export class PGliteServer {
   };
 
   #initDuplex(socket: BridgedSocket): PGliteDuplex {
-    socket.duplex = new PGliteDuplex(
-      this.pglite,
-      this.#sessionLock,
-      undefined,
-      undefined,
-      this.#options.timeout,
-      resolveSyncToFs(this.pglite, this.#options.syncToFs),
-    );
+    socket.duplex = new PGliteDuplex(this.pglite, {
+      sessionLock: this.#sessionLock,
+      timeout: this.#options.timeout,
+      syncToFs: resolveSyncToFs(this.pglite, this.#options.syncToFs),
+    });
     socket.duplex.on('error', () => socket.destroy());
     socket.once('close', () => {
       const { duplex } = socket;

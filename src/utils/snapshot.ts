@@ -30,7 +30,7 @@ export interface SnapshotManager {
 }
 
 /**
- * Snapshot helpers backing `createPGliteBridge`'s `snapshotDb` / `resetDb` /
+ * Snapshot helpers backing `PGliteBridge`'s `snapshotDb` / `resetDb` /
  * `resetSnapshot` functions. Stores a copy of user tables and sequence
  * values in a dedicated `_pglite_snapshot` schema so tests can reset to a
  * known seed state without re-running migrations.

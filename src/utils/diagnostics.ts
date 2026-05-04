@@ -12,8 +12,8 @@
  * in to the timing/publication overhead.
  *
  * Filter on `bridgeId` to distinguish events from different bridges
- * in the same process — obtain it from the `createPGliteBridge` or
- * `createPool` return value.
+ * in the same process — read `bridge.bridgeId` (on `PGliteBridge`) or
+ * `pool.bridgeId` (on `PgBridgePool`).
  */
 import diagnostics_channel from 'node:diagnostics_channel';
 

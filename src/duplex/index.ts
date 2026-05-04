@@ -37,6 +37,35 @@ import {
 } from './constants.ts';
 import { FrontendMessageBuffer } from './frontend-buffer.ts';
 
+export interface PGliteDuplexOptions {
+  /**
+   * Shared lock that serialises access to the PGlite runtime across
+   * multiple duplex streams. Omit for a standalone duplex.
+   */
+  sessionLock?: SessionLock;
+  /**
+   * Identity tag published with diagnostics-channel events. Omit to
+   * disable channel publication for this duplex.
+   */
+  bridgeId?: symbol;
+  /**
+   * Internal sink used by `PGliteBridge` for built-in stats. Not a public
+   * extension point — subscribe via `node:diagnostics_channel` instead.
+   */
+  telemetry?: TelemetrySink;
+  /**
+   * Maximum milliseconds to wait for the PGlite instance to become ready
+   * before each bridge operation. Defaults to no timeout (waits indefinitely).
+   */
+  timeout?: number;
+  /**
+   * Whether each wire-protocol call should force a filesystem sync before
+   * returning. Disable only when higher throughput / lower RSS is worth
+   * weaker durability. Default `true`.
+   */
+  syncToFs?: boolean;
+}
+
 /**
  * Duplex stream that bridges `pg.Client` to an in-process PGlite instance.
  *
@@ -44,7 +73,7 @@ import { FrontendMessageBuffer } from './frontend-buffer.ts';
  * PostgreSQL wire protocol directly to PGlite — no TCP, no serialization
  * overhead beyond what the wire protocol requires.
  *
- * Pass to `pg.Client` or use via `createPool()` / `createPGliteBridge()`:
+ * Pass to `pg.Client` or use via `new PgBridgePool()` / `new PGliteBridge()`:
  *
  * ```typescript
  * const client = new pg.Client({
@@ -87,33 +116,17 @@ export class PGliteDuplex extends Duplex {
   readonly onClose: Promise<void>;
 
   /**
-   * @param pglite       PGlite instance to bridge to. The caller owns its lifecycle.
-   * @param sessionLock  Shared lock that serialises access to the PGlite runtime
-   *                     across multiple duplex streams. Omit for a standalone duplex.
-   * @param bridgeId    Identity tag published with diagnostics-channel events.
-   *                     Omit to disable channel publication for this duplex.
-   * @param telemetry    Internal sink used by `createPGliteBridge` for built-in
-   *                     stats. Not a public extension point — subscribe via
-   *                     `node:diagnostics_channel` instead.
-   * @param syncToFs     Whether each wire-protocol call should force a
-   *                     filesystem sync before returning. Disable only when
-   *                     higher throughput / lower RSS is worth weaker durability.
+   * @param pglite   PGlite instance to bridge to. The caller owns its lifecycle.
+   * @param options  See {@link PGliteDuplexOptions}.
    */
-  constructor(
-    pglite: PGlite | PGliteInterface,
-    sessionLock?: SessionLock,
-    bridgeId?: symbol,
-    telemetry?: TelemetrySink,
-    timeout?: number,
-    syncToFs = true,
-  ) {
+  constructor(pglite: PGlite | PGliteInterface, options: PGliteDuplexOptions = {}) {
     super();
     this.pglite = pglite;
-    this.sessionLock = sessionLock;
-    this.bridgeId = bridgeId;
-    this.telemetry = telemetry;
-    this.syncToFs = syncToFs;
-    this.timeout = timeout;
+    this.sessionLock = options.sessionLock;
+    this.bridgeId = options.bridgeId;
+    this.telemetry = options.telemetry;
+    this.timeout = options.timeout;
+    this.syncToFs = options.syncToFs ?? true;
 
     this.duplexId = Symbol('duplex');
     this.onClose = new Promise<void>((resolve) => this.once('close', () => resolve()));
@@ -314,7 +327,6 @@ export class PGliteDuplex extends Duplex {
    * waiters behind it).
    */
   private async runUnderRunExclusive(op: () => Promise<void>): Promise<void> {
-    // Wait for pglite to be ready
     await waitPGliteReady(this.pglite, this.timeout);
 
     await this.pglite.runExclusive(async () => {
@@ -509,7 +521,10 @@ export class PGliteDuplex extends Duplex {
       },
     });
 
-    // Wait for pglite
+    // Re-check readiness inside the runExclusive mutex: the caller could
+    // have closed pglite between `runUnderRunExclusive`'s pre-check and
+    // our turn to run. Without this, `execProtocolRawStream` below would
+    // throw a less informative error from inside the WASM runtime.
     await waitPGliteReady(this.pglite, this.timeout);
 
     // Let framer.write run even during teardown so RFQ tracking stays current.
