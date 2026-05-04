@@ -1,15 +1,16 @@
 /**
  * Adapter harness for `prisma-pglite-bridge` — this package under test.
  *
- * Spins up a PGlite instance, wraps it with `createPool` (our bridge),
- * and hands the resulting `pg.Pool` to `PrismaPg`. Instruments the
- * bridge-side PGlite and the driver adapter with `stackProbe` so
+ * Spins up a PGlite instance, wraps it with `PgBridgePool`, and hands the
+ * pool to `PrismaPg`. Exposes the raw pool on the prisma instance so
+ * scenarios like `path-split` can issue `pool.query` directly. Instruments
+ * the bridge-side PGlite and the driver adapter with `stackProbe` so
  * stack-breakdown scenarios can attribute memory.
  */
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
-import { createPool } from '../../src/pool.ts';
+import PgBridgePool from '../../src/pool.ts';
 import { stackProbe } from '../attribution.ts';
 import type { AdapterHarness } from './types.ts';
 
@@ -20,18 +21,17 @@ export const bridge: AdapterHarness = {
     stackProbe.patchPg();
     const pglite = new PGlite();
     await pglite.waitReady;
-    const { pool, close } = await createPool({ pglite });
+    const pool = new PgBridgePool({ pglite });
     stackProbe.instrumentBridgePGlite(pglite);
     await pglite.exec(schemaSql);
     const adapterFactory = new PrismaPg(pool);
     const driverAdapter = await adapterFactory.connect();
     stackProbe.instrumentDriverAdapter(driverAdapter);
     const prisma = new PrismaClient({ adapter: adapterFactory });
-    // Stash internals on the context for teardown/truncate
     Object.assign(prisma, {
       __pglite: pglite,
       __pool: pool,
-      __close: close,
+      __close: () => pool.end(),
       __driverAdapter: driverAdapter,
       __stackProbe: stackProbe,
       __stackAdapterName: 'prisma-pglite-bridge',
