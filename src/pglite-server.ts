@@ -25,7 +25,7 @@ import nodePath from 'node:path';
 import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 
 import { PGliteDuplex } from './duplex/index.ts';
-import type { SyncToFsMode } from './pool.ts';
+import { resolveSyncToFs, type SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
 const SSL_REQUEST_CODE = 80877103;
@@ -33,18 +33,6 @@ const GSSENC_REQUEST_CODE = 80877104;
 const CANCEL_REQUEST_CODE = 80877102;
 const PRELUDE_HEADER_BYTES = 8;
 const DEFAULT_SOCKET_PORT = 5432;
-
-const resolveSyncToFs = (
-  pglite: PGlite | PGliteInterface,
-  mode: SyncToFsMode | undefined,
-): boolean => {
-  if (mode === true || mode === false) return mode;
-  if (pglite.dataDir === undefined) return false;
-  /* v8 ignore next */
-  if (pglite.dataDir === '') return false;
-  if (pglite.dataDir.startsWith('memory://')) return false;
-  return true;
-};
 
 export interface PGliteServerOptions {
   /**

@@ -21,8 +21,9 @@
  */
 import type { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { createPool, type SyncToFsMode } from './pool.ts';
+import { createPool } from './pool.ts';
 import { BridgeStats, type Stats, type StatsLevel } from './utils/bridge-stats.ts';
+import type { SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
 import { createSnapshotManager } from './utils/snapshot.ts';
 
 /** @internal Exported for testing. */

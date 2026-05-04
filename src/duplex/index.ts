@@ -17,11 +17,14 @@
  * keeping only the final ReadyForQuery after Sync.
  */
 import { Duplex } from 'node:stream';
+
 import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
+
 import type { TelemetrySink } from '../utils/bridge-stats.ts';
 import { lockWaitChannel, queryChannel } from '../utils/diagnostics.ts';
-import type { BridgeId as DuplexId, SessionLock } from '../utils/session-lock.ts';
+import type { SessionLock } from '../utils/session-lock.ts';
 import { nsToMs } from '../utils/time.ts';
+
 import { BackendMessageFramer } from './backend-framer.ts';
 import {
   EQP_MESSAGES,
@@ -54,7 +57,7 @@ export class PGliteDuplex extends Duplex {
   private readonly bridgeId?: symbol;
   private readonly telemetry?: TelemetrySink;
   private readonly syncToFs: boolean;
-  private readonly duplexId: DuplexId;
+  private readonly duplexId: symbol;
   /** Incoming bytes framed directly from a queued chunk buffer */
   private readonly input = new FrontendMessageBuffer();
   private phase: 'pre_startup' | 'ready' = 'pre_startup';
