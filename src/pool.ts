@@ -8,16 +8,18 @@
  * COMMIT/ROLLBACK. Non-transactional operations from any bridge serialize
  * through PGlite's runExclusive mutex.
  */
-import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
-import type { TelemetrySink } from './utils/bridge-stats.ts';
-import { PgBridgeClient, type PgBridgePoolConfig } from './utils/pg-bridge-client.ts';
+import { PgBridgeClient, type PgBridgeClientOptions } from './utils/pg-bridge-client.ts';
 import { resolveSyncToFs, type SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
 import { SessionLock } from './utils/session-lock.ts';
 
-export interface PoolOptions {
-  /** PGlite instance to bridge to. The caller owns its lifecycle. */
-  pglite: PGlite;
+export interface PgBridgePoolConfig extends Omit<PgBridgeClientOptions, 'bridgeId' | 'syncToFs'> {
+  /**
+   * Identity tag published with every diagnostics-channel event. Subscribers
+   * filter on this to distinguish events from different bridges in the
+   * same process. A fresh `Symbol('bridge')` is generated if omitted.
+   */
+  bridgeId?: symbol;
 
   /**
    * Maximum pool connections (default: 1). Compatibility knob, not a
@@ -34,13 +36,6 @@ export interface PoolOptions {
   max?: number;
 
   /**
-   * Identity tag published with every diagnostics-channel event. Subscribers
-   * filter on this to distinguish events from different bridges in the
-   * same process. A fresh `Symbol('bridge')` is generated if omitted.
-   */
-  bridgeId?: symbol;
-
-  /**
    * Filesystem sync policy for bridge-driven wire-protocol calls.
    *
    * - `'auto'` (default): disable per-query sync for clearly in-memory PGlite
@@ -52,68 +47,55 @@ export interface PoolOptions {
    * persistent `fs` without a meaningful `dataDir`, pass `true` explicitly.
    */
   syncToFs?: SyncToFsMode;
-
-  telemetry?: TelemetrySink;
-}
-
-export interface PoolResult {
-  /** pg.Pool backed by PGlite — pass to PrismaPg */
-  pool: pg.Pool;
-
-  /**
-   * Identity tag carried on every `QUERY_CHANNEL` / `LOCK_WAIT_CHANNEL`
-   * event this pool produces. Matches the `bridgeId` option if supplied,
-   * otherwise a freshly minted symbol. Filter on it from external
-   * subscribers to isolate this pool's events.
-   */
-  bridgeId: symbol;
-
-  /** Shut down the pool. Does not close the caller-owned PGlite instance. */
-  close: () => Promise<void>;
 }
 
 /**
- * Creates a pg.Pool where every connection is an in-process PGlite bridge.
+ * A pg.Pool where every connection is an in-process PGlite bridge.
  *
  * Most users should prefer {@link createPGliteBridge}, which wraps this
  * function and also handles schema application and reset/snapshot lifecycle.
  *
  * ```typescript
  * import { PGlite } from '@electric-sql/pglite';
- * import { createPool } from 'prisma-pglite-bridge';
+ * import { PgBridgePool } from 'prisma-pglite-bridge';
  * import { PrismaPg } from '@prisma/adapter-pg';
  * import { PrismaClient } from '@prisma/client';
  *
- * const pglite = new PGlite();
- * const { pool, close } = await createPool({ pglite });
+ * const pool = new PgBridgePool({ pglite: new PGlite() });
  * const adapter = new PrismaPg(pool);
  * const prisma = new PrismaClient({ adapter });
  * ```
  *
  * @see {@link createPGliteBridge} for the higher-level API with schema management.
  */
-export const createPool = async (options: PoolOptions): Promise<PoolResult> => {
-  const { pglite, max = 1, telemetry } = options;
-  const bridgeId = options.bridgeId ?? Symbol('bridge');
-  const syncToFs = resolveSyncToFs(pglite, options.syncToFs);
+class PgBridgePool extends pg.Pool {
+  readonly bridgeId: symbol;
 
-  await pglite.waitReady;
+  constructor({
+    bridgeId = Symbol('bridge'),
+    max = 1,
+    pglite,
+    telemetry,
+    timeout,
+    syncToFs,
+  }: PgBridgePoolConfig) {
+    const poolConfig = {
+      Client: PgBridgeClient,
+      max,
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: max > 1 ? new SessionLock() : undefined,
+        bridgeId,
+        telemetry,
+        syncToFs: resolveSyncToFs(pglite, syncToFs),
+        timeout,
+      },
+    };
 
-  const sessionLock = max > 1 ? new SessionLock() : undefined;
+    super(poolConfig);
 
-  const poolConfig: PgBridgePoolConfig = {
-    Client: PgBridgeClient,
-    max,
-    [PgBridgeClient.OptionsKey]: {
-      pglite,
-      sessionLock,
-      bridgeId,
-      telemetry,
-      syncToFs,
-    },
-  };
-  const pool = new pg.Pool(poolConfig);
-  const close = () => pool.end();
+    this.bridgeId = bridgeId;
+  }
+}
 
-  return { pool, bridgeId, close };
-};
+export default PgBridgePool;

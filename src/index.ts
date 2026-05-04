@@ -17,41 +17,6 @@
  * @packageDocumentation
  */
 
-export type { PushMigrationsOptions, PushMigrationsResult } from './migrations.ts';
-export { hasMigrations, hasSchema, pushMigrations } from './migrations.ts';
-// ── High-level API (most users only need this) ──
-export type {
-  CloseFn,
-  PGliteBridge as CreatePGliteBridge,
-  PGliteBridgeOptions,
-  ResetDbFn,
-  ResetSnapshotFn,
-  SnapshotDbFn,
-  StatsFn,
-} from './pglite-bridge.ts';
-export { createPGliteBridge } from './pglite-bridge.ts';
-export { PGliteBridge } from './pglite-bridge-class.ts';
-export type { PushSchemaOptions, PushSchemaResult } from './schema.ts';
-export { pushSchema, resetSchema } from './schema.ts';
-
-// ── Low-level building blocks ──
-import {
-  type PoolOptions as BasePoolOptions,
-  createPool as createBasePool,
-  type PoolResult,
-} from './pool.ts';
-
-export type { PoolResult };
-
-/**
- * Options for {@link createPool}. Identical to the internal pool options,
- * minus the library-private `telemetry` sink (consumers subscribe via
- * `node:diagnostics_channel` instead — see {@link QUERY_CHANNEL} and
- * {@link LOCK_WAIT_CHANNEL}).
- */
-export type PoolOptions = Omit<BasePoolOptions, 'telemetry'>;
-export type { SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
-
 /**
  * Build a `pg.Pool` backed by a caller-supplied PGlite instance. Each pool
  * connection bridges through its own {@link PGliteDuplex} stream while
@@ -62,11 +27,17 @@ export type { SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
  * {@link createPGliteBridge}, which layers schema setup and reset helpers
  * on top.
  */
-export const createPool = async (options: PoolOptions): Promise<PoolResult> =>
-  createBasePool(options);
 export { PGliteDuplex } from './duplex';
+export type { PushMigrationsOptions, PushMigrationsResult } from './migrations.ts';
+export { hasMigrations, hasSchema, pushMigrations } from './migrations.ts';
+// ── High-level API (most users only need this) ──
+export { default as PGliteBridge, type PGliteBridgeConfig } from './pglite-bridge.ts';
 export type { PGliteServerOptions } from './pglite-server.ts';
 export { PGliteServer } from './pglite-server.ts';
+// ── Low-level building blocks ──
+export { default as PgBridgePool, type PgBridgePoolConfig } from './pool.ts';
+export type { PushSchemaOptions, PushSchemaResult } from './schema.ts';
+export { pushSchema, resetSchema } from './schema.ts';
 export type { Stats, StatsBasic, StatsFull, StatsLevel } from './utils/bridge-stats.ts';
 // ── Diagnostics channels (public observability surface) ──
 export {
@@ -75,4 +46,5 @@ export {
   QUERY_CHANNEL,
   type QueryEvent,
 } from './utils/diagnostics.ts';
+export type { SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
 export { SessionLock } from './utils/session-lock.ts';

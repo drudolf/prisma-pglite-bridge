@@ -5,18 +5,14 @@ import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeEach } from 'vitest';
 import { pushMigrations } from '../migrations.ts';
-import {
-  createPGliteBridge,
-  type PGliteBridge,
-  type PGliteBridgeOptions,
-} from '../pglite-bridge.ts';
+import PGliteBridge, { type PGliteBridgeConfig } from '../pglite-bridge.ts';
 
 const MIGRATION_SQL = readFileSync(
   join(process.cwd(), 'prisma/migrations/0001_init/migration.sql'),
   'utf8',
 );
 
-interface TestOptions extends Partial<PGliteBridgeOptions> {
+interface TestOptions extends Partial<PGliteBridgeConfig> {
   /**
    * Override the SQL applied via {@link pushMigrations}. Defaults to the
    * project's `0001_init/migration.sql`. Pass `null` to skip the migration
@@ -28,7 +24,7 @@ interface TestOptions extends Partial<PGliteBridgeOptions> {
 const createTestPGliteBridge = async (options: TestOptions = {}): Promise<PGliteBridge> => {
   const pglite = options.pglite ?? new PGlite();
   const { migrationsSql, ...bridgeOptions } = options;
-  const bridge = await createPGliteBridge({ ...bridgeOptions, pglite });
+  const bridge = new PGliteBridge({ ...bridgeOptions, pglite });
 
   if (migrationsSql !== null) {
     await pushMigrations(pglite, { sql: migrationsSql ?? MIGRATION_SQL });

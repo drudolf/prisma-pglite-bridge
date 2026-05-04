@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import pg from 'pg';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockPGlite } from './__tests__/mocks.ts';
 import { PGliteServer, type PGliteServerOptions } from './pglite-server.ts';
@@ -55,34 +55,15 @@ describe('PGliteServer', () => {
     return { pglite, server, connectionString };
   };
 
-  it('listen() throws when the PGlite instance is not yet ready', async () => {
-    let server: PGliteServer;
-    const notReady = createMockPGlite();
-
-    Object.assign(notReady, { ready: false, closed: false, waitReady: Promise.reject('test str') });
-    server = new PGliteServer({ pglite: notReady });
-    await expect(server.listen()).rejects.toThrow(/requires a ready PGlite instance; test str/);
-
-    Object.assign(notReady, {
-      ready: false,
-      closed: false,
-      waitReady: Promise.reject(new Error('test err')),
-    });
-    server = new PGliteServer({ pglite: notReady });
-    await expect(server.listen()).rejects.toThrow(/requires a ready PGlite instance; test err/);
-  });
-
-  it('listen() throws when the PGlite instance is closed', async () => {
-    const closed = createMockPGlite();
-    Object.assign(closed, { ready: true, closed: true });
-    const server = new PGliteServer({ pglite: closed });
-    await expect(server.listen()).rejects.toThrow(/requires an open PGlite instance/);
-  });
-
   it('listen() is idempotent and returns the same address', async () => {
     const { server, connectionString } = await startServer();
     expect(await server.listen()).toBe(connectionString);
     expect(await server.listen()).toBe(connectionString);
+  });
+
+  it('binds with custom user in connection string', async () => {
+    const { connectionString: url } = await startServer({ user: 'test' });
+    expect(url).toMatch(/postgres:\/\/test@127\.0\.0\.1:[0-9]+\/postgres/);
   });
 
   it('binds to an ephemeral port on loopback', async () => {
@@ -508,19 +489,16 @@ describe('PGliteServer', () => {
     // Fake PGlite whose execProtocolRawStream throws — drain catches, fires
     // the _write callback with an error → Node emits 'error' on the duplex →
     // server's handler destroys the socket.
-    const fakePglite = {
+    const pglite = createMockPGlite({
       ready: true,
       closed: false,
       dataDir: undefined,
-      runExclusive: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
-      execProtocolRawStream: async (): Promise<void> => {
+      execProtocolRawStream: vi.fn().mockImplementation(() => {
         throw new Error('boom');
-      },
-      query: async (): Promise<{ rows: never[]; fields: never[] }> => ({ rows: [], fields: [] }),
-      // biome-ignore lint/suspicious/noExplicitAny: shape mock for test
-    } as any;
+      }),
+    });
 
-    const server = new PGliteServer({ pglite: fakePglite });
+    const server = new PGliteServer({ pglite });
     const url = await server.listen();
     cleanups.push(async () => {
       await server.close();

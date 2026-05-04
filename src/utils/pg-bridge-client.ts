@@ -2,22 +2,19 @@ import type { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { PGliteDuplex } from '../duplex';
 import type { TelemetrySink } from './bridge-stats.ts';
-import { type TypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
+import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 import type { SessionLock } from './session-lock.ts';
 
-interface PgBridgeClientOptions {
+export interface PgBridgeClientOptions {
   pglite: PGlite;
-  sessionLock?: SessionLock;
   bridgeId: symbol;
+  sessionLock?: SessionLock;
   telemetry?: TelemetrySink;
   syncToFs: boolean;
+  timeout?: number;
 }
 
 type PgBridgeClientConfig = pg.ClientConfig & {
-  [PgBridgeClient.OptionsKey]: PgBridgeClientOptions;
-};
-
-export type PgBridgePoolConfig = pg.PoolConfig & {
   [PgBridgeClient.OptionsKey]: PgBridgeClientOptions;
 };
 
@@ -43,6 +40,7 @@ export class PgBridgeClient extends pg.Client {
           bridge.sessionLock,
           bridge.bridgeId,
           bridge.telemetry,
+          bridge.timeout,
           bridge.syncToFs,
         ),
     });
@@ -65,16 +63,10 @@ export class PgBridgeClient extends pg.Client {
       return callSuper();
     }
 
-    if (
-      typeof first === 'object' &&
-      first !== null &&
-      'types' in first &&
-      first.types !== null &&
-      typeof (first.types as TypesLike | null)?.getTypeParser === 'function'
-    ) {
+    if (isObject(first) && isTypesLike(first.types)) {
       args[0] = {
-        ...(first as object),
-        types: wrapTypesWithFastArrayParsers(first.types as TypesLike),
+        ...first,
+        types: wrapTypesWithFastArrayParsers(first.types),
       };
     }
 

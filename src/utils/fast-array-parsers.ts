@@ -20,11 +20,19 @@
  */
 import { parse as parseArrayV3 } from 'postgres-array';
 
+export const isObject = (val: unknown): val is Record<string, unknown> => {
+  return typeof val === 'object' && val !== null && !Array.isArray(val);
+};
+
 type Parser = (raw: string) => unknown;
 type GetTypeParser = (oid: number, format?: string) => Parser;
+
 export interface TypesLike {
   getTypeParser: GetTypeParser;
 }
+export const isTypesLike = (value: unknown): value is TypesLike => {
+  return isObject(value) && 'getTypeParser' in value && typeof value.getTypeParser === 'function';
+};
 
 // Array OID → element scalar OID. `undefined` means no element transform —
 // pg-types only registers a `String(val)` no-op for these (text-likes).

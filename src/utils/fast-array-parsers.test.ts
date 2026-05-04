@@ -1,7 +1,7 @@
 import type pg from 'pg';
 import { describe, expect, it } from 'vitest';
 import setupPGlite from '../__tests__/pglite.ts';
-import { createPool } from '../pool.ts';
+import PgBridgePool from '../pool.ts';
 import { type TypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 
 const pglite = await setupPGlite();
@@ -98,7 +98,7 @@ describe('wrapTypesWithFastArrayParsers — boundary behaviour', () => {
 
 describe('PgBridgeClient — wraps types in pool.query', () => {
   it('round-trips BYTEA[] correctly', async () => {
-    const { pool, close } = await createPool({ pglite });
+    const pool = new PgBridgePool({ pglite });
     try {
       await pool.query('CREATE TABLE bytea_array_t (id int, chunks bytea[])');
       await pool.query(
@@ -111,12 +111,12 @@ describe('PgBridgeClient — wraps types in pool.query', () => {
       expect(chunks[1]?.toString('hex')).toBe('aabbcc');
       expect(chunks[2]).toBeNull();
     } finally {
-      await close();
+      await pool.end();
     }
   });
 
   it('round-trips INT4[], TEXT[], BOOL[] correctly', async () => {
-    const { pool, close } = await createPool({ pglite });
+    const pool = new PgBridgePool({ bridgeId: Symbol('bridge'), pglite });
     try {
       await pool.query('CREATE TABLE arr_t (ints int[], txts text[], bools bool[])');
       await pool.query("INSERT INTO arr_t VALUES ('{1,2,3}', '{a,b,c}', '{true,false,true}')");
@@ -125,12 +125,12 @@ describe('PgBridgeClient — wraps types in pool.query', () => {
       expect(rows[0].txts).toEqual(['a', 'b', 'c']);
       expect(rows[0].bools).toEqual([true, false, true]);
     } finally {
-      await close();
+      await pool.end();
     }
   });
 
   it('preserves a caller-supplied types.getTypeParser for non-array OIDs', async () => {
-    const { pool, close } = await createPool({ pglite });
+    const pool = new PgBridgePool({ bridgeId: Symbol('bridge'), pglite });
     try {
       await pool.query('CREATE TABLE scalar_t (n int)');
       await pool.query('INSERT INTO scalar_t VALUES (42)');
@@ -144,7 +144,7 @@ describe('PgBridgeClient — wraps types in pool.query', () => {
       });
       expect(result.rows[0]).toEqual(['CUSTOMIZED']);
     } finally {
-      await close();
+      await pool.end();
     }
   });
 });

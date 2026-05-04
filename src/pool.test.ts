@@ -3,51 +3,51 @@ import { describe, expect, it } from 'vitest';
 
 import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
 import setupPGlite from './__tests__/pglite.ts';
-import { createPool } from './pool.ts';
+import PgBridePool from './pool.ts';
 
 const pglite = await setupPGlite();
 
 describe('createPool — bridgeId', async () => {
   it('returns a symbol, unique per call when omitted', async () => {
-    const a = await createPool({ pglite });
-    const b = await createPool({ pglite });
+    const a = new PgBridePool({ pglite });
+    const b = new PgBridePool({ pglite });
     try {
       expect(typeof a.bridgeId).toBe('symbol');
       expect(typeof b.bridgeId).toBe('symbol');
       expect(a.bridgeId).not.toBe(b.bridgeId);
     } finally {
-      await a.close();
-      await b.close();
+      await a.end();
+      await b.end();
     }
   });
 
   it('honors the bridgeId passed in options', async () => {
     const bridgeId = Symbol('custom');
-    const pool = await createPool({ pglite, bridgeId });
+    const pool = new PgBridePool({ pglite, bridgeId });
     try {
       expect(pool.bridgeId).toBe(bridgeId);
     } finally {
-      await pool.close();
+      await pool.end();
     }
   });
 });
 
 describe('createPool — max default', () => {
   it(`defaults max to 1 when the option is omitted`, async () => {
-    const { pool, close } = await createPool({ pglite });
+    const pool = new PgBridePool({ pglite });
     try {
       expect(pool.options.max).toBe(1);
     } finally {
-      await close();
+      await pool.end();
     }
   });
 
   it('honors an explicit max override', async () => {
-    const { pool, close } = await createPool({ pglite, max: 3 });
+    const pool = new PgBridePool({ pglite, max: 3 });
     try {
       expect(pool.options.max).toBe(3);
     } finally {
-      await close();
+      await pool.end();
     }
   });
 });
@@ -61,13 +61,13 @@ describe('createPool — syncToFs', () => {
       return original(message, options);
     }) as typeof pglite.execProtocolRawStream;
 
-    const { pool, close } = await createPool({ pglite });
+    const pool = new PgBridePool({ pglite });
     try {
       await pool.query('SELECT 1');
       expect(seen).toContain(false);
     } finally {
       pglite.execProtocolRawStream = original;
-      await close();
+      await pool.end();
     }
   });
 
@@ -81,13 +81,13 @@ describe('createPool — syncToFs', () => {
       return original(message, options);
     }) as typeof persistent.execProtocolRawStream;
 
-    const { pool, close } = await createPool({ pglite: persistent });
+    const pool = new PgBridePool({ pglite: persistent });
     try {
       await pool.query('SELECT 1');
       expect(seen).toContain(true);
     } finally {
       persistent.execProtocolRawStream = original;
-      await close();
+      await pool.end();
       await persistent.close();
       removeTempDir(parent);
     }
@@ -103,13 +103,13 @@ describe('createPool — syncToFs', () => {
       return original(message, options);
     }) as typeof persistent.execProtocolRawStream;
 
-    const { pool, close } = await createPool({ pglite: persistent, syncToFs: false });
+    const pool = new PgBridePool({ pglite: persistent, syncToFs: false });
     try {
       await pool.query('SELECT 1');
       expect(seen).toContain(false);
     } finally {
       persistent.execProtocolRawStream = original;
-      await close();
+      await pool.end();
       await persistent.close();
       removeTempDir(parent);
     }
@@ -121,7 +121,7 @@ describe('createPool — rollback on forced client release', () => {
     // max=1 → no SessionLock. Rollback must still run on destroy, otherwise
     // PGlite is left in 'T' state and the next connection inherits it.
     const local = new PGlite();
-    const { pool, close } = await createPool({ pglite: local });
+    const pool = new PgBridePool({ pglite: local });
     try {
       const c1 = await pool.connect();
       await c1.query('CREATE TABLE rollback_t (id int)');
@@ -141,7 +141,7 @@ describe('createPool — rollback on forced client release', () => {
         c2.release();
       }
     } finally {
-      await close();
+      await pool.end();
       await local.close();
     }
   });
@@ -168,7 +168,7 @@ describe('createPool — "char" oid 18 parity on user tables', () => {
     const nativeValue = native.rows[0]?.c;
     expect(nativeValue).toBeDefined();
 
-    const { pool, close } = await createPool({ pglite: local });
+    const pool = new PgBridePool({ pglite: local });
     try {
       const bridged = await pool.query<{ c: string }>('SELECT c FROM t');
       const bridgedValue = bridged.rows[0]?.c;
@@ -176,7 +176,7 @@ describe('createPool — "char" oid 18 parity on user tables', () => {
       // what PGlite already produces natively.
       expect(bridgedValue).toBe(nativeValue);
     } finally {
-      await close();
+      await pool.end();
       await local.close();
     }
   });
