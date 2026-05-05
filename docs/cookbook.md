@@ -310,10 +310,8 @@ console.log(`DATABASE_URL=${DATABASE_URL}`);
 console.log(`SHADOW_DATABASE_URL=${SHADOW_DATABASE_URL}`);
 
 const shutdown = async () => {
-  await server.close();
-  await server.pglite.close();
+  await server.close(); // also closes pglite by default
   await shadow.close();
-  await shadow.pglite.close();
   process.exit(0);
 };
 process.on('SIGINT', shutdown);
@@ -377,7 +375,6 @@ try {
   await seedDatabase(prisma);
 } finally {
   await prisma.$disconnect();
-  await bridge.close();
-  await pglite.close();
+  await bridge.close(); // also closes pglite by default
 }
 ```

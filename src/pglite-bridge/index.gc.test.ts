@@ -33,7 +33,6 @@ describe('PGliteBridge leak detection', () => {
       expect(adapterRef).toBeDefined();
     } finally {
       await closeBridge?.();
-      await livePGlite.close();
     }
   });
 });

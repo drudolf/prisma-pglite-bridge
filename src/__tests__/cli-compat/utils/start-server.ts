@@ -19,7 +19,6 @@ export const startServer = async (): Promise<StartedServer> => {
     server,
     close: async () => {
       await server.close();
-      await pglite.close();
     },
   };
 };

@@ -3,6 +3,7 @@ import { type Mock, vi } from 'vitest';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 
 interface MockPGlite {
+  close: Mock;
   closed: boolean;
   dataDir?: string;
   exec: Mock;
@@ -15,6 +16,7 @@ interface MockPGlite {
 
 export const createMockPGlite = (overrides: Partial<MockPGlite> = {}): PGlite =>
   ({
+    close: vi.fn().mockResolvedValue(undefined),
     closed: false,
     exec: vi.fn().mockResolvedValue(undefined),
     execProtocolRawStream: vi.fn(),

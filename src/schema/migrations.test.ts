@@ -221,7 +221,6 @@ describe('pushMigrations', () => {
     const bridge = new PGliteBridge({ pglite });
     cleanups.push(async () => {
       await bridge.close();
-      await pglite.close();
     });
     return { pglite, bridge };
   };

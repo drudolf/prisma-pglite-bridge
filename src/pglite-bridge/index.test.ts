@@ -41,7 +41,6 @@ describe('PGliteBridge', () => {
   afterAll(async () => {
     await prisma.$disconnect();
     await bridge.close();
-    await pglite.close();
   });
 
   it('rejects invalid stats levels', () => {
@@ -70,7 +69,6 @@ describe('PGliteBridge', () => {
       await expect(localBridge.stats()).resolves.toBeUndefined();
     } finally {
       await localBridge.close();
-      await local.close();
     }
   });
 
@@ -104,7 +102,6 @@ describe('PGliteBridge', () => {
 
     await firstPrisma.$disconnect();
     await first.close();
-    await firstPGlite.close();
 
     const secondPGlite = await createReadyPGlite(dataDir);
     const second = new PGliteBridge({ pglite: secondPGlite, statsLevel: 'basic' });
@@ -118,7 +115,6 @@ describe('PGliteBridge', () => {
     } finally {
       await secondPrisma.$disconnect();
       await second.close();
-      await secondPGlite.close();
     }
 
     removeTempDir(parent);
@@ -157,6 +153,24 @@ describe('PGliteBridge', () => {
     await bridge.resetDb();
 
     await expect(prisma.tenant.count()).resolves.toBe(0);
+  });
+
+  it('close() closes the underlying PGlite by default', async () => {
+    const local = await createReadyPGlite();
+    const localBridge = new PGliteBridge({ pglite: local });
+    await localBridge.close();
+    expect(local.closed).toBe(true);
+  });
+
+  it('close({ closePglite: false }) keeps the PGlite open', async () => {
+    const local = await createReadyPGlite();
+    const localBridge = new PGliteBridge({ pglite: local });
+    try {
+      await localBridge.close({ closePglite: false });
+      expect(local.closed).toBe(false);
+    } finally {
+      await local.close();
+    }
   });
 
   it('snapshotDb / resetDb / resetSnapshot reject when pool clients are in flight', async () => {
@@ -214,7 +228,6 @@ describe('PGliteBridge', () => {
     expect(registeredToken).toBeDefined();
 
     await created.close();
-    await local.close();
 
     expect(unregisterSpy).toHaveBeenCalledWith(registeredToken);
   });

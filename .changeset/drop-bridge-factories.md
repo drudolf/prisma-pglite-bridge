@@ -25,6 +25,16 @@ public input bags (`PGliteBridgeOptions`, `PgBridgePoolOptions`,
 `PGliteServerOptions`, `PGliteDuplexOptions`, `PushSchemaOptions`,
 `PushMigrationsOptions`) follow the same `*Options` convention.
 
+**Breaking — close lifecycle:** `bridge.close()` and `server.close()`
+now also close the underlying PGlite instance by default, matching
+the dominant test/script use case where the bridge or server owns
+the pglite for the duration of its lifetime. Pass
+`{ closePglite: false }` to opt out (e.g., when one PGlite is shared
+between multiple bridges, or held by external code that should keep
+running). `pool.end()` is unchanged — `pg.Pool`'s inherited signature
+doesn't accept options, so `PgBridgePool` users continue to call
+`await pool.end(); await pglite.close()` explicitly.
+
 **Migration:**
 
 ```ts

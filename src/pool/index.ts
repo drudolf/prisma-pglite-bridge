@@ -76,13 +76,16 @@ export interface PgBridgePoolOptions
  * const adapter = new PrismaPg(pool);
  * const prisma = new PrismaClient({ adapter });
  *
- * // teardown
+ * // teardown — pool.end() inherits pg.Pool's fixed signature and does
+ * // not close pglite. Use PGliteBridge if you want close() to handle
+ * // both, or close pglite explicitly here.
  * await prisma.$disconnect();
  * await pool.end();
  * await pglite.close();
  * ```
  *
- * @see {@link PGliteBridge} for the higher-level API with schema management.
+ * @see {@link PGliteBridge} for the higher-level API with schema management
+ *   and a single `close()` that also closes the underlying pglite.
  */
 export class PgBridgePool extends pg.Pool {
   /**

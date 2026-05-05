@@ -65,7 +65,6 @@ describe('PGliteServer', () => {
     const connectionString = await server.listen();
     cleanups.push(async () => {
       await server.close();
-      await pglite.close();
     });
     return { pglite, server, connectionString };
   };
@@ -451,7 +450,6 @@ describe('PGliteServer', () => {
     await a.listen();
     cleanups.push(async () => {
       await a.close();
-      await pgliteA.close();
       await pgliteB.close();
       rmSync(dataDir, { recursive: true, force: true });
     });
@@ -514,14 +512,33 @@ describe('PGliteServer', () => {
     });
   });
 
+  it('close() closes the underlying PGlite by default', async () => {
+    const pglite = new PGlite();
+    await pglite.waitReady;
+    const server = new PGliteServer({ pglite });
+    await server.listen();
+    await server.close();
+    expect(pglite.closed).toBe(true);
+  });
+
+  it('close({ closePglite: false }) keeps the PGlite open', async () => {
+    const pglite = new PGlite();
+    await pglite.waitReady;
+    const server = new PGliteServer({ pglite });
+    await server.listen();
+    try {
+      await server.close({ closePglite: false });
+      expect(pglite.closed).toBe(false);
+    } finally {
+      await pglite.close();
+    }
+  });
+
   it('close() rejects when the server has already been closed', async () => {
     const pglite = new PGlite();
     await pglite.waitReady;
     const server = new PGliteServer({ pglite });
     await server.listen();
-    cleanups.push(async () => {
-      await pglite.close();
-    });
 
     await server.close();
     await expect(server.close()).rejects.toThrow();
@@ -536,19 +553,13 @@ describe('PGliteServer', () => {
     await client.connect();
     client.on('error', () => {});
 
-    let pgliteClosed = false;
-    try {
-      await Promise.race([
-        server.close(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('server.close() did not resolve in 2s')), 2000),
-        ),
-      ]);
-    } finally {
-      await client.end().catch(() => {});
-      await pglite.close();
-      pgliteClosed = true;
-    }
-    expect(pgliteClosed).toBe(true);
+    await Promise.race([
+      server.close(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('server.close() did not resolve in 2s')), 2000),
+      ),
+    ]);
+    await client.end().catch(() => {});
+    expect(pglite.closed).toBe(true);
   });
 });

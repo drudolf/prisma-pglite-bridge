@@ -22,8 +22,7 @@
  * });
  *
  * // teardown
- * await bridge.close();
- * await pglite.close();
+ * await bridge.close(); // also closes pglite by default
  * ```
  */
 import type { PrismaPg } from '@prisma/adapter-pg';

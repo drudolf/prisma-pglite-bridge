@@ -34,8 +34,7 @@ console.log(url);
 // → postgres://postgres@127.0.0.1:54321/postgres
 
 // later
-await server.close();
-await server.pglite.close();
+await server.close(); // also closes pglite by default
 ```
 
 The constructor is synchronous. The network bind happens in the

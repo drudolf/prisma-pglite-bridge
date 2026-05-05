@@ -23,8 +23,7 @@
  * beforeEach(() => bridge.resetDb());
  * afterAll(async () => {
  *   await prisma.$disconnect();
- *   await bridge.close();
- *   await pglite.close(); // bridge.close() shuts down the pool only
+ *   await bridge.close(); // also closes pglite by default
  * });
  * ```
  *
@@ -209,14 +208,20 @@ export class PGliteBridge {
   }
 
   /**
-   * Shut down the pool. The caller-owned PGlite instance is not closed.
+   * Shut down the pool and close the PGlite instance.
+   *
+   * Pass `closePglite: false` if the PGlite instance is shared with code
+   * outside this bridge (e.g., a second `PGliteBridge` or direct
+   * `pglite.exec(...)` calls that should keep working). Default is `true`
+   * since the dominant case is "this bridge owns the pglite for the
+   * duration of a test or script."
    *
    * When `statsLevel` is not `'off'`, call {@link stats} *after* `close()`
    * to collect the frozen snapshot — `durationMs` and `dbSizeBytes` are
    * cached at the moment `close()` is invoked, and subsequent `stats()`
    * calls are safe.
    */
-  close = async (): Promise<void> => {
+  close = async ({ closePglite = true }: { closePglite?: boolean } = {}): Promise<void> => {
     if (!this.#closing) {
       this.#closing = (async () => {
         const closeEntry = this.#stats ? process.hrtime.bigint() : undefined;
@@ -225,6 +230,9 @@ export class PGliteBridge {
           await this.#stats?.freeze(this.pglite, closeEntry);
         }
         leakRegistry.unregister(this.#leakToken);
+        if (closePglite && !this.pglite.closed) {
+          await this.pglite.close();
+        }
       })();
     }
     return this.#closing;

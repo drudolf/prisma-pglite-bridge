@@ -29,7 +29,6 @@ const createInstance = async (): Promise<Bridge> => {
     close: async () => {
       await prisma.$disconnect();
       await bridge.close();
-      await pglite.close();
       instance = undefined;
     },
   };
