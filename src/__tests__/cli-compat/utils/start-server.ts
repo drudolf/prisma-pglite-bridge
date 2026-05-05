@@ -1,6 +1,6 @@
 import { PGlite } from '@electric-sql/pglite';
 
-import { PGliteServer } from '../../../pglite-server/index.ts';
+import { PGliteServer } from '../../../pglite-server';
 
 export interface StartedServer {
   pglite: PGlite;

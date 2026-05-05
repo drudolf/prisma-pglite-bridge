@@ -2,7 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createTempDir, createTempFile, removeTempDir } from '../__tests__/file-system.ts';
-import { PGliteBridge } from '../pglite-bridge/index.ts';
+import { PGliteBridge } from '../pglite-bridge';
 import {
   getMigrationSQL,
   hasMigrations,

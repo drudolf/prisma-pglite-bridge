@@ -4,7 +4,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockPGlite, createMockTelemetry } from '../__tests__/mocks.ts';
 import { setupPGlite } from '../__tests__/pglite.ts';
-import { PgBridgePool } from '../pool/index.ts';
+import { PgBridgePool } from '../pool';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import { SessionLock } from '../utils/session-lock.ts';
 import { PGliteDuplex } from './index.ts';

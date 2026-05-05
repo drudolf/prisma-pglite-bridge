@@ -29,7 +29,7 @@
 import type { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 
-import { PgBridgePool } from '../pool/index.ts';
+import { PgBridgePool } from '../pool';
 import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
 import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SnapshotManager } from './snapshot-manager.ts';

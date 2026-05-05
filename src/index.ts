@@ -18,12 +18,12 @@
  */
 
 export { PGliteDuplex } from './duplex';
-export { PGliteBridge, type PGliteBridgeConfig } from './pglite-bridge/index.ts';
-export type { PGliteServerOptions } from './pglite-server/index.ts';
-export { PGliteServer } from './pglite-server/index.ts';
-export { PgBridgePool, type PgBridgePoolConfig } from './pool/index.ts';
-export type { PushSchemaOptions, PushSchemaResult } from './schema/index.ts';
-export { pushSchema, resetSchema } from './schema/index.ts';
+export { PGliteBridge, type PGliteBridgeConfig } from './pglite-bridge';
+export type { PGliteServerOptions } from './pglite-server';
+export { PGliteServer } from './pglite-server';
+export { PgBridgePool, type PgBridgePoolConfig } from './pool';
+export type { PushSchemaOptions, PushSchemaResult } from './schema';
+export { pushSchema, resetSchema } from './schema';
 export type { PushMigrationsOptions, PushMigrationsResult } from './schema/migrations.ts';
 export { hasMigrations, hasSchema, pushMigrations } from './schema/migrations.ts';
 export type { Stats, StatsBasic, StatsFull, StatsLevel } from './telemetry/bridge-stats.ts';
