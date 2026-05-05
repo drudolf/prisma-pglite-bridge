@@ -69,11 +69,17 @@ export interface PGliteDuplexOptions {
 /**
  * Duplex stream that bridges `pg.Client` to an in-process PGlite instance.
  *
+ * **Most users should reach for {@link PGliteBridge} instead** — it
+ * bundles `PGliteDuplex` with a pool, telemetry, snapshot/reset
+ * lifecycle, and the Prisma adapter. Use `PGliteDuplex` directly only
+ * when wiring a custom `pg.Client` setup that's outside the
+ * `PgBridgePool` model.
+ *
  * Replaces the TCP socket in `pg.Client` via the `stream` option. Speaks
  * PostgreSQL wire protocol directly to PGlite — no TCP, no serialization
- * overhead beyond what the wire protocol requires.
- *
- * Pass to `pg.Client` or use via `new PgBridgePool()` / `new PGliteBridge()`:
+ * overhead beyond what the wire protocol requires. When using multiple
+ * duplexes against one PGlite, pass a shared {@link SessionLock} so
+ * cross-duplex transactions don't interleave.
  *
  * ```typescript
  * const client = new pg.Client({

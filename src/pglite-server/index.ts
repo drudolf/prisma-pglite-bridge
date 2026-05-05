@@ -15,9 +15,14 @@
  * The caller-supplied PGlite must not be closed.
  *
  * ```typescript
- * const server = new PGliteServer({ pglite: new PGlite() });
+ * const pglite = new PGlite();
+ * const server = new PGliteServer({ pglite });
  * const url = await server.listen();
  * console.log(url); // → postgres://postgres@127.0.0.1:54321/postgres
+ *
+ * // teardown
+ * await server.close();
+ * await pglite.close(); // server.close() shuts down the listener only
  * ```
  */
 import net from 'node:net';

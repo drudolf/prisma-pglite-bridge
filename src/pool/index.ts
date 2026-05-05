@@ -19,7 +19,9 @@ export interface PgBridgePoolOptions
   /**
    * Identity tag published with every diagnostics-channel event. Subscribers
    * filter on this to distinguish events from different bridges in the
-   * same process. A fresh `Symbol('bridge')` is generated if omitted.
+   * same process. A fresh `Symbol('bridge')` is generated if omitted; the
+   * same `symbol` reference is reused on every event from this pool.
+   * Hold a reference if you need to filter from outside.
    */
   bridgeId?: symbol;
 
@@ -69,14 +71,25 @@ export interface PgBridgePoolOptions
  * import { PrismaPg } from '@prisma/adapter-pg';
  * import { PrismaClient } from '@prisma/client';
  *
- * const pool = new PgBridgePool({ pglite: new PGlite() });
+ * const pglite = new PGlite();
+ * const pool = new PgBridgePool({ pglite });
  * const adapter = new PrismaPg(pool);
  * const prisma = new PrismaClient({ adapter });
+ *
+ * // teardown
+ * await prisma.$disconnect();
+ * await pool.end();
+ * await pglite.close();
  * ```
  *
  * @see {@link PGliteBridge} for the higher-level API with schema management.
  */
 export class PgBridgePool extends pg.Pool {
+  /**
+   * Identity tag published on every diagnostics-channel event from this
+   * pool. Stable for the lifetime of the pool — the same `symbol`
+   * reference appears on every event.
+   */
   readonly bridgeId: symbol;
 
   constructor({
