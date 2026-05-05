@@ -102,6 +102,26 @@ describe('PgBridgePool — syncToFs', () => {
   });
 });
 
+describe('PgBridgePool — pglite lifecycle', () => {
+  it('end() closes the internally-created PGlite (pool owns it)', async () => {
+    const pool = new PgBridgePool();
+    await pool.end();
+    expect(pool.pglite.closed).toBe(true);
+  });
+
+  it('end() leaves a caller-supplied PGlite open (caller owns it)', async () => {
+    const local = new PGlite();
+    await local.waitReady;
+    const pool = new PgBridgePool({ pglite: local });
+    try {
+      await pool.end();
+      expect(local.closed).toBe(false);
+    } finally {
+      await local.close();
+    }
+  });
+});
+
 describe('PgBridgePool — rollback on forced client release', () => {
   it('rolls back uncommitted state when a max=1 client is destroyed mid-transaction', async () => {
     // max=1 → no SessionLock. Rollback must still run on destroy, otherwise
