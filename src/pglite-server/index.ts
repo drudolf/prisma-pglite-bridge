@@ -21,8 +21,7 @@
  * console.log(url); // → postgres://postgres@127.0.0.1:54321/postgres
  *
  * // teardown
- * await server.close();
- * await pglite.close(); // server.close() shuts down the listener only
+ * await server.close(); // also closes pglite by default
  * ```
  */
 import net from 'node:net';
@@ -157,13 +156,24 @@ export class PGliteServer {
     });
   };
 
-  close = async (): Promise<void> => {
+  /**
+   * Shut down the listener and close the PGlite instance.
+   *
+   * Pass `closePglite: false` if the PGlite instance is shared with code
+   * outside this server (e.g., a `PGliteBridge` reading from the same
+   * pglite). Default is `true` since the dominant case is "this server
+   * owns the pglite for its lifetime."
+   */
+  close = async ({ closePglite = true }: { closePglite?: boolean } = {}): Promise<void> => {
     const sockets = [...this.#sockets];
     for (const socket of sockets) socket.destroy();
     await new Promise<void>((resolve, reject) => {
       this.#server.close((err) => (err ? reject(err) : resolve()));
     });
     await Promise.all(sockets.map(({ duplex }) => duplex?.onClose));
+    if (closePglite && !this.pglite.closed) {
+      await this.pglite.close();
+    }
   };
 
   #initDuplex(socket: BridgedSocket): PGliteDuplex {

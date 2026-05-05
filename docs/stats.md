@@ -41,10 +41,9 @@ const prisma = new PrismaClient({ adapter: bridge.adapter });
 
 afterAll(async () => {
   await prisma.$disconnect();
-  await bridge.close();
+  await bridge.close(); // also closes pglite by default
   const s = await bridge.stats();
   if (s) console.log(s);
-  await pglite.close();
 });
 ```
 

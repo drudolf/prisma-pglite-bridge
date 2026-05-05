@@ -69,7 +69,6 @@ describe('pushSchema', () => {
     const bridge = new PGliteBridge({ pglite });
     cleanups.push(async () => {
       await bridge.close();
-      await pglite.close();
     });
     return { pglite, bridge };
   };
@@ -214,7 +213,6 @@ describe('resetSchema', () => {
       expect(left.rows).toEqual([]);
     } finally {
       await bridge.close();
-      await pglite.close();
     }
   });
 
@@ -232,7 +230,6 @@ describe('resetSchema', () => {
       expect(await listTables(pglite)).not.toContain('Widget');
     } finally {
       await bridge.close();
-      await pglite.close();
     }
   });
 });
