@@ -155,8 +155,14 @@ export class PGliteBridge {
    * `beforeEach` for per-test isolation. When a snapshot has been taken
    * via {@link snapshotDb}, restores from that snapshot instead of
    * truncating to empty.
+   *
+   * Throws if any pool client is currently checked out — the operation
+   * runs raw SQL on the PGlite instance bypassing the pool, so concurrent
+   * pool traffic would interleave unsafely. Await all pending Prisma
+   * queries first.
    */
   resetDb = async (): Promise<void> => {
+    this.#assertPoolIdle('resetDb');
     this.#stats?.incrementResetDb();
     return this.#snapshot.resetDb();
   };
@@ -166,23 +172,35 @@ export class PGliteBridge {
    * schema. Subsequent `resetDb` calls restore from this snapshot instead
    * of truncating to empty.
    *
-   * **Concurrency:** runs multiple `exec()` statements directly against
-   * the PGlite instance, bypassing the pool's `SessionLock`. Call from a
-   * test `beforeAll` after migrations but before Prisma traffic starts;
-   * invoking it while another pool connection is inside a transaction is
-   * unsafe and may deadlock against PGlite's internal mutex.
+   * Throws if any pool client is currently checked out — the operation
+   * runs multiple `exec()` statements directly against the PGlite
+   * instance, bypassing the pool's `SessionLock`. Call from a test
+   * `beforeAll` after migrations but before Prisma traffic starts.
    */
   snapshotDb = async (): Promise<void> => {
+    this.#assertPoolIdle('snapshotDb');
     return this.#snapshot.snapshotDb();
   };
 
   /**
    * Discard the current snapshot. Subsequent `resetDb` calls truncate to
-   * empty. Same concurrency requirements as {@link snapshotDb}.
+   * empty. Same concurrency requirements as {@link snapshotDb} — throws if
+   * any pool client is currently checked out.
    */
   resetSnapshot = async (): Promise<void> => {
+    this.#assertPoolIdle('resetSnapshot');
     return this.#snapshot.resetSnapshot();
   };
+
+  #assertPoolIdle(method: string): void {
+    const inFlight = this.#pool.totalCount - this.#pool.idleCount;
+    if (inFlight > 0) {
+      throw new Error(
+        `${method}() requires no in-flight pool queries; got ${inFlight}. ` +
+          'Await all pending Prisma queries (or end an open `$transaction`) before calling.',
+      );
+    }
+  }
 
   /**
    * Shut down the pool. The caller-owned PGlite instance is not closed.
