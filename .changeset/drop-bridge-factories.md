@@ -25,14 +25,16 @@ public input bags (`PGliteBridgeOptions`, `PgBridgePoolOptions`,
 `PGliteServerOptions`, `PGliteDuplexOptions`, `PushSchemaOptions`,
 `PushMigrationsOptions`) follow the same `*Options` convention.
 
-**Breaking — close lifecycle:** `bridge.close()` and `server.close()`
-now also close the underlying PGlite instance by default, matching
-the dominant test/script use case where the bridge or server owns
-the pglite for the duration of its lifetime. Pass
-`{ closePglite: false }` to opt out (e.g., when one PGlite is shared
-between multiple bridges, or held by external code that should keep
-running). `pool.end()` is unchanged — `pg.Pool`'s inherited signature
-doesn't accept options, so `PgBridgePool` users continue to call
+**Breaking — `pglite` is now optional and ownership is determined at
+construction:** `PGliteBridge` and `PGliteServer` no longer require a
+`pglite` argument. When omitted, each class creates its own in-memory
+`PGlite` and owns its lifecycle — `close()` shuts it down. When you
+supply a `pglite`, the class treats it as caller-owned and `close()`
+leaves it open. The `{ closePglite: false }` escape hatch on `close()`
+is removed; the decision is made once, at construction.
+
+`pool.end()` is unchanged — `pg.Pool`'s inherited signature doesn't
+accept options, so `PgBridgePool` users continue to call
 `await pool.end(); await pglite.close()` explicitly.
 
 **Migration:**
@@ -43,9 +45,14 @@ import { createPGliteBridge, createPool } from 'prisma-pglite-bridge';
 const bridge = await createPGliteBridge({ pglite });
 const { pool, close } = await createPool({ pglite });
 
-// after
+// after — no pglite needed for the common in-memory case:
 import { PGliteBridge, PgBridgePool } from 'prisma-pglite-bridge';
-const bridge = new PGliteBridge({ pglite });
-const pool = new PgBridgePool({ pglite });
+const bridge = new PGliteBridge();            // owns its own PGlite
+const pool = new PgBridgePool({ pglite });    // PgBridgePool still requires pglite
 // later: await pool.end();
+
+// after — caller-supplied PGlite (e.g. custom dataDir or extensions):
+const pglite = new PGlite({ extensions: { uuid_ossp } });
+const bridge = new PGliteBridge({ pglite }); // caller owns; bridge.close() leaves it open
+// later: await bridge.close(); await pglite.close();
 ```
