@@ -21,6 +21,9 @@ The accompanying option/return-type names also collapse:
 - `CreatePGliteBridge` (factory return type) → `PGliteBridge` (the class itself)
 - `CreatePoolOptions` / `PoolOptions` → `PgBridgePoolConfig`
 
+Also exposes `PGliteDuplexOptions` from the package barrel for
+symmetry with `PGliteBridgeConfig` / `PGliteServerOptions`.
+
 **Migration:**
 
 ```ts
