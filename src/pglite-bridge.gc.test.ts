@@ -33,7 +33,6 @@ describe('PGliteBridge (class) leak detection', () => {
       expect(adapterRef).toBeDefined();
     } finally {
       await closeBridge?.();
-      warnSpy.mockRestore();
       await livePGlite.close();
     }
   });

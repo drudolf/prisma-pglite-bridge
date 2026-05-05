@@ -161,37 +161,29 @@ describe('PGliteBridge (class)', () => {
 
   it('emitBridgeLeakWarning emits a typed process warning', () => {
     const spy = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
-    try {
-      emitBridgeLeakWarning();
-      expect(spy).toHaveBeenCalledTimes(1);
-      const [message, options] = spy.mock.calls[0] ?? [];
-      expect(String(message)).toContain('garbage-collected');
-      expect(String(message)).toContain('close()');
-      expect(options).toEqual({ type: 'PGliteBridgeLeakWarning' });
-    } finally {
-      spy.mockRestore();
-    }
+    emitBridgeLeakWarning();
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [message, options] = spy.mock.calls[0] ?? [];
+    expect(String(message)).toContain('garbage-collected');
+    expect(String(message)).toContain('close()');
+    expect(options).toEqual({ type: 'PGliteBridgeLeakWarning' });
   });
 
   it('registers the adapter for leak detection and unregisters on close', async () => {
     const registerSpy = vi.spyOn(FinalizationRegistry.prototype, 'register');
     const unregisterSpy = vi.spyOn(FinalizationRegistry.prototype, 'unregister');
-    try {
-      const local = await createReadyPGlite();
-      const created = new PGliteBridge({ pglite: local });
 
-      expect(registerSpy).toHaveBeenCalled();
-      const registeredToken = registerSpy.mock.calls.at(-1)?.[2];
-      expect(registeredToken).toBeDefined();
+    const local = await createReadyPGlite();
+    const created = new PGliteBridge({ pglite: local });
 
-      await created.close();
-      await local.close();
+    expect(registerSpy).toHaveBeenCalled();
+    const registeredToken = registerSpy.mock.calls.at(-1)?.[2];
+    expect(registeredToken).toBeDefined();
 
-      expect(unregisterSpy).toHaveBeenCalledWith(registeredToken);
-    } finally {
-      registerSpy.mockRestore();
-      unregisterSpy.mockRestore();
-    }
+    await created.close();
+    await local.close();
+
+    expect(unregisterSpy).toHaveBeenCalledWith(registeredToken);
   });
 });
 

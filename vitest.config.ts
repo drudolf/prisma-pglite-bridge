@@ -5,6 +5,9 @@ const config: ViteUserConfigExport = defineConfig({
     hookTimeout: 20_000,
     testTimeout: 30_000,
     teardownTimeout: 5_000,
+    restoreMocks: true,
+    unstubGlobals: true,
+    unstubEnvs: true,
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
