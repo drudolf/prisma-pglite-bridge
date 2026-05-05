@@ -45,7 +45,7 @@ export const emitBridgeLeakWarning = (): void => {
 
 const leakRegistry = new FinalizationRegistry<void>(emitBridgeLeakWarning);
 
-export interface PGliteBridgeConfig {
+export interface PGliteBridgeOptions {
   /**
    * Identity tag published with every diagnostics-channel event. Subscribers
    * filter on this to distinguish events from different bridges in the
@@ -128,7 +128,7 @@ export class PGliteBridge {
   readonly #leakToken: object = {};
   #closing: Promise<void> | undefined;
 
-  constructor(config: PGliteBridgeConfig) {
+  constructor(config: PGliteBridgeOptions) {
     const statsLevel = config.statsLevel ?? 'off';
     if (statsLevel !== 'off' && statsLevel !== 'basic' && statsLevel !== 'full') {
       throw new Error(`statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`);

@@ -14,7 +14,7 @@ import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.
 import { SessionLock } from '../utils/session-lock.ts';
 import { PgBridgeClient, type PgBridgeClientOptions } from './pg-bridge-client.ts';
 
-export interface PgBridgePoolConfig
+export interface PgBridgePoolOptions
   extends Omit<PgBridgeClientOptions, 'bridgeId' | 'syncToFs' | 'telemetry'> {
   /**
    * Identity tag published with every diagnostics-channel event. Subscribers
@@ -86,7 +86,7 @@ export class PgBridgePool extends pg.Pool {
     telemetry,
     timeout,
     syncToFs,
-  }: PgBridgePoolConfig & { telemetry?: TelemetrySink }) {
+  }: PgBridgePoolOptions & { telemetry?: TelemetrySink }) {
     // Load-bearing: pg.Pool forwards this config object verbatim to
     // `new Client(config)`, including the symbol-keyed property below.
     // PgBridgeClient reads its bridge options from the same symbol.

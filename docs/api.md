@@ -87,7 +87,7 @@ const bridge = new PGliteBridge({
 });
 ```
 
-The constructor takes a `PGliteBridgeConfig` (also exported). To
+The constructor takes a `PGliteBridgeOptions` (also exported). To
 apply schema SQL, pass `bridge.pglite` to
 [`pushMigrations`](#pushmigrationspglite-options) or `bridge.adapter`
 to [`pushSchema`](#pushschemaadapter-options) — see
@@ -283,7 +283,7 @@ const adapter = new PrismaPg(pool);
 // later: await pool.end();
 ```
 
-The constructor takes a `PgBridgePoolConfig` (also exported)
+The constructor takes a `PgBridgePoolOptions` (also exported)
 accepting `pglite` (required), `max`, `bridgeId`, `syncToFs`, and
 `timeout`. Use `pool.end()` to shut the pool down — the
 caller-supplied PGlite instance is not closed. The instance also

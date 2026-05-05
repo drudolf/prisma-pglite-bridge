@@ -17,12 +17,13 @@ bridgeId }` wrapper. Use `pool.end()` to shut it down and read
 
 The accompanying option/return-type names also collapse:
 
-- `PGliteBridgeOptions` / `CreatePGliteBridgeOptions` → `PGliteBridgeConfig`
 - `CreatePGliteBridge` (factory return type) → `PGliteBridge` (the class itself)
-- `CreatePoolOptions` / `PoolOptions` → `PgBridgePoolConfig`
+- `CreatePoolOptions` / `PoolOptions` → `PgBridgePoolOptions`
 
-Also exposes `PGliteDuplexOptions` from the package barrel for
-symmetry with `PGliteBridgeConfig` / `PGliteServerOptions`.
+Also exposes `PGliteDuplexOptions` from the package barrel so all
+public input bags (`PGliteBridgeOptions`, `PgBridgePoolOptions`,
+`PGliteServerOptions`, `PGliteDuplexOptions`, `PushSchemaOptions`,
+`PushMigrationsOptions`) follow the same `*Options` convention.
 
 **Migration:**
 
