@@ -22,9 +22,9 @@ import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import { lockWaitChannel, queryChannel } from '../telemetry/diagnostics.ts';
-import { waitPGliteReady } from '../utils/pglite.ts';
 import type { SessionLock } from '../utils/session-lock.ts';
 import { nsToMs } from '../utils/time.ts';
+import { waitPGliteReady } from '../utils/wait-pglite-ready.ts';
 
 import { BackendMessageFramer } from './backend-framer.ts';
 import {
