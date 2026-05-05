@@ -4,7 +4,7 @@ import type { TelemetrySink } from '../utils/bridge-stats.ts';
 
 interface MockPGlite {
   closed: boolean;
-  dataDir: string;
+  dataDir?: string;
   exec: Mock;
   execProtocolRawStream: Mock;
   query: Mock;
@@ -15,9 +15,11 @@ interface MockPGlite {
 
 export const createMockPGlite = (overrides: Partial<MockPGlite> = {}): PGlite =>
   ({
+    closed: false,
     exec: vi.fn().mockResolvedValue(undefined),
     execProtocolRawStream: vi.fn(),
     query: vi.fn().mockResolvedValue({ fields: [], rows: [] }),
+    ready: true,
     runExclusive: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
     waitReady: Promise.resolve(),
     ...overrides,

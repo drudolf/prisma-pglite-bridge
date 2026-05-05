@@ -15,12 +15,6 @@ const MIGRATION_SQL = readFileSync(
   'utf8',
 );
 
-const createReadyMockPGlite = (): PGlite => {
-  const mock = createMockPGlite();
-  Object.assign(mock, { ready: true, closed: false, dataDir: undefined });
-  return mock;
-};
-
 const createReadyPGlite = async (dataDir?: string): Promise<PGlite> => {
   const pglite = dataDir === undefined ? new PGlite() : new PGlite(dataDir);
   await pglite.waitReady;
@@ -251,7 +245,7 @@ describe('PGliteBridge (class) — mocked pg.Pool', () => {
           releaseEnd = resolve;
         }),
     );
-    const mockPglite = createReadyMockPGlite();
+    const mockPglite = createMockPGlite();
     const { module } = await loadClassWithMocks({ poolEnd });
     const created = new module.default({ pglite: mockPglite });
 
@@ -265,7 +259,7 @@ describe('PGliteBridge (class) — mocked pg.Pool', () => {
   });
 
   it('installs a SessionLock when max > 1', async () => {
-    const mockPglite = createReadyMockPGlite();
+    const mockPglite = createMockPGlite();
     const { PoolCtor, module } = await loadClassWithMocks();
 
     const created = new module.default({ pglite: mockPglite, max: 2 });
@@ -280,7 +274,7 @@ describe('PGliteBridge (class) — mocked pg.Pool', () => {
   });
 
   it('forwards syncToFs to the pool client options', async () => {
-    const mockPglite = createReadyMockPGlite();
+    const mockPglite = createMockPGlite();
     const { PoolCtor, module, prismaPg } = await loadClassWithMocks();
 
     const created = new module.default({ pglite: mockPglite, syncToFs: false });
