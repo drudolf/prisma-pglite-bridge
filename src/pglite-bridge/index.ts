@@ -128,18 +128,18 @@ export class PGliteBridge {
   readonly #leakToken: object = {};
   #closing: Promise<void> | undefined;
 
-  constructor(config: PGliteBridgeOptions) {
-    const statsLevel = config.statsLevel ?? 'off';
+  constructor(options: PGliteBridgeOptions) {
+    const statsLevel = options.statsLevel ?? 'off';
     if (statsLevel !== 'off' && statsLevel !== 'basic' && statsLevel !== 'full') {
       throw new Error(`statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`);
     }
 
-    this.pglite = config.pglite;
-    this.bridgeId = config.bridgeId ?? Symbol('bridge');
+    this.pglite = options.pglite;
+    this.bridgeId = options.bridgeId ?? Symbol('bridge');
 
     this.#stats = statsLevel === 'off' ? undefined : new BridgeStats(statsLevel);
     this.#pool = new PgBridgePool({
-      ...config,
+      ...options,
       bridgeId: this.bridgeId,
       telemetry: this.#stats,
     });
