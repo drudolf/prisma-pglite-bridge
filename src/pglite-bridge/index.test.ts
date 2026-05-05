@@ -4,11 +4,11 @@ import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
-import { createMockPGlite } from './__tests__/mocks.ts';
-import { pushMigrations } from './migrations.ts';
-import type { PGliteBridgeConfig } from './pglite-bridge.ts';
-import PGliteBridge, { emitBridgeLeakWarning } from './pglite-bridge.ts';
+import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
+import { createMockPGlite } from '../__tests__/mocks.ts';
+import { pushMigrations } from '../migrations.ts';
+import type { PGliteBridgeConfig } from './index.ts';
+import PGliteBridge, { emitBridgeLeakWarning } from './index.ts';
 
 const MIGRATION_SQL = readFileSync(
   join(process.cwd(), 'prisma/migrations/0001_init/migration.sql'),
@@ -34,7 +34,7 @@ const setupSuite = async (
 
 const { pglite, prisma, bridge } = await setupSuite({ statsLevel: 'basic' });
 
-describe('PGliteBridge (class)', () => {
+describe('PGliteBridge', () => {
   beforeEach(async () => {
     await bridge.resetDb();
   });
@@ -187,8 +187,8 @@ describe('PGliteBridge (class)', () => {
   });
 });
 
-describe('PGliteBridge (class) — mocked pg.Pool', () => {
-  type ClassModule = typeof import('./pglite-bridge.ts');
+describe('PGliteBridge — mocked pg.Pool', () => {
+  type ClassModule = typeof import('./index.ts');
 
   const loadClassWithMocks = async ({
     poolEnd = vi.fn().mockResolvedValue(undefined),
@@ -217,7 +217,7 @@ describe('PGliteBridge (class) — mocked pg.Pool', () => {
     }));
     return {
       PoolCtor,
-      module: await import('./pglite-bridge.ts'),
+      module: await import('./index.ts'),
       poolEnd,
       prismaPg,
     };

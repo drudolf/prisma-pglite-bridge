@@ -29,10 +29,10 @@
 import type { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 
-import PgBridgePool from './pool/index.ts';
-import { BridgeStats, type Stats, type StatsLevel } from './telemetry/bridge-stats.ts';
-import type { SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
-import { createSnapshotManager, type SnapshotManager } from './utils/snapshot.ts';
+import PgBridgePool from '../pool/index.ts';
+import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
+import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
+import { createSnapshotManager, type SnapshotManager } from './snapshot.ts';
 
 /** @internal Exported for testing. */
 export const emitBridgeLeakWarning = (): void => {
