@@ -100,14 +100,14 @@ describe('PGliteDuplex', () => {
   });
 
   it('socket-compat no-ops return the bridge instance', () => {
-    const bridge = new PGliteDuplex(pglite);
-    expect(bridge.setKeepAlive()).toBe(bridge);
-    expect(bridge.setNoDelay()).toBe(bridge);
-    expect(bridge.setTimeout()).toBe(bridge);
-    expect(bridge.ref()).toBe(bridge);
-    expect(bridge.unref()).toBe(bridge);
-    expect(bridge.connect()).toBe(bridge);
-    bridge.destroy();
+    const duplex = new PGliteDuplex(pglite);
+    expect(duplex.setKeepAlive()).toBe(duplex);
+    expect(duplex.setNoDelay()).toBe(duplex);
+    expect(duplex.setTimeout()).toBe(duplex);
+    expect(duplex.ref()).toBe(duplex);
+    expect(duplex.unref()).toBe(duplex);
+    expect(duplex.connect()).toBe(duplex);
+    duplex.destroy();
   });
 });
 
@@ -161,48 +161,48 @@ describe('PGliteDuplex error paths', () => {
     return buf;
   };
 
-  const writeAndAwait = (bridge: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+  const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
     new Promise((resolve) => {
-      bridge.write(chunk, (err) => resolve(err ?? undefined));
+      duplex.write(chunk, (err) => resolve(err ?? undefined));
     });
 
   it('fires pending write callbacks with the destroy error when torn down mid-drain', async () => {
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       runExclusive: vi.fn(() => new Promise<void>(() => {})),
     });
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
 
-    const writeResult = writeAndAwait(bridge, startupBytes());
+    const writeResult = writeAndAwait(duplex, startupBytes());
     await new Promise((resolve) => setImmediate(resolve));
 
     const destroyErr = new Error('bridge torn down');
-    bridge.destroy(destroyErr);
+    duplex.destroy(destroyErr);
 
     await expect(writeResult).resolves.toBe(destroyErr);
   });
 
   it('releases the session lock and surfaces the error when runExclusive throws', async () => {
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       runExclusive: vi.fn(async () => {
         throw new Error('pglite kaput');
       }),
     });
     const lock = new SessionLock();
     const releaseSpy = vi.spyOn(lock, 'release');
-    const bridge = new PGliteDuplex(mock, { sessionLock: lock });
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
+    duplex.on('error', () => {});
 
-    const err = await writeAndAwait(bridge, startupBytes());
+    const err = await writeAndAwait(duplex, startupBytes());
     expect(err?.message).toBe('pglite kaput');
     expect(releaseSpy).toHaveBeenCalled();
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('records a failed query and rethrows when runExclusive throws after startup', async () => {
     let call = 0;
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       runExclusive: vi.fn(async (fn) => {
         call += 1;
         if (call === 1) {
@@ -215,154 +215,154 @@ describe('PGliteDuplex error paths', () => {
 
     const telemetry = createMockTelemetry();
 
-    const bridge = new PGliteDuplex(mock, { telemetry });
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite, { telemetry });
+    duplex.on('error', () => {});
 
-    const startupErr = await writeAndAwait(bridge, startupBytes());
+    const startupErr = await writeAndAwait(duplex, startupBytes());
     expect(startupErr).toBeUndefined();
 
-    const queryErr = await writeAndAwait(bridge, simpleQuery('SELECT 1'));
+    const queryErr = await writeAndAwait(duplex, simpleQuery('SELECT 1'));
     expect(queryErr?.message).toBe('query kaput');
     expect(telemetry.recordQuery).toHaveBeenCalledWith(expect.any(Number), false);
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('holds processing until a partial startup message completes', async () => {
     let runCalls = 0;
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       runExclusive: vi.fn(async (fn) => {
         runCalls += 1;
         await fn();
       }),
     });
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
 
     const firstHalf = startupBytes().subarray(0, 3);
     const secondHalf = startupBytes().subarray(3);
 
-    const partialErr = await writeAndAwait(bridge, Buffer.from(firstHalf));
+    const partialErr = await writeAndAwait(duplex, Buffer.from(firstHalf));
     expect(partialErr).toBeUndefined();
     expect(runCalls).toBe(0);
 
-    const restErr = await writeAndAwait(bridge, Buffer.from(secondHalf));
+    const restErr = await writeAndAwait(duplex, Buffer.from(secondHalf));
     expect(restErr).toBeUndefined();
     expect(runCalls).toBe(1);
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('breaks out of processMessages on a malformed length header', async () => {
-    const mock = createMockPGlite();
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const pglite = createMockPGlite();
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
 
-    const startupErr = await writeAndAwait(bridge, startupBytes());
+    const startupErr = await writeAndAwait(duplex, startupBytes());
     expect(startupErr).toBeUndefined();
 
     const malformed = Buffer.from([0x51, 0x00, 0x00, 0x00, 0x03]);
-    const err = await writeAndAwait(bridge, malformed);
+    const err = await writeAndAwait(duplex, malformed);
     expect(err).toBeUndefined();
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('releases the session lock and ends the stream on TERMINATE', async () => {
-    const mock = createMockPGlite();
+    const pglite = createMockPGlite();
     const lock = new SessionLock();
     const releaseSpy = vi.spyOn(lock, 'release');
-    const bridge = new PGliteDuplex(mock, { sessionLock: lock });
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
+    duplex.on('error', () => {});
 
-    await writeAndAwait(bridge, startupBytes());
+    await writeAndAwait(duplex, startupBytes());
     releaseSpy.mockClear();
 
     const terminate = Buffer.from([0x58, 0x00, 0x00, 0x00, 0x04]);
-    await writeAndAwait(bridge, terminate);
+    await writeAndAwait(duplex, terminate);
 
     expect(releaseSpy).toHaveBeenCalled();
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('wraps a non-Error throw into an Error when runExclusive rejects', async () => {
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       runExclusive: vi.fn(async () => {
         throw 'plain string boom';
       }),
     });
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
 
-    const err = await writeAndAwait(bridge, startupBytes());
+    const err = await writeAndAwait(duplex, startupBytes());
     expect(err).toBeInstanceOf(Error);
     expect(err?.message).toBe('plain string boom');
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('surfaces the error when waitPGliteReady throws because pglite is closed', async () => {
-    const mock = createMockPGlite({ ready: false, closed: true });
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const pglite = createMockPGlite({ ready: false, closed: true });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
 
-    const err = await writeAndAwait(bridge, startupBytes());
+    const err = await writeAndAwait(duplex, startupBytes());
     expect(err).toBeInstanceOf(Error);
     expect(err?.message).toBe('PGlite instance closed');
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('surfaces the error when pglite.waitReady rejects', async () => {
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       ready: false,
       closed: false,
       waitReady: Promise.reject(new Error('startup failed')),
     });
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
 
-    const err = await writeAndAwait(bridge, startupBytes());
+    const err = await writeAndAwait(duplex, startupBytes());
     expect(err).toBeInstanceOf(Error);
     expect(err?.message).toBe('PGlite instance not ready: startup failed');
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('surfaces a stringified message when pglite.waitReady rejects with a non-Error', async () => {
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       ready: false,
       closed: false,
       waitReady: Promise.reject('plain string reason'),
     });
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
 
-    const err = await writeAndAwait(bridge, startupBytes());
+    const err = await writeAndAwait(duplex, startupBytes());
     expect(err).toBeInstanceOf(Error);
     expect(err?.message).toBe('PGlite instance not ready: plain string reason');
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('surfaces the error when waitPGliteReady times out', async () => {
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       ready: false,
       closed: false,
       waitReady: new Promise<void>(() => {}), // never resolves
     });
     const TIMEOUT_MS = 5;
-    const bridge = new PGliteDuplex(mock, { timeout: TIMEOUT_MS });
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite, { timeout: TIMEOUT_MS });
+    duplex.on('error', () => {});
 
-    const err = await writeAndAwait(bridge, startupBytes());
+    const err = await writeAndAwait(duplex, startupBytes());
     expect(err).toBeInstanceOf(Error);
     expect(err?.message).toBe(
       `PGlite instance not ready: Operation timed out after ${TIMEOUT_MS}ms`,
     );
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('surfaces the error when waitPGliteReady throws inside streamProtocol', async () => {
@@ -370,7 +370,7 @@ describe('PGliteDuplex error paths', () => {
     // callback flips `closed` to true so the second waitPGliteReady (inside
     // streamProtocol) throws — exercises the second call site.
     let closed = false;
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       ready: false,
       waitReady: Promise.resolve(),
       runExclusive: vi.fn(async (fn) => {
@@ -378,16 +378,16 @@ describe('PGliteDuplex error paths', () => {
         await fn();
       }),
     });
-    Object.defineProperty(mock, 'closed', { get: () => closed, configurable: true });
+    Object.defineProperty(pglite, 'closed', { get: () => closed, configurable: true });
 
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
 
-    const err = await writeAndAwait(bridge, startupBytes());
+    const err = await writeAndAwait(duplex, startupBytes());
     expect(err).toBeInstanceOf(Error);
     expect(err?.message).toBe('PGlite instance closed');
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('queues additional writes while a drain is already running', async () => {
@@ -396,15 +396,15 @@ describe('PGliteDuplex error paths', () => {
       release = resolve;
     });
     let runCalls = 0;
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       runExclusive: vi.fn(async (fn) => {
         runCalls += 1;
         if (runCalls === 1) await gate;
         await fn();
       }),
     });
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
 
     // Call _write directly twice in the same tick so the second one sees
     // `draining === true` (Node's Writable would otherwise serialize).
@@ -413,7 +413,7 @@ describe('PGliteDuplex error paths', () => {
       enc: BufferEncoding,
       cb: (err?: Error | null) => void,
     ) => void;
-    const rawWrite = (bridge as unknown as { _write: WriteInternal })._write.bind(bridge);
+    const rawWrite = (duplex as unknown as { _write: WriteInternal })._write.bind(duplex);
 
     let firstErr: Error | null | undefined;
     let secondErr: Error | null | undefined;
@@ -441,7 +441,7 @@ describe('PGliteDuplex error paths', () => {
     expect(secondErr ?? undefined).toBeUndefined();
     expect(runCalls).toBe(2);
 
-    bridge.destroy();
+    duplex.destroy();
   });
 
   it('records a failed query when an EQP pipeline returns ErrorResponse', async () => {
@@ -509,13 +509,13 @@ describe('PGliteDuplex error paths', () => {
   it('skips a queued runExclusive callback when destroyed before it fires', async () => {
     // Race: pglite.runExclusive enqueues our callback, _destroy then flips
     // tornDown before the callback fires. Without the inner guard the queued
-    // op would still execute and leak BEGIN state into the next bridge.
+    // op would still execute and leak BEGIN state into the next duplex.
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     let execCalled = false;
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       runExclusive: vi.fn(async (fn) => {
         await gate;
         await fn();
@@ -524,14 +524,14 @@ describe('PGliteDuplex error paths', () => {
         execCalled = true;
       }),
     });
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
 
-    const writeP = writeAndAwait(bridge, startupBytes());
+    const writeP = writeAndAwait(duplex, startupBytes());
     await new Promise((resolve) => setImmediate(resolve));
 
     const destroyErr = new Error('forced destroy');
-    bridge.destroy(destroyErr);
+    duplex.destroy(destroyErr);
     await expect(writeP).resolves.toBe(destroyErr);
 
     release();
@@ -549,20 +549,20 @@ describe('PGliteDuplex error paths', () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const mock = createMockPGlite({
+    const pglite = createMockPGlite({
       runExclusive: vi.fn(async (fn) => {
         await gate;
         await fn();
       }),
     });
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
 
-    void writeAndAwait(bridge, startupBytes());
+    void writeAndAwait(duplex, startupBytes());
     await new Promise((resolve) => setImmediate(resolve));
 
-    const closed = new Promise<void>((resolve) => bridge.once('close', resolve));
-    bridge.destroy(new Error('forced'));
+    const closed = new Promise<void>((resolve) => duplex.once('close', resolve));
+    duplex.destroy(new Error('forced'));
 
     // close must fire without us touching `release`. If _destroy awaited the
     // queued callback, this would only resolve once the gate was released.
@@ -591,22 +591,22 @@ describe('PGliteDuplex error paths', () => {
         return { rows: [] };
       },
     } as unknown as PGlite;
-    const bridge = new PGliteDuplex(mock);
-    bridge.on('error', () => {});
+    const duplex = new PGliteDuplex(mock);
+    duplex.on('error', () => {});
 
     // Force the duplex into 'T' state — the wire path would normally set this
     // via the framer's onReadyForQuery, but the mock execProtocolRawStream
     // emits no bytes.
-    (bridge as unknown as { lastSeenRfqStatus: number }).lastSeenRfqStatus = 0x54;
+    (duplex as unknown as { lastSeenRfqStatus: number }).lastSeenRfqStatus = 0x54;
 
     await Promise.all([
-      bridge.rollbackIfInTransaction(),
-      bridge.rollbackIfInTransaction(),
-      bridge.rollbackIfInTransaction(),
+      duplex.rollbackIfInTransaction(),
+      duplex.rollbackIfInTransaction(),
+      duplex.rollbackIfInTransaction(),
     ]);
 
     expect(queryCalls.filter((sql) => sql === 'ROLLBACK').length).toBe(1);
 
-    bridge.destroy();
+    duplex.destroy();
   });
 });
