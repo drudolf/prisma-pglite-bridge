@@ -1,5 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
 import setupPGlite from './__tests__/pglite.ts';
@@ -7,20 +7,10 @@ import PgBridgePool from './pool.ts';
 
 const pglite = await setupPGlite();
 
-const captureSyncToFs = (db: PGlite): { seen: boolean[]; restore: () => void } => {
-  const seen: boolean[] = [];
-  const original = db.execProtocolRawStream.bind(db);
-  db.execProtocolRawStream = (async (message, options) => {
-    seen.push(options.syncToFs ?? true);
-    return original(message, options);
-  }) as typeof db.execProtocolRawStream;
-  return {
-    seen,
-    restore: () => {
-      db.execProtocolRawStream = original;
-    },
-  };
-};
+type ExecProtocolSpy = MockInstance<PGlite['execProtocolRawStream']>;
+
+const seenSyncToFs = (spy: ExecProtocolSpy): boolean[] =>
+  spy.mock.calls.map(([, options]) => options?.syncToFs ?? true);
 
 describe('PgBridgePool — bridgeId', async () => {
   it('returns a symbol, unique per call when omitted', async () => {
@@ -69,13 +59,12 @@ describe('PgBridgePool — max default', () => {
 
 describe('PgBridgePool — syncToFs', () => {
   it('defaults to false for in-memory PGlite', async () => {
-    const { seen, restore } = captureSyncToFs(pglite);
+    const spy = vi.spyOn(pglite, 'execProtocolRawStream');
     const pool = new PgBridgePool({ pglite });
     try {
       await pool.query('SELECT 1');
-      expect(seen).toContain(false);
+      expect(seenSyncToFs(spy)).toContain(false);
     } finally {
-      restore();
       await pool.end();
     }
   });
@@ -83,14 +72,13 @@ describe('PgBridgePool — syncToFs', () => {
   it('defaults to true for persistent dataDir instances', async () => {
     const { parent, path: dataDir } = createTempDir('pool-data');
     const persistent = new PGlite(dataDir);
-    const { seen, restore } = captureSyncToFs(persistent);
+    const spy = vi.spyOn(persistent, 'execProtocolRawStream');
 
     const pool = new PgBridgePool({ pglite: persistent });
     try {
       await pool.query('SELECT 1');
-      expect(seen).toContain(true);
+      expect(seenSyncToFs(spy)).toContain(true);
     } finally {
-      restore();
       await pool.end();
       await persistent.close();
       removeTempDir(parent);
@@ -100,14 +88,13 @@ describe('PgBridgePool — syncToFs', () => {
   it('honors an explicit false override for persistent instances', async () => {
     const { parent, path: dataDir } = createTempDir('pool-data-override');
     const persistent = new PGlite(dataDir);
-    const { seen, restore } = captureSyncToFs(persistent);
+    const spy = vi.spyOn(persistent, 'execProtocolRawStream');
 
     const pool = new PgBridgePool({ pglite: persistent, syncToFs: false });
     try {
       await pool.query('SELECT 1');
-      expect(seen).toContain(false);
+      expect(seenSyncToFs(spy)).toContain(false);
     } finally {
-      restore();
       await pool.end();
       await persistent.close();
       removeTempDir(parent);

@@ -254,7 +254,7 @@ describe('PGliteDuplex error paths', () => {
   });
 
   it('breaks out of processMessages on a malformed length header', async () => {
-    const mock = createMockPGlite({});
+    const mock = createMockPGlite();
     const bridge = new PGliteDuplex(mock);
     bridge.on('error', () => {});
 
@@ -269,7 +269,7 @@ describe('PGliteDuplex error paths', () => {
   });
 
   it('releases the session lock and ends the stream on TERMINATE', async () => {
-    const mock = createMockPGlite({});
+    const mock = createMockPGlite();
     const lock = new SessionLock();
     const releaseSpy = vi.spyOn(lock, 'release');
     const bridge = new PGliteDuplex(mock, { sessionLock: lock });
