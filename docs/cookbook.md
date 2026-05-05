@@ -5,8 +5,8 @@ For the underlying API, see the [API reference](./api.md).
 
 ## Contents
 
-- [Replacing your production database in tests](#replacing-your-production-database-in-tests)
-- [Vitest with per-test isolation (no singleton)](#vitest-with-per-test-isolation-no-singleton)
+- [Multi-file tests with a shared bridge](#multi-file-tests-with-a-shared-bridge)
+- [Per-file bridge (no production singleton)](#per-file-bridge-no-production-singleton)
 - [Sharing seed logic between `prisma db seed` and tests](#sharing-seed-logic-between-prisma-db-seed-and-tests)
 - [Applying a schema directly (no migrations directory)](#applying-a-schema-directly-no-migrations-directory)
 - [Using PostgreSQL extensions](#using-postgresql-extensions)
@@ -15,7 +15,16 @@ For the underlying API, see the [API reference](./api.md).
 - [Long-lived dev server (Studio, `psql`, `prisma migrate dev`)](#long-lived-dev-server-studio-psql-prisma-migrate-dev)
 - [Long-running script with clean shutdown](#long-running-script-with-clean-shutdown)
 
-## Replacing your production database in tests
+## Multi-file tests with a shared bridge
+
+The recommended pattern for a multi-file Vitest suite. The bridge
+is created once and `vi.mock` rewires every test file's
+`PrismaClient` import to it — migrations and seed run a single
+time, all tests share one snapshot, and `resetDb()` runs before
+every test. Skip to the
+[per-file bridge pattern](#per-file-bridge-no-production-singleton)
+if your code receives `PrismaClient` as a parameter and you don't
+have a production singleton to swap.
 
 Most Prisma projects use a singleton module:
 
@@ -91,7 +100,14 @@ beforeAll(async () => {
 beforeEach(() => resetDb());
 ```
 
-## Vitest with per-test isolation (no singleton)
+## Per-file bridge (no production singleton)
+
+Each test file owns its own bridge — appropriate when your code
+accepts `PrismaClient` as a parameter (no production singleton to
+mock). For suites with many test files, this re-runs migrations
+and seed in every file's `beforeAll`; prefer the
+[shared bridge pattern](#multi-file-tests-with-a-shared-bridge)
+once that cost matters.
 
 If your code accepts `PrismaClient` as a parameter:
 
