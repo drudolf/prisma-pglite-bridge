@@ -51,6 +51,10 @@ fixtures, prototypes), see [Populating the
 database](./docs/api.md#populating-the-database) for the
 `pushSchema` alternative.
 
+Running the Prisma CLI against this bridge (shadow DB for
+`migrate dev`, `psql`, SQL GUIs)? See
+[`PGliteServer`](./docs/server.md) for the TCP/Unix-socket front.
+
 ## Documentation
 
 - **[API reference](./docs/api.md)** — exports, options, return
