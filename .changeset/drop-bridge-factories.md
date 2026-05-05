@@ -1,5 +1,5 @@
 ---
-"prisma-pglite-bridge": minor
+"prisma-pglite-bridge": major
 ---
 
 **Breaking:** Drop the `createPGliteBridge()` and `createPool()`
