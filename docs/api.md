@@ -8,6 +8,7 @@ For known limits and runtime warnings see
 
 ## Contents
 
+- [Terminology: Bridge vs Duplex](#terminology-bridge-vs-duplex)
 - [Populating the database](#populating-the-database)
 - [`PGliteBridge`](#pglitebridge)
 - [`pushMigrations(pglite, options)`](#pushmigrationspglite-options)
@@ -21,6 +22,25 @@ For known limits and runtime warnings see
 - [`SessionLock`](#sessionlock)
 - [Diagnostics channel exports](#diagnostics-channel-exports)
 - [Bridge fs-sync policy](#bridge-fs-sync-policy)
+
+## Terminology: Bridge vs Duplex
+
+This package uses two related but distinct terms:
+
+- **Bridge** is the package concept and the high-level surface
+  (`PGliteBridge`, `PgBridgePool`). A bridge wraps a `PGlite`
+  instance and exposes an adapter / pool that Prisma can talk to
+  as if it were a real PostgreSQL server.
+- **Duplex** is the wire-protocol layer (`PGliteDuplex`). It is a
+  Node `Duplex` stream that stands in for `pg.Client`'s network
+  socket — speaking the PostgreSQL wire protocol on one side and
+  calling PGlite directly on the other. Each pool connection owns
+  one `PGliteDuplex`. Reach for it directly only when wiring a
+  custom `pg.Client` setup outside of `PgBridgePool`.
+
+`PGliteServer` is an optional TCP/Unix-socket wrapper that exposes
+a duplex over a real network socket — used for the Prisma CLI
+shadow database, `psql`, and other tools that demand a server URL.
 
 ## Populating the database
 
