@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMockPGlite } from '../__tests__/mocks.ts';
-import setupPGlite from '../__tests__/pglite.ts';
+import { setupPGlite } from '../__tests__/pglite.ts';
 import { SnapshotManager } from './snapshot-manager.ts';
 
 const pglite = await setupPGlite();

@@ -76,7 +76,7 @@ export interface PgBridgePoolConfig
  *
  * @see {@link PGliteBridge} for the higher-level API with schema management.
  */
-class PgBridgePool extends pg.Pool {
+export class PgBridgePool extends pg.Pool {
   readonly bridgeId: symbol;
 
   constructor({
@@ -108,5 +108,3 @@ class PgBridgePool extends pg.Pool {
     this.bridgeId = bridgeId;
   }
 }
-
-export default PgBridgePool;

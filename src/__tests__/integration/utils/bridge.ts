@@ -35,9 +35,7 @@ const createInstance = async (): Promise<Bridge> => {
   };
 };
 
-const getInstance = (): Promise<Bridge> => {
+export const getInstance = (): Promise<Bridge> => {
   if (!instance) instance = createInstance();
   return instance;
 };
-
-export default getInstance;
