@@ -32,7 +32,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import PgBridgePool from '../pool/index.ts';
 import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
 import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
-import { createSnapshotManager, type SnapshotManager } from './snapshot.ts';
+import { SnapshotManager } from './snapshot-manager.ts';
 
 /** @internal Exported for testing. */
 export const emitBridgeLeakWarning = (): void => {
@@ -143,7 +143,7 @@ class PGliteBridge {
       bridgeId: this.bridgeId,
       telemetry: this.#stats,
     });
-    this.#snapshot = createSnapshotManager(this.pglite);
+    this.#snapshot = new SnapshotManager(this.pglite);
 
     this.adapter = new PrismaPg(this.#pool);
 

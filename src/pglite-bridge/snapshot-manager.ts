@@ -6,28 +6,13 @@ const USER_TABLES_WHERE = `schemaname NOT IN ('pg_catalog', 'information_schema'
        AND schemaname != '${SNAPSHOT_SCHEMA}'
        AND tablename NOT LIKE '_prisma%'`;
 
-const escapeLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;
+const escapeLiteral = (s: string): string => `'${s.replace(/'/g, "''")}'`;
 
 /** JS equivalent of PostgreSQL's `quote_ident()`; matches its escaping rules. */
 const quoteIdent = (identifier: string): string => `"${identifier.replace(/"/g, '""')}"`;
 
 const SNAPSHOT_SCHEMA_IDENT = quoteIdent(SNAPSHOT_SCHEMA);
 const SNAPSHOT_SCHEMA_LITERAL = escapeLiteral(SNAPSHOT_SCHEMA);
-
-export interface SnapshotManager {
-  /**
-   * Truncate all user tables. If a snapshot exists, restore its contents and
-   * sequence values afterwards; otherwise just truncate and `DISCARD ALL`.
-   */
-  resetDb: () => Promise<void>;
-  /** Drop the saved snapshot, reverting `resetDb` to plain truncation. */
-  resetSnapshot: () => Promise<void>;
-  /**
-   * Capture the current state of all user tables plus sequence values into
-   * the `_pglite_snapshot` schema. Replaces any previous snapshot.
-   */
-  snapshotDb: () => Promise<void>;
-}
 
 /**
  * Snapshot helpers backing `PGliteBridge`'s `snapshotDb` / `resetDb` /
@@ -37,21 +22,20 @@ export interface SnapshotManager {
  *
  * @internal
  */
-export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
-  let hasSnapshot = false;
+export class SnapshotManager {
+  readonly #pglite: PGlite;
+  #hasSnapshot = false;
 
-  const getTables = async () => {
-    const { rows } = await pglite.query<{ qualified: string }>(
-      `SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
-       FROM pg_tables
-       WHERE ${USER_TABLES_WHERE}`,
-    );
-    return rows.length > 0
-      ? rows.map((row: { qualified: string }) => row.qualified).join(', ')
-      : '';
-  };
+  constructor(pglite: PGlite) {
+    this.#pglite = pglite;
+  }
 
-  const snapshotDb = async () => {
+  /**
+   * Capture the current state of all user tables plus sequence values into
+   * the `_pglite_snapshot` schema. Replaces any previous snapshot.
+   */
+  async snapshotDb(): Promise<void> {
+    const pglite = this.#pglite;
     await pglite.exec(`DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_IDENT} CASCADE`);
 
     try {
@@ -107,47 +91,30 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
       throw err;
     }
 
-    hasSnapshot = true;
-  };
+    this.#hasSnapshot = true;
+  }
 
-  const resetSnapshot = async () => {
-    hasSnapshot = false;
-    await pglite.exec(`DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_IDENT} CASCADE`);
-  };
+  /** Drop the saved snapshot, reverting `resetDb` to plain truncation. */
+  async resetSnapshot(): Promise<void> {
+    this.#hasSnapshot = false;
+    await this.#pglite.exec(`DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_IDENT} CASCADE`);
+  }
 
   /**
-   * Self-heal: someone (e.g. `resetSchema`) may drop `_pglite_snapshot`
-   * out from under us. Returns whether the schema actually exists right now,
-   * and clears `hasSnapshot` if it doesn't.
+   * Truncate all user tables. If a snapshot exists, restore its contents and
+   * sequence values afterwards; otherwise just truncate and `DISCARD ALL`.
    */
-  const snapshotSchemaExists = async (): Promise<boolean> => {
-    const { rows } = await pglite.query<{ exists: boolean }>(
-      `SELECT to_regnamespace(${SNAPSHOT_SCHEMA_LITERAL}) IS NOT NULL AS exists`,
-    );
-    const exists = rows[0]?.exists;
-    if (!exists) hasSnapshot = false;
-    return !!exists;
-  };
+  async resetDb(): Promise<void> {
+    const pglite = this.#pglite;
+    if (this.#hasSnapshot) await this.#snapshotSchemaExists();
 
-  const withReplicationRoleReplica = async (fn: () => Promise<void>) => {
-    try {
-      await pglite.exec('SET session_replication_role = replica');
-      await fn();
-    } finally {
-      await pglite.exec('SET session_replication_role = DEFAULT');
-    }
-  };
-
-  const resetDb = async () => {
-    if (hasSnapshot) await snapshotSchemaExists();
-
-    const tables = await getTables();
+    const tables = await this.#getTables();
 
     if (tables) {
-      await withReplicationRoleReplica(async () => {
+      await this.#withReplicationRoleReplica(async () => {
         await pglite.exec(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
 
-        if (!hasSnapshot) return;
+        if (!this.#hasSnapshot) return;
 
         const { rows: snapshotTables } = await pglite.query<{
           snap_name_ident: string;
@@ -175,7 +142,37 @@ export const createSnapshotManager = (pglite: PGlite): SnapshotManager => {
     }
 
     await pglite.exec('DISCARD ALL');
-  };
+  }
 
-  return { resetDb, resetSnapshot, snapshotDb };
-};
+  async #getTables(): Promise<string> {
+    const { rows } = await this.#pglite.query<{ qualified: string }>(
+      `SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
+       FROM pg_tables
+       WHERE ${USER_TABLES_WHERE}`,
+    );
+    return rows.length > 0 ? rows.map((row) => row.qualified).join(', ') : '';
+  }
+
+  /**
+   * Self-heal: someone (e.g. `resetSchema`) may drop `_pglite_snapshot`
+   * out from under us. Returns whether the schema actually exists right now,
+   * and clears `#hasSnapshot` if it doesn't.
+   */
+  async #snapshotSchemaExists(): Promise<boolean> {
+    const { rows } = await this.#pglite.query<{ exists: boolean }>(
+      `SELECT to_regnamespace(${SNAPSHOT_SCHEMA_LITERAL}) IS NOT NULL AS exists`,
+    );
+    const exists = rows[0]?.exists;
+    if (!exists) this.#hasSnapshot = false;
+    return !!exists;
+  }
+
+  async #withReplicationRoleReplica(fn: () => Promise<void>): Promise<void> {
+    try {
+      await this.#pglite.exec('SET session_replication_role = replica');
+      await fn();
+    } finally {
+      await this.#pglite.exec('SET session_replication_role = DEFAULT');
+    }
+  }
+}

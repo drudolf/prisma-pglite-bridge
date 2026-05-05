@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMockPGlite } from '../__tests__/mocks.ts';
 import setupPGlite from '../__tests__/pglite.ts';
-import { createSnapshotManager } from './snapshot.ts';
+import { SnapshotManager } from './snapshot-manager.ts';
 
 const pglite = await setupPGlite();
 
@@ -11,7 +11,7 @@ describe('snapshot manager', () => {
     const error = new Error('boom');
     const pglite = createMockPGlite({ query: vi.fn().mockRejectedValue(error) });
 
-    const snapshot = createSnapshotManager(pglite);
+    const snapshot = new SnapshotManager(pglite);
 
     await expect(snapshot.snapshotDb()).rejects.toThrow(error);
     expect(vi.mocked(pglite.exec).mock.calls).toEqual([
@@ -28,7 +28,7 @@ describe('snapshot manager', () => {
       "CREATE TABLE users (id serial PRIMARY KEY, name text NOT NULL); INSERT INTO users (name) VALUES ('alice')",
     );
 
-    const snapshot = createSnapshotManager(pglite);
+    const snapshot = new SnapshotManager(pglite);
     await snapshot.snapshotDb();
 
     await pglite.exec(`INSERT INTO users (name) VALUES ('bob')`);
@@ -52,7 +52,7 @@ describe('snapshot manager', () => {
       `CREATE TABLE "odd""name" (id serial PRIMARY KEY, v text); INSERT INTO "odd""name" (v) VALUES ('seed')`,
     );
 
-    const snapshot = createSnapshotManager(pglite);
+    const snapshot = new SnapshotManager(pglite);
     await snapshot.snapshotDb();
     await pglite.exec(`INSERT INTO "odd""name" (v) VALUES ('extra')`);
     await snapshot.resetDb();
@@ -68,7 +68,7 @@ describe('snapshot manager', () => {
       "CREATE TABLE users (id serial PRIMARY KEY, name text NOT NULL); INSERT INTO users (name) VALUES ('alice')",
     );
 
-    const snapshot = createSnapshotManager(pglite);
+    const snapshot = new SnapshotManager(pglite);
     await snapshot.snapshotDb();
     await snapshot.resetSnapshot();
 
@@ -91,7 +91,7 @@ describe('snapshot manager', () => {
   it('skips truncation work when no user tables exist', async () => {
     const pglite = createMockPGlite();
 
-    const snapshot = createSnapshotManager(pglite);
+    const snapshot = new SnapshotManager(pglite);
 
     await snapshot.resetDb();
 
