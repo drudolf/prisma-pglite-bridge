@@ -6,7 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
 import { createMockPGlite } from '../__tests__/mocks.ts';
-import { pushMigrations } from '../migrations.ts';
+import { pushMigrations } from '../schema/migrations.ts';
 import type { PGliteBridgeConfig } from './index.ts';
 import { emitBridgeLeakWarning, PGliteBridge } from './index.ts';
 
