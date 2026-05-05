@@ -2,7 +2,7 @@ import diagnostics_channel from 'node:diagnostics_channel';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { setupPGlite } from '../__tests__/pglite.ts';
-import { PgBridgePool } from '../pool/index.ts';
+import { PgBridgePool } from '../pool';
 import {
   LOCK_WAIT_CHANNEL,
   type LockWaitEvent,

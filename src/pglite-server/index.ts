@@ -24,7 +24,7 @@ import net from 'node:net';
 import nodePath from 'node:path';
 import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 
-import { PGliteDuplex } from '../duplex/index.ts';
+import { PGliteDuplex } from '../duplex';
 import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SessionLock } from '../utils/session-lock.ts';
 
