@@ -1,8 +1,8 @@
 import type pg from 'pg';
 import { describe, expect, it } from 'vitest';
 import setupPGlite from '../__tests__/pglite.ts';
-import PgBridgePool from '../pool.ts';
 import { type TypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
+import PgBridgePool from './index.ts';
 
 const pglite = await setupPGlite();
 

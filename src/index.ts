@@ -23,15 +23,15 @@ export { hasMigrations, hasSchema, pushMigrations } from './migrations.ts';
 export { default as PGliteBridge, type PGliteBridgeConfig } from './pglite-bridge.ts';
 export type { PGliteServerOptions } from './pglite-server.ts';
 export { PGliteServer } from './pglite-server.ts';
-export { default as PgBridgePool, type PgBridgePoolConfig } from './pool.ts';
+export { default as PgBridgePool, type PgBridgePoolConfig } from './pool/index.ts';
 export type { PushSchemaOptions, PushSchemaResult } from './schema.ts';
 export { pushSchema, resetSchema } from './schema.ts';
-export type { Stats, StatsBasic, StatsFull, StatsLevel } from './utils/bridge-stats.ts';
+export type { Stats, StatsBasic, StatsFull, StatsLevel } from './telemetry/bridge-stats.ts';
 export {
   LOCK_WAIT_CHANNEL,
   type LockWaitEvent,
   QUERY_CHANNEL,
   type QueryEvent,
-} from './utils/diagnostics.ts';
+} from './telemetry/diagnostics.ts';
 export type { SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
 export { SessionLock } from './utils/session-lock.ts';

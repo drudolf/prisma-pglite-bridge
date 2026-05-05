@@ -1,9 +1,9 @@
 import { PGlite } from '@electric-sql/pglite';
 import { describe, expect, it, type MockInstance, vi } from 'vitest';
 
-import { createTempDir, removeTempDir } from './__tests__/file-system.ts';
-import setupPGlite from './__tests__/pglite.ts';
-import PgBridgePool from './pool.ts';
+import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
+import setupPGlite from '../__tests__/pglite.ts';
+import PgBridgePool from './index.ts';
 
 const pglite = await setupPGlite();
 
