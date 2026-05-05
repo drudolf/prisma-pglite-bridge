@@ -17,7 +17,7 @@
  * @packageDocumentation
  */
 
-export { PGliteDuplex } from './duplex';
+export { PGliteDuplex, type PGliteDuplexOptions } from './duplex';
 export { PGliteBridge, type PGliteBridgeConfig } from './pglite-bridge';
 export type { PGliteServerOptions } from './pglite-server';
 export { PGliteServer } from './pglite-server';
