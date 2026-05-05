@@ -20,7 +20,7 @@
 export { PGliteDuplex } from './duplex';
 export type { PushMigrationsOptions, PushMigrationsResult } from './migrations.ts';
 export { hasMigrations, hasSchema, pushMigrations } from './migrations.ts';
-export { default as PGliteBridge, type PGliteBridgeConfig } from './pglite-bridge.ts';
+export { default as PGliteBridge, type PGliteBridgeConfig } from './pglite-bridge/index.ts';
 export type { PGliteServerOptions } from './pglite-server.ts';
 export { PGliteServer } from './pglite-server.ts';
 export { default as PgBridgePool, type PgBridgePoolConfig } from './pool/index.ts';

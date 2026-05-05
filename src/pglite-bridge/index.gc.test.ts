@@ -1,8 +1,8 @@
 import { PGlite } from '@electric-sql/pglite';
 import { describe, expect, it, vi } from 'vitest';
-import PGliteBridge from './pglite-bridge.ts';
+import PGliteBridge from './index.ts';
 
-describe('PGliteBridge (class) leak detection', () => {
+describe('PGliteBridge leak detection', () => {
   it('does not emit a leak warning while the pool is still reachable via the adapter', async () => {
     const gc = (globalThis as { gc?: () => void }).gc;
     if (typeof gc !== 'function') {
