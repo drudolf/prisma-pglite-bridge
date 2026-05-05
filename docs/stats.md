@@ -27,21 +27,15 @@ external consumer subscribes to the public
 [diagnostics channels](#diagnostics-channels).
 
 ```typescript
-import { PGlite } from '@electric-sql/pglite';
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
-const pglite = new PGlite();
-await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
-
-const bridge = new PGliteBridge({
-  pglite,
-  statsLevel: 'basic', // or 'full'
-});
+const bridge = new PGliteBridge({ statsLevel: 'basic' }); // or 'full'
+await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 
 afterAll(async () => {
   await prisma.$disconnect();
-  await bridge.close(); // also closes pglite by default
+  await bridge.close(); // closes pool + pglite (bridge owns it)
   const s = await bridge.stats();
   if (s) console.log(s);
 });

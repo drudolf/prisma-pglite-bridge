@@ -11,18 +11,16 @@
  *
  * @example
  * ```typescript
- * import { PGlite } from '@electric-sql/pglite';
  * import { PGliteBridge, pushSchema } from 'prisma-pglite-bridge';
  *
- * const pglite = new PGlite();
- * const bridge = new PGliteBridge({ pglite });
+ * const bridge = new PGliteBridge();
  *
  * await pushSchema(bridge.adapter, {
  *   schema: await fs.readFile('prisma/schema.prisma', 'utf8'),
  * });
  *
  * // teardown
- * await bridge.close(); // also closes pglite by default
+ * await bridge.close(); // closes pool + pglite (bridge owns it)
  * ```
  */
 import type { PrismaPg } from '@prisma/adapter-pg';
