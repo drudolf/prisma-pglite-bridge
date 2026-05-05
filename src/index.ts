@@ -18,14 +18,14 @@
  */
 
 export { PGliteDuplex } from './duplex';
-export type { PushMigrationsOptions, PushMigrationsResult } from './migrations.ts';
-export { hasMigrations, hasSchema, pushMigrations } from './migrations.ts';
 export { PGliteBridge, type PGliteBridgeConfig } from './pglite-bridge/index.ts';
 export type { PGliteServerOptions } from './pglite-server.ts';
 export { PGliteServer } from './pglite-server.ts';
 export { PgBridgePool, type PgBridgePoolConfig } from './pool/index.ts';
-export type { PushSchemaOptions, PushSchemaResult } from './schema.ts';
-export { pushSchema, resetSchema } from './schema.ts';
+export type { PushSchemaOptions, PushSchemaResult } from './schema/index.ts';
+export { pushSchema, resetSchema } from './schema/index.ts';
+export type { PushMigrationsOptions, PushMigrationsResult } from './schema/migrations.ts';
+export { hasMigrations, hasSchema, pushMigrations } from './schema/migrations.ts';
 export type { Stats, StatsBasic, StatsFull, StatsLevel } from './telemetry/bridge-stats.ts';
 export {
   LOCK_WAIT_CHANNEL,

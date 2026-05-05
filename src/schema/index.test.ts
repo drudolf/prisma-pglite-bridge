@@ -1,9 +1,9 @@
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { afterEach, describe, expect, it } from 'vitest';
-import { PGliteBridge } from './pglite-bridge/index.ts';
-import { PgBridgePool } from './pool/index.ts';
-import { pushSchema, resetSchema } from './schema.ts';
+import { PGliteBridge } from '../pglite-bridge/index.ts';
+import { PgBridgePool } from '../pool/index.ts';
+import { pushSchema, resetSchema } from './index.ts';
 
 const SCHEMA_BASE = `
 generator client {
