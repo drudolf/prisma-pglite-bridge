@@ -21,6 +21,11 @@
  * const bridge = new PGliteBridge({ pglite });
  * const prisma = new PrismaClient({ adapter: bridge.adapter });
  * beforeEach(() => bridge.resetDb());
+ * afterAll(async () => {
+ *   await prisma.$disconnect();
+ *   await bridge.close();
+ *   await pglite.close(); // bridge.close() shuts down the pool only
+ * });
  * ```
  *
  * Public methods are arrow-function class fields so destructuring stays safe:
@@ -118,7 +123,8 @@ export class PGliteBridge {
    * Identity tag published on every `QUERY_CHANNEL` / `LOCK_WAIT_CHANNEL`
    * diagnostics event produced by this bridge. External subscribers
    * filter on it to isolate events from this bridge in multi-bridge
-   * processes.
+   * processes. Stable for the lifetime of the bridge instance — the same
+   * `symbol` reference appears on every event from the same bridge.
    */
   readonly bridgeId: symbol;
 

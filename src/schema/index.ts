@@ -15,11 +15,15 @@
  * import { PGliteBridge, pushSchema } from 'prisma-pglite-bridge';
  *
  * const pglite = new PGlite();
- * const { adapter } = new PGliteBridge({ pglite });
+ * const bridge = new PGliteBridge({ pglite });
  *
- * await pushSchema(adapter, {
+ * await pushSchema(bridge.adapter, {
  *   schema: await fs.readFile('prisma/schema.prisma', 'utf8'),
  * });
+ *
+ * // teardown
+ * await bridge.close();
+ * await pglite.close();
  * ```
  */
 import type { PrismaPg } from '@prisma/adapter-pg';

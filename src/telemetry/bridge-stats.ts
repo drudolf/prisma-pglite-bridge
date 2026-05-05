@@ -95,6 +95,18 @@ export interface StatsFull extends StatsBase {
   maxSessionLockWaitMs: number;
 }
 
+/**
+ * Snapshot returned by {@link PGliteBridge.stats}. Discriminated by
+ * `statsLevel` — narrow before reading `'full'`-only fields.
+ *
+ * @example
+ * ```typescript
+ * const stats = await bridge.stats();
+ * if (stats?.statsLevel === 'full') {
+ *   console.log(stats.processRssPeakBytes); // typed as number | undefined
+ * }
+ * ```
+ */
 export type Stats = StatsBasic | StatsFull;
 
 const DB_SIZE_QUERY_TIMEOUT_MS = 5_000;
