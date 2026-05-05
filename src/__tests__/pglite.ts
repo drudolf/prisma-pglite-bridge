@@ -1,4 +1,3 @@
-/** biome-ignore-all lint/style/noNonNullAssertion: test files only */
 import { PGlite } from '@electric-sql/pglite';
 import { afterAll, beforeEach } from 'vitest';
 
@@ -27,9 +26,7 @@ const resetDb = async (db: PGlite) => {
   await db.exec('DISCARD ALL');
 };
 
-type SetupPGliteFn = (options?: { reset?: boolean }) => Promise<PGlite>;
-
-const setupPGlite: SetupPGliteFn = async ({ reset = true } = {}) => {
+const setupPGlite = async ({ reset = true }: { reset?: boolean } = {}): Promise<PGlite> => {
   const pglite = new PGlite();
   await pglite.waitReady;
 
@@ -40,7 +37,7 @@ const setupPGlite: SetupPGliteFn = async ({ reset = true } = {}) => {
   }
 
   afterAll(async () => {
-    await pglite?.close();
+    await pglite.close();
   });
 
   return pglite;

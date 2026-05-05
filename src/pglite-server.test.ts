@@ -25,6 +25,21 @@ const tcpConnect = (url: string): net.Socket => {
   return net.createConnection(Number(u.port), u.hostname);
 };
 
+const readFirstNBytes = (socket: net.Socket, n: number): Promise<Buffer> =>
+  new Promise<Buffer>((resolve, reject) => {
+    socket.once('error', reject);
+    let received = Buffer.alloc(0);
+    const onData = (chunk: Buffer): void => {
+      received = Buffer.concat([received, chunk]);
+      if (received.length >= n) {
+        socket.removeListener('data', onData);
+        socket.end();
+        resolve(received.subarray(0, n));
+      }
+    };
+    socket.on('data', onData);
+  });
+
 describe('PGliteServer', () => {
   const cleanups: Array<() => Promise<void>> = [];
 
@@ -56,8 +71,7 @@ describe('PGliteServer', () => {
   };
 
   it('listen() throws when the PGlite instance is closed', async () => {
-    const closed = createMockPGlite();
-    Object.assign(closed, { ready: true, closed: true });
+    const closed = createMockPGlite({ closed: true });
     const server = new PGliteServer({ pglite: closed });
     await expect(server.listen()).rejects.toThrow(/requires an open PGlite instance/);
   });
@@ -144,42 +158,18 @@ describe('PGliteServer', () => {
   it('rejects chained GSS+SSL preludes (coalesced and sequential) before StartupMessage', async () => {
     const { connectionString: url } = await startServer();
 
-    const coalesced = await new Promise<string>((resolve, reject) => {
-      const socket = tcpConnect(url);
-      socket.once('error', reject);
-      let received = Buffer.alloc(0);
-      const onData = (chunk: Buffer): void => {
-        received = Buffer.concat([received, chunk]);
-        if (received.length >= 2) {
-          socket.removeListener('data', onData);
-          socket.end();
-          resolve(received.subarray(0, 2).toString('ascii'));
-        }
-      };
-      socket.on('data', onData);
-      socket.write(
-        Buffer.concat([buildPrelude(8, GSSENC_REQUEST_CODE), buildPrelude(8, SSL_REQUEST_CODE)]),
-      );
-    });
-    expect(coalesced).toBe('NN');
+    const coalescedSocket = tcpConnect(url);
+    const coalescedBytes = readFirstNBytes(coalescedSocket, 2);
+    coalescedSocket.write(
+      Buffer.concat([buildPrelude(8, GSSENC_REQUEST_CODE), buildPrelude(8, SSL_REQUEST_CODE)]),
+    );
+    expect((await coalescedBytes).toString('ascii')).toBe('NN');
 
-    const sequential = await new Promise<string>((resolve, reject) => {
-      const socket = tcpConnect(url);
-      socket.once('error', reject);
-      let received = Buffer.alloc(0);
-      const onData = (chunk: Buffer): void => {
-        received = Buffer.concat([received, chunk]);
-        if (received.length >= 2) {
-          socket.removeListener('data', onData);
-          socket.end();
-          resolve(received.subarray(0, 2).toString('ascii'));
-        }
-      };
-      socket.on('data', onData);
-      socket.write(buildPrelude(8, GSSENC_REQUEST_CODE));
-      setTimeout(() => socket.write(buildPrelude(8, SSL_REQUEST_CODE)), 30);
-    });
-    expect(sequential).toBe('NN');
+    const sequentialSocket = tcpConnect(url);
+    const sequentialBytes = readFirstNBytes(sequentialSocket, 2);
+    sequentialSocket.write(buildPrelude(8, GSSENC_REQUEST_CODE));
+    setTimeout(() => sequentialSocket.write(buildPrelude(8, SSL_REQUEST_CODE)), 30);
+    expect((await sequentialBytes).toString('ascii')).toBe('NN');
 
     const client = new pg.Client(url);
     await client.connect();
@@ -497,9 +487,6 @@ describe('PGliteServer', () => {
     // the _write callback with an error → Node emits 'error' on the duplex →
     // server's handler destroys the socket.
     const pglite = createMockPGlite({
-      ready: true,
-      closed: false,
-      dataDir: undefined,
       execProtocolRawStream: vi.fn().mockImplementation(() => {
         throw new Error('boom');
       }),
