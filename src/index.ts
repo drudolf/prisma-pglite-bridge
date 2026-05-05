@@ -18,10 +18,10 @@
  */
 
 export { PGliteDuplex, type PGliteDuplexOptions } from './duplex';
-export { PGliteBridge, type PGliteBridgeConfig } from './pglite-bridge';
+export { PGliteBridge, type PGliteBridgeOptions } from './pglite-bridge';
 export type { PGliteServerOptions } from './pglite-server';
 export { PGliteServer } from './pglite-server';
-export { PgBridgePool, type PgBridgePoolConfig } from './pool';
+export { PgBridgePool, type PgBridgePoolOptions } from './pool';
 export type { PushSchemaOptions, PushSchemaResult } from './schema';
 export { pushSchema, resetSchema } from './schema';
 export type { PushMigrationsOptions, PushMigrationsResult } from './schema/migrations.ts';

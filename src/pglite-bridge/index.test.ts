@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
 import { createMockPGlite } from '../__tests__/mocks.ts';
 import { pushMigrations } from '../schema/migrations.ts';
-import type { PGliteBridgeConfig } from './index.ts';
+import type { PGliteBridgeOptions } from './index.ts';
 import { emitBridgeLeakWarning, PGliteBridge } from './index.ts';
 
 const MIGRATION_SQL = readFileSync(
@@ -22,7 +22,7 @@ const createReadyPGlite = async (dataDir?: string): Promise<PGlite> => {
 };
 
 const setupSuite = async (
-  options: Partial<PGliteBridgeConfig> = {},
+  options: Partial<PGliteBridgeOptions> = {},
 ): Promise<{ pglite: PGlite; bridge: PGliteBridge; prisma: PrismaClient }> => {
   const pglite = options.pglite ?? (await createReadyPGlite());
   const bridge = new PGliteBridge({ ...options, pglite });
