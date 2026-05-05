@@ -1,4 +1,4 @@
-import type { PGlite } from '@electric-sql/pglite';
+import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 
 const SNAPSHOT_SCHEMA = '_pglite_snapshot';
 
@@ -23,10 +23,10 @@ const SNAPSHOT_SCHEMA_LITERAL = escapeLiteral(SNAPSHOT_SCHEMA);
  * @internal
  */
 export class SnapshotManager {
-  readonly #pglite: PGlite;
+  readonly #pglite: PGlite | PGliteInterface;
   #hasSnapshot = false;
 
-  constructor(pglite: PGlite) {
+  constructor(pglite: PGlite | PGliteInterface) {
     this.#pglite = pglite;
   }
 

@@ -41,7 +41,7 @@
  * Public methods are arrow-function class fields so destructuring stays safe:
  * `const { resetDb } = bridge; await resetDb();` works as expected.
  */
-import { PGlite } from '@electric-sql/pglite';
+import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 import { PgBridgePool } from '../pool';
@@ -73,7 +73,7 @@ export interface PGliteBridgeOptions {
    * in-memory `PGlite` and owns its lifecycle — `close()` shuts it down.
    * When provided the caller owns the lifecycle — `close()` leaves it open.
    */
-  pglite?: PGlite;
+  pglite?: PGlite | PGliteInterface;
 
   /**
    * Maximum pool connections (default: 1). Compatibility knob, not a
@@ -129,7 +129,7 @@ export class PGliteBridge {
    * Exposed so helpers like {@link pushMigrations} can run SQL directly
    * through `pglite.exec(...)` without going through the bridge pool.
    */
-  readonly pglite: PGlite;
+  readonly pglite: PGlite | PGliteInterface;
 
   /**
    * Identity tag published on every `QUERY_CHANNEL` / `LOCK_WAIT_CHANNEL`

@@ -1,4 +1,4 @@
-import type { PGlite } from '@electric-sql/pglite';
+import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 import pg from 'pg';
 import { PGliteDuplex } from '../duplex';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
@@ -6,7 +6,7 @@ import type { SessionLock } from '../utils/session-lock.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 
 export interface PgBridgeClientOptions {
-  pglite: PGlite;
+  pglite: PGlite | PGliteInterface;
   bridgeId: symbol;
   sessionLock?: SessionLock;
   telemetry?: TelemetrySink;

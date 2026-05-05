@@ -16,7 +16,7 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { PGlite } from '@electric-sql/pglite';
+import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 
 export interface PushMigrationsOptions {
   /** Pre-generated SQL to apply directly. */
@@ -136,7 +136,7 @@ export const getMigrationSQL = async (options: PushMigrationsOptions): Promise<s
  * (i.e. `bridge.pglite`) — or any standalone `PGlite` you own.
  */
 export const pushMigrations = async (
-  pglite: PGlite,
+  pglite: PGlite | PGliteInterface,
   options: PushMigrationsOptions = {},
 ): Promise<PushMigrationsResult> => {
   const sql = await getMigrationSQL(options);
@@ -168,7 +168,7 @@ export const pushMigrations = async (
  * Prisma-managed migrations — `pushSchema` (WASM diff) does not populate
  * `_prisma_migrations`, so this returns `false` for adapter-applied schemas.
  */
-export const hasMigrations = async (pglite: PGlite): Promise<boolean> => {
+export const hasMigrations = async (pglite: PGlite | PGliteInterface): Promise<boolean> => {
   const { rows } = await pglite.query<{ exists: boolean }>(
     `SELECT to_regclass('public._prisma_migrations') IS NOT NULL AS exists`,
   );
@@ -197,7 +197,7 @@ export const hasMigrations = async (pglite: PGlite): Promise<boolean> => {
  * `_pglite_snapshot` schema used by `bridge.snapshotDb()` is excluded — only
  * the `public` schema is inspected.
  */
-export const hasSchema = async (pglite: PGlite): Promise<boolean> => {
+export const hasSchema = async (pglite: PGlite | PGliteInterface): Promise<boolean> => {
   const { rows } = await pglite.query<{ exists: boolean }>(
     `SELECT EXISTS (
        SELECT 1 FROM information_schema.tables
