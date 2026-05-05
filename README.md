@@ -24,6 +24,8 @@ import { PrismaClient } from '@prisma/client';
 import seed from './seed.ts'; // user-provided: (prisma: PrismaClient) => Promise<void>
 
 const pglite = new PGlite();
+// Have prisma/migrations/? Use pushMigrations (shown).
+// Only schema.prisma? Use pushSchema instead — see docs/api.md.
 await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
 
 const bridge = new PGliteBridge({ pglite });
