@@ -19,8 +19,8 @@
 
 export { PGliteDuplex } from './duplex';
 export { PGliteBridge, type PGliteBridgeConfig } from './pglite-bridge/index.ts';
-export type { PGliteServerOptions } from './pglite-server.ts';
-export { PGliteServer } from './pglite-server.ts';
+export type { PGliteServerOptions } from './pglite-server/index.ts';
+export { PGliteServer } from './pglite-server/index.ts';
 export { PgBridgePool, type PgBridgePoolConfig } from './pool/index.ts';
 export type { PushSchemaOptions, PushSchemaResult } from './schema/index.ts';
 export { pushSchema, resetSchema } from './schema/index.ts';

@@ -24,9 +24,9 @@ import net from 'node:net';
 import nodePath from 'node:path';
 import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 
-import { PGliteDuplex } from './duplex/index.ts';
-import { resolveSyncToFs, type SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
-import { SessionLock } from './utils/session-lock.ts';
+import { PGliteDuplex } from '../duplex/index.ts';
+import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
+import { SessionLock } from '../utils/session-lock.ts';
 
 const SSL_REQUEST_CODE = 80877103;
 const GSSENC_REQUEST_CODE = 80877104;
