@@ -15,7 +15,7 @@
  * passes to {@link freeze}.
  */
 import type { PGlite } from '@electric-sql/pglite';
-import { nsToMs } from './time.ts';
+import { nsToMs } from '../utils/time.ts';
 
 type DbSizeQueryable = Pick<PGlite, 'query'>;
 

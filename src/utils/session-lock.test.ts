@@ -2,7 +2,7 @@ import type pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import setupPGlite from '../__tests__/pglite.ts';
-import PgBridgePool from '../pool.ts';
+import PgBridgePool from '../pool/index.ts';
 import { SessionLock } from './session-lock.ts';
 
 const drainMicrotasks = async () => {

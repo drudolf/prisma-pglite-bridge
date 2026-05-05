@@ -9,10 +9,10 @@
  * through PGlite's runExclusive mutex.
  */
 import pg from 'pg';
-import type { TelemetrySink } from './utils/bridge-stats.ts';
-import { PgBridgeClient, type PgBridgeClientOptions } from './utils/pg-bridge-client.ts';
-import { resolveSyncToFs, type SyncToFsMode } from './utils/resolve-sync-to-fs.ts';
-import { SessionLock } from './utils/session-lock.ts';
+import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
+import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
+import { SessionLock } from '../utils/session-lock.ts';
+import { PgBridgeClient, type PgBridgeClientOptions } from './pg-bridge-client.ts';
 
 export interface PgBridgePoolConfig
   extends Omit<PgBridgeClientOptions, 'bridgeId' | 'syncToFs' | 'telemetry'> {

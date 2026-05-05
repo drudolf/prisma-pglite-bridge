@@ -2,7 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { afterEach, describe, expect, it } from 'vitest';
 import PGliteBridge from './pglite-bridge.ts';
-import PgBridgePool from './pool.ts';
+import PgBridgePool from './pool/index.ts';
 import { pushSchema, resetSchema } from './schema.ts';
 
 const SCHEMA_BASE = `
