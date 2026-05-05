@@ -228,7 +228,7 @@ export class PGliteDuplex extends Duplex {
       });
   }
 
-  // ── Message processing ──
+  // ── Drain loop ──
 
   /**
    * Enqueue a write callback and start draining if not already running.
@@ -289,6 +289,8 @@ export class PGliteDuplex extends Duplex {
       }
     }
   }
+
+  // ── Message framing ──
 
   /**
    * Frames and processes the startup message.
@@ -419,6 +421,8 @@ export class PGliteDuplex extends Duplex {
     );
   }
 
+  // ── PGlite execution ──
+
   /**
    * Acquires the session, runs the op under `pglite.runExclusive`, and
    * updates internal stats and/or publishes diagnostics events when enabled.
@@ -545,7 +549,7 @@ export class PGliteDuplex extends Duplex {
     return !errSeen;
   }
 
-  // ── Session lock helpers ──
+  // ── Session lock & rollback ──
 
   private acquireSession(): Promise<void> | undefined {
     return this.sessionLock?.acquire(this.duplexId);
