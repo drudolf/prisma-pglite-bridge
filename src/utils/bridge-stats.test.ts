@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockPGlite } from '../__tests__/mocks.ts';
 import { BridgeStats, QUERY_DURATION_WINDOW_SIZE } from './bridge-stats.ts';
 
@@ -11,10 +11,6 @@ const withStats = async (level: 'basic' | 'full', fn: (c: BridgeStats) => Promis
 
 beforeEach(() => {
   pglite = createMockPGlite({ query: vi.fn().mockResolvedValue({ rows: [{ size: 12345n }] }) });
-});
-
-afterEach(() => {
-  vi.restoreAllMocks();
 });
 
 describe('BridgeStats — percentile math', () => {
@@ -265,7 +261,7 @@ describe('BridgeStats — freeze()', () => {
 
 describe(`BridgeStats — 'full' processRssPeakBytes`, () => {
   it('reads process.resourceUsage().maxRSS and converts kilobytes to bytes', async () => {
-    const resourceSpy = vi.spyOn(process, 'resourceUsage').mockReturnValue({
+    vi.spyOn(process, 'resourceUsage').mockReturnValue({
       userCPUTime: 0,
       systemCPUTime: 0,
       maxRSS: 12_345,
@@ -283,30 +279,22 @@ describe(`BridgeStats — 'full' processRssPeakBytes`, () => {
       voluntaryContextSwitches: 0,
       involuntaryContextSwitches: 0,
     });
-    try {
-      await withStats('full', async (c) => {
-        const s = await c.snapshot(pglite);
-        if (s.statsLevel !== 'full') throw new Error("expected level 'full'");
-        expect(s.processRssPeakBytes).toBe(12_345 * 1024);
-      });
-    } finally {
-      resourceSpy.mockRestore();
-    }
+    await withStats('full', async (c) => {
+      const s = await c.snapshot(pglite);
+      if (s.statsLevel !== 'full') throw new Error("expected level 'full'");
+      expect(s.processRssPeakBytes).toBe(12_345 * 1024);
+    });
   });
 
   it('returns undefined processRssPeakBytes when process.resourceUsage throws', async () => {
-    const resourceSpy = vi.spyOn(process, 'resourceUsage').mockImplementation(() => {
+    vi.spyOn(process, 'resourceUsage').mockImplementation(() => {
       throw new TypeError('process.resourceUsage is not a function');
     });
-    try {
-      await withStats('full', async (c) => {
-        const s = await c.snapshot(pglite);
-        if (s.statsLevel !== 'full') throw new Error("expected level 'full'");
-        expect(s.processRssPeakBytes).toBeUndefined();
-      });
-    } finally {
-      resourceSpy.mockRestore();
-    }
+    await withStats('full', async (c) => {
+      const s = await c.snapshot(pglite);
+      if (s.statsLevel !== 'full') throw new Error("expected level 'full'");
+      expect(s.processRssPeakBytes).toBeUndefined();
+    });
   });
 });
 
