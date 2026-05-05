@@ -33,9 +33,10 @@ supply a `pglite`, the class treats it as caller-owned and `close()`
 leaves it open. The `{ closePglite: false }` escape hatch on `close()`
 is removed; the decision is made once, at construction.
 
-`pool.end()` is unchanged — `pg.Pool`'s inherited signature doesn't
-accept options, so `PgBridgePool` users continue to call
-`await pool.end(); await pglite.close()` explicitly.
+`PgBridgePool` follows the same ownership rule: `pglite` is now
+optional and `end()` is overridden to close the instance when the
+pool created it. When you supply a `pglite`, `end()` leaves it open
+and you are responsible for closing it.
 
 **Migration:**
 
@@ -47,8 +48,8 @@ const { pool, close } = await createPool({ pglite });
 
 // after — no pglite needed for the common in-memory case:
 import { PGliteBridge, PgBridgePool } from 'prisma-pglite-bridge';
-const bridge = new PGliteBridge();            // owns its own PGlite
-const pool = new PgBridgePool({ pglite });    // PgBridgePool still requires pglite
+const bridge = new PGliteBridge();  // owns its own PGlite
+const pool = new PgBridgePool();    // owns its own PGlite
 // later: await pool.end();
 
 // after — caller-supplied PGlite (e.g. custom dataDir or extensions):

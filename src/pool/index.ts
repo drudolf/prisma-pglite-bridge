@@ -1,5 +1,5 @@
 /**
- * `PgBridgePool` — a `pg.Pool` subclass backed by a caller-supplied PGlite instance.
+ * `PgBridgePool` — a `pg.Pool` subclass backed by a PGlite instance.
  *
  * Each pool connection gets its own PGliteDuplex stream, all sharing the
  * same PGlite WASM instance. Pools with multiple connections also share a
@@ -8,6 +8,7 @@
  * COMMIT/ROLLBACK. Non-transactional operations from any bridge serialize
  * through PGlite's runExclusive mutex.
  */
+import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import pg from 'pg';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
@@ -15,7 +16,14 @@ import { SessionLock } from '../utils/session-lock.ts';
 import { PgBridgeClient, type PgBridgeClientOptions } from './pg-bridge-client.ts';
 
 export interface PgBridgePoolOptions
-  extends Omit<PgBridgeClientOptions, 'bridgeId' | 'syncToFs' | 'telemetry'> {
+  extends Omit<PgBridgeClientOptions, 'pglite' | 'bridgeId' | 'syncToFs' | 'telemetry'> {
+  /**
+   * PGlite instance to back the pool. When omitted the pool creates its own
+   * in-memory `PGlite` and owns its lifecycle — `end()` shuts it down. When
+   * provided the caller owns the lifecycle — `end()` leaves it open.
+   */
+  pglite?: PGlite | PGliteInterface;
+
   /**
    * Identity tag published with every diagnostics-channel event. Subscribers
    * filter on this to distinguish events from different bridges in the
@@ -62,30 +70,35 @@ export interface PgBridgePoolOptions
 /**
  * A pg.Pool where every connection is an in-process PGlite bridge.
  *
+ * **Ownership:** when no `pglite` is supplied the pool creates its own
+ * in-memory `PGlite` and owns it — `end()` shuts it down. When you supply
+ * a `pglite`, the pool treats it as caller-owned and `end()` leaves it open.
+ *
  * Most users should prefer {@link PGliteBridge}, which wraps this class and
  * also handles schema application and reset/snapshot lifecycle.
  *
  * ```typescript
- * import { PGlite } from '@electric-sql/pglite';
  * import { PgBridgePool } from 'prisma-pglite-bridge';
  * import { PrismaPg } from '@prisma/adapter-pg';
  * import { PrismaClient } from '@prisma/client';
  *
- * const pglite = new PGlite();
- * const pool = new PgBridgePool({ pglite });
+ * // Pool creates and owns its own in-memory PGlite:
+ * const pool = new PgBridgePool();
  * const adapter = new PrismaPg(pool);
  * const prisma = new PrismaClient({ adapter });
- *
- * // teardown — pool.end() inherits pg.Pool's fixed signature and does
- * // not close pglite. Use PGliteBridge if you want close() to handle
- * // both, or close pglite explicitly here.
  * await prisma.$disconnect();
- * await pool.end();
- * await pglite.close();
+ * await pool.end(); // closes pool + pglite (pool owns it)
+ *
+ * // Caller-supplied PGlite — caller owns the lifecycle:
+ * import { PGlite } from '@electric-sql/pglite';
+ * const pglite = new PGlite();
+ * const pool = new PgBridgePool({ pglite });
+ * await pool.end(); // closes pool only; pglite stays open
+ * await pglite.close(); // caller is responsible
  * ```
  *
  * @see {@link PGliteBridge} for the higher-level API with schema management
- *   and a single `close()` that also closes the underlying pglite.
+ *   and reset/snapshot lifecycle.
  */
 export class PgBridgePool extends pg.Pool {
   /**
@@ -95,6 +108,14 @@ export class PgBridgePool extends pg.Pool {
    */
   readonly bridgeId: symbol;
 
+  /**
+   * The PGlite instance this pool wraps. Created internally when no `pglite`
+   * option was supplied; otherwise the caller-supplied instance.
+   */
+  readonly pglite: PGlite | PGliteInterface;
+
+  readonly #ownsPglite: boolean;
+
   constructor({
     bridgeId = Symbol('bridge'),
     max = 1,
@@ -102,7 +123,9 @@ export class PgBridgePool extends pg.Pool {
     telemetry,
     timeout,
     syncToFs,
-  }: PgBridgePoolOptions & { telemetry?: TelemetrySink }) {
+  }: PgBridgePoolOptions & { telemetry?: TelemetrySink } = {}) {
+    const resolvedPglite = pglite ?? new PGlite();
+
     // Load-bearing: pg.Pool forwards this config object verbatim to
     // `new Client(config)`, including the symbol-keyed property below.
     // PgBridgeClient reads its bridge options from the same symbol.
@@ -110,11 +133,11 @@ export class PgBridgePool extends pg.Pool {
       Client: PgBridgeClient,
       max,
       [PgBridgeClient.OptionsKey]: {
-        pglite,
+        pglite: resolvedPglite,
         sessionLock: max > 1 ? new SessionLock() : undefined,
         bridgeId,
         telemetry,
-        syncToFs: resolveSyncToFs(pglite, syncToFs),
+        syncToFs: resolveSyncToFs(resolvedPglite, syncToFs),
         timeout,
       },
     };
@@ -122,5 +145,29 @@ export class PgBridgePool extends pg.Pool {
     super(poolConfig);
 
     this.bridgeId = bridgeId;
+    this.pglite = resolvedPglite;
+    this.#ownsPglite = !pglite;
+  }
+
+  /**
+   * Drain the pool and close all connections. When the pool created its own
+   * PGlite (no `pglite` option at construction), also closes that instance.
+   * When the caller supplied a `pglite`, it is left open.
+   */
+  override end(): Promise<void>;
+  override end(callback: () => void): void;
+  override end(callback?: () => void): Promise<void> | void {
+    const cleanup = async (): Promise<void> => {
+      if (this.#ownsPglite && !this.pglite.closed) {
+        await this.pglite.close();
+      }
+    };
+    if (callback) {
+      super.end(() => {
+        cleanup().then(callback, callback);
+      });
+      return;
+    }
+    return super.end().then(cleanup);
   }
 }

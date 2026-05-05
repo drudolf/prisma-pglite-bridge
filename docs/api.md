@@ -281,22 +281,29 @@ setups, other ORMs, or raw SQL — no schema management, no
 `resetDb`/`snapshotDb` lifecycle.
 
 ```typescript
-import { PGlite } from '@electric-sql/pglite';
 import { PgBridgePool } from 'prisma-pglite-bridge';
 import { PrismaPg } from '@prisma/adapter-pg';
 
-const pglite = new PGlite();
-const pool = new PgBridgePool({ pglite });
+// Pool creates and owns its own in-memory PGlite:
+const pool = new PgBridgePool();
 const adapter = new PrismaPg(pool);
-// later: await pool.end();
+// later: await pool.end(); // closes pool + pglite (pool owns it)
+
+// Caller-supplied PGlite — caller owns the lifecycle:
+import { PGlite } from '@electric-sql/pglite';
+const pglite = new PGlite();
+const pool2 = new PgBridgePool({ pglite });
+// later: await pool2.end(); await pglite.close();
 ```
 
 The constructor takes a `PgBridgePoolOptions` (also exported)
-accepting `pglite` (required), `max`, `bridgeId`, `syncToFs`, and
-`timeout`. Use `pool.end()` to shut the pool down — the
-caller-supplied PGlite instance is not closed. The instance also
-exposes a `bridgeId` field (a unique `symbol`) for filtering
-events from the [diagnostics channels](./stats.md#diagnostics-channels).
+accepting `pglite` (optional), `max`, `bridgeId`, `syncToFs`, and
+`timeout`. Use `pool.end()` to shut the pool down. Ownership
+follows the same rule as `PGliteBridge` and `PGliteServer`: when
+the pool created its own PGlite, `end()` closes it; when you
+supplied one, it is left open. The instance also exposes `pglite`
+and a `bridgeId` field (a unique `symbol`) for filtering events
+from the [diagnostics channels](./stats.md#diagnostics-channels).
 
 Most users should prefer [`PGliteBridge`](#pglitebridge), which
 wraps this class and adds schema/reset/snapshot lifecycle.
