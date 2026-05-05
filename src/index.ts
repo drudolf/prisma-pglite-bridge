@@ -3,14 +3,12 @@
  *
  * @example
  * ```typescript
- * import { PGlite } from '@electric-sql/pglite';
  * import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
  * import { PrismaClient } from '@prisma/client';
  *
- * const pglite = new PGlite();
- * await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+ * const bridge = new PGliteBridge();
+ * await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
  *
- * const bridge = new PGliteBridge({ pglite });
  * const prisma = new PrismaClient({ adapter: bridge.adapter });
  * ```
  *

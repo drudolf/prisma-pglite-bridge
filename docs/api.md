@@ -70,21 +70,29 @@ directory writable only by trusted processes.
 ## `PGliteBridge`
 
 A class bundling a Prisma driver adapter, the underlying PGlite
-instance, and lifecycle helpers — backed by a caller-supplied
-PGlite instance. Construct synchronously; the bridge awaits
-`pglite.waitReady` internally on the first operation.
+instance, and lifecycle helpers. Construct synchronously; the
+bridge awaits `pglite.waitReady` internally on the first operation.
+
+**Ownership:** when no `pglite` is passed the bridge creates its own
+in-memory PGlite and owns it — `close()` shuts it down. When you
+supply a `pglite`, the bridge treats it as caller-owned and `close()`
+leaves it open.
 
 ```typescript
 import { PGliteBridge } from 'prisma-pglite-bridge';
 
-const pglite = new PGlite(/* dataDir, extensions, ... */);
-
+// Bridge creates and owns its own in-memory PGlite:
 const bridge = new PGliteBridge({
-  pglite,                     // required — caller owns lifecycle
   max: 1,                     // pool connections (default: 1)
   statsLevel: 'off',          // 'off' | 'basic' | 'full' (default: 'off')
   syncToFs: 'auto',           // 'auto' | true | false (default: 'auto')
 });
+
+// Caller-supplied PGlite (custom dataDir, extensions, …) — caller owns lifecycle:
+import { PGlite } from '@electric-sql/pglite';
+const pglite = new PGlite(/* dataDir, extensions, ... */);
+const bridge = new PGliteBridge({ pglite });
+// bridge.close() closes the pool only; call pglite.close() yourself when done
 ```
 
 The constructor takes a `PGliteBridgeOptions` (also exported). To
@@ -98,8 +106,9 @@ Instance members:
 - `adapter` — `PrismaPg` adapter; pass to
   `new PrismaClient({ adapter })`, or to `pushSchema` /
   `resetSchema`.
-- `pglite` — the caller-supplied PGlite instance, re-exposed for
-  passing to `pushMigrations`.
+- `pglite` — the PGlite instance this bridge wraps (created
+  internally or caller-supplied). Pass it to `pushMigrations`,
+  `hasMigrations`, `hasSchema`, etc.
 - `bridgeId` — a unique `symbol` identifying this bridge. Use it
   to filter events from the public
   [diagnostics channels](./stats.md#diagnostics-channels) when multiple
@@ -117,10 +126,11 @@ Instance members:
   `resetDb()` calls truncate back to empty again.
 - `stats()` — returns telemetry when `statsLevel` is `'basic'` or
   `'full'`, else `undefined`. See [stats collection](./stats.md#stats-collection).
-- `close()` — shuts down the pool. The caller-supplied PGlite
-  instance is not closed — you own its lifecycle. Recommended in
-  explicit test teardown, long-running scripts, and dev servers so
-  the pool is released promptly and leak warnings do not fire.
+- `close()` — shuts down the pool. When the bridge created its own
+  PGlite, also closes it. When you supplied a `pglite`, it is left
+  open — you own its lifecycle. Recommended in explicit test
+  teardown, long-running scripts, and dev servers so the pool is
+  released promptly and leak warnings do not fire.
 
 Methods are arrow-function class fields, so destructuring stays
 safe: `const { resetDb } = bridge; await resetDb();` works as
@@ -179,11 +189,9 @@ adapter wired to the target database works.
 
 ```typescript
 import { readFile } from 'node:fs/promises';
-import { PGlite } from '@electric-sql/pglite';
 import { PGliteBridge, pushSchema } from 'prisma-pglite-bridge';
 
-const pglite = new PGlite();
-const bridge = new PGliteBridge({ pglite });
+const bridge = new PGliteBridge();
 
 await pushSchema(bridge.adapter, {
   schema: await readFile('prisma/schema.prisma', 'utf8'),
@@ -254,7 +262,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { PGliteBridge, hasSchema, pushSchema } from 'prisma-pglite-bridge';
 
 const pglite = new PGlite('./data/pglite');
-const bridge = new PGliteBridge({ pglite });
+const bridge = new PGliteBridge({ pglite }); // caller owns pglite — bridge.close() leaves it open
 
 if (!(await hasSchema(pglite))) {
   await pushSchema(bridge.adapter, { schema });
@@ -302,7 +310,7 @@ shadow database, `psql`, and SQL GUIs.
 ```typescript
 import { PGliteServer } from 'prisma-pglite-bridge';
 
-const server = new PGliteServer({ pglite });
+const server = new PGliteServer();
 const url = await server.listen();
 // url → 'postgres://postgres@127.0.0.1:54321/postgres'
 ```

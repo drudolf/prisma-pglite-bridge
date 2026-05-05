@@ -24,40 +24,43 @@ or running tools that hard-require a wire-protocol endpoint.
 ## Quickstart
 
 ```typescript
-import { PGlite } from '@electric-sql/pglite';
 import { PGliteServer } from 'prisma-pglite-bridge';
 
-const server = new PGliteServer({ pglite: new PGlite() });
+const server = new PGliteServer();
 const url = await server.listen();
 
 console.log(url);
 // → postgres://postgres@127.0.0.1:54321/postgres
 
 // later
-await server.close(); // also closes pglite by default
+await server.close(); // closes listener + internally-created PGlite
 ```
 
 The constructor is synchronous. The network bind happens in the
 explicit `listen()` step (mirroring `net.Server`'s API), which
 awaits `pglite.waitReady` internally and resolves to a connection
-URL ready to pass to any `pg.Client` / `pg.Pool`. The caller-supplied
-PGlite is re-exposed as `server.pglite` so scripts can pass it to
-helpers like [`pushMigrations`](./api.md#pushmigrationspglite-options)
-or [`hasMigrations`](./api.md#hasmigrationspglite) without threading
-a separate variable.
+URL ready to pass to any `pg.Client` / `pg.Pool`. The PGlite
+instance is always accessible as `server.pglite` so scripts can
+pass it to helpers like
+[`pushMigrations`](./api.md#pushmigrationspglite-options) or
+[`hasMigrations`](./api.md#hasmigrationspglite) without threading a
+separate variable.
 
 By default the server binds to `127.0.0.1` on an ephemeral port
 (`port: 0`). The actual bound port is reflected in the URL.
 
+**Ownership:** when no `pglite` option is supplied the server creates
+its own in-memory PGlite and `close()` shuts it down. When you supply
+a `pglite`, `close()` leaves it open — you own its lifecycle.
+
 `server.close()` stops accepting connections, force-closes active
-sockets, and awaits per-connection cleanup. **It does not close the
-PGlite instance** — you own its lifecycle.
+sockets, and awaits per-connection cleanup.
 
 ## Options
 
 ```typescript
 new PGliteServer({
-  pglite,                 // required — must not be closed; `listen()` awaits `waitReady`
+  pglite,                 // optional — if omitted, an in-memory PGlite is created and owned
   host: '127.0.0.1',      // default '127.0.0.1' (loopback)
   port: 0,                // default 0 (ephemeral) in TCP mode;
                           // 5432 in Unix-socket mode (suffix of the socket file)
@@ -95,8 +98,8 @@ diff schemas. Spin up a second `PGliteServer` instance and point
 Prisma at it — no Docker, no second `pg_ctl` process:
 
 ```typescript
-const main = new PGliteServer({ pglite: new PGlite() });
-const shadow = new PGliteServer({ pglite: new PGlite() });
+const main = new PGliteServer();
+const shadow = new PGliteServer();
 
 const [mainUrl, shadowUrl] = await Promise.all([main.listen(), shadow.listen()]);
 
@@ -140,7 +143,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const dataDir = mkdtempSync(`${tmpdir()}/pgl-`);
-const server = new PGliteServer({ pglite, dataDir });
+const server = new PGliteServer({ dataDir });
 const url = await server.listen();
 
 // psql -h /var/folders/…/pgl-XXXXXX

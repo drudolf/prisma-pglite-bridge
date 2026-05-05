@@ -18,17 +18,15 @@ TypeScript users also need `@types/pg`.
 ## Quickstart
 
 ```typescript
-import { PGlite } from '@electric-sql/pglite';
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import seed from './seed.ts'; // user-provided: (prisma: PrismaClient) => Promise<void>
 
-const pglite = new PGlite();
+const bridge = new PGliteBridge();
 // Have prisma/migrations/? Use pushMigrations (shown).
 // Only schema.prisma? Use pushSchema instead — see docs/api.md.
-await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
 
-const bridge = new PGliteBridge({ pglite });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 await seed(prisma);
 await bridge.snapshotDb();

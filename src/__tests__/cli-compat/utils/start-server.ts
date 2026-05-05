@@ -1,21 +1,19 @@
-import { PGlite } from '@electric-sql/pglite';
+import type { PGliteInterface } from '@electric-sql/pglite';
 
 import { PGliteServer } from '../../../pglite-server';
 
 export interface StartedServer {
-  pglite: PGlite;
+  pglite: PGliteInterface;
   server: PGliteServer;
   close: () => Promise<void>;
 }
 
 export const startServer = async (): Promise<StartedServer> => {
-  const pglite = new PGlite();
-  await pglite.waitReady;
-
-  const server = new PGliteServer({ pglite });
+  const server = new PGliteServer();
+  await server.pglite.waitReady;
 
   return {
-    pglite,
+    pglite: server.pglite,
     server,
     close: async () => {
       await server.close();
