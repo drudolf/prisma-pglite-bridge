@@ -9,24 +9,33 @@
  * fall back to plaintext; there is no authentication. Bind to loopback only
  * — this is a development tool, not a hardened endpoint.
  *
+ * **Ownership:** When no `pglite` option is supplied the server creates its
+ * own in-memory `PGlite` instance and owns it — `close()` shuts down the
+ * listener _and_ the PGlite instance. When you supply a `pglite` the server
+ * treats it as caller-owned and `close()` leaves it open.
+ *
  * The constructor is synchronous; the network bind is exposed as an
  * explicit async `listen()` (mirroring `net.Server`'s API) which awaits
  * `pglite.waitReady` internally and resolves to the connection URL.
- * The caller-supplied PGlite must not be closed.
  *
  * ```typescript
- * const pglite = new PGlite();
- * const server = new PGliteServer({ pglite });
+ * // Server creates and owns its own in-memory PGlite:
+ * const server = new PGliteServer();
  * const url = await server.listen();
  * console.log(url); // → postgres://postgres@127.0.0.1:54321/postgres
+ * await server.close(); // closes listener + pglite (server owns it)
  *
- * // teardown
- * await server.close(); // also closes pglite by default
+ * // Caller-supplied PGlite — caller owns the lifecycle:
+ * import { PGlite } from '@electric-sql/pglite';
+ * const pglite = new PGlite();
+ * const server = new PGliteServer({ pglite });
+ * await server.close(); // closes listener only; pglite stays open
+ * await pglite.close(); // caller is responsible
  * ```
  */
 import net from 'node:net';
 import nodePath from 'node:path';
-import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
+import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 
 import { PGliteDuplex } from '../duplex';
 import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
@@ -42,12 +51,14 @@ type RequiredBy<T, K extends keyof T> = Omit<T, K> & Required<Pick<T, K>>;
 
 export interface PGliteServerOptions {
   /**
-   * PGlite instance to expose. Must not be closed; `listen()` awaits
-   * `pglite.waitReady` internally, so it does not have to be ready at
-   * construction time. The caller owns its lifecycle — `close()` shuts
-   * the listener and tears down per-connection bridges only.
+   * PGlite instance to expose. When omitted the server creates its own
+   * in-memory `PGlite` and owns its lifecycle — `close()` shuts it down.
+   * When provided the caller owns the lifecycle — `close()` leaves it open.
+   *
+   * `listen()` awaits `pglite.waitReady` internally, so the instance does
+   * not have to be ready at construction time.
    */
-  pglite: PGlite | PGliteInterface;
+  pglite?: PGlite | PGliteInterface;
   /** Bind host. Default `'127.0.0.1'` (loopback only). Ignored when `dataDir` is set. */
   host?: string;
   /**
@@ -88,9 +99,10 @@ type BridgedSocket = net.Socket & { duplex?: PGliteDuplex };
 
 export class PGliteServer {
   /**
-   * The caller-supplied PGlite instance this server fronts. Exposed so
-   * scripts can reach `pglite.dataDir`, `pglite.waitReady`, and pass
-   * the same handle to helpers like {@link pushMigrations} without
+   * The PGlite instance this server fronts. Created internally when no
+   * `pglite` option was supplied; otherwise the caller-supplied instance.
+   * Exposed so scripts can reach `pglite.dataDir`, `pglite.waitReady`, and
+   * pass the same handle to helpers like {@link pushMigrations} without
    * threading a separate variable.
    */
   readonly pglite: PGlite | PGliteInterface;
@@ -99,13 +111,15 @@ export class PGliteServer {
   readonly #server: net.Server;
   readonly #sessionLock = new SessionLock();
   readonly #sockets = new Set<BridgedSocket>();
+  readonly #ownsPglite: boolean;
 
   #connectionString: string | undefined;
 
-  constructor(options: PGliteServerOptions) {
+  constructor(options: PGliteServerOptions = {}) {
     const { pglite, ...rest } = options;
 
-    this.pglite = pglite;
+    this.#ownsPglite = !pglite;
+    this.pglite = pglite ?? new PGlite();
     this.#options = {
       ...rest,
       host: rest.host || '127.0.0.1',
@@ -157,21 +171,19 @@ export class PGliteServer {
   };
 
   /**
-   * Shut down the listener and close the PGlite instance.
-   *
-   * Pass `closePglite: false` if the PGlite instance is shared with code
-   * outside this server (e.g., a `PGliteBridge` reading from the same
-   * pglite). Default is `true` since the dominant case is "this server
-   * owns the pglite for its lifetime."
+   * Shut down the listener. When the server created its own PGlite (no
+   * `pglite` option at construction), also closes that instance. When the
+   * caller supplied a `pglite`, it is left open — the caller is responsible
+   * for closing it.
    */
-  close = async ({ closePglite = true }: { closePglite?: boolean } = {}): Promise<void> => {
+  close = async (): Promise<void> => {
     const sockets = [...this.#sockets];
     for (const socket of sockets) socket.destroy();
     await new Promise<void>((resolve, reject) => {
       this.#server.close((err) => (err ? reject(err) : resolve()));
     });
     await Promise.all(sockets.map(({ duplex }) => duplex?.onClose));
-    if (closePglite && !this.pglite.closed) {
+    if (this.#ownsPglite && !this.pglite.closed) {
       await this.pglite.close();
     }
   };

@@ -15,24 +15,16 @@ const MIGRATION_SQL = readFileSync(
   'utf8',
 );
 
-const createReadyPGlite = async (dataDir?: string): Promise<PGlite> => {
-  const pglite = dataDir === undefined ? new PGlite() : new PGlite(dataDir);
-  await pglite.waitReady;
-  return pglite;
-};
-
 const setupSuite = async (
-  options: Partial<PGliteBridgeOptions> = {},
-): Promise<{ pglite: PGlite; bridge: PGliteBridge; prisma: PrismaClient }> => {
-  const pglite = options.pglite ?? (await createReadyPGlite());
-  const bridge = new PGliteBridge({ ...options, pglite });
-  await pushMigrations(pglite, { sql: MIGRATION_SQL });
+  options: PGliteBridgeOptions = {},
+): Promise<{ bridge: PGliteBridge; prisma: PrismaClient }> => {
+  const bridge = new PGliteBridge(options);
+  await pushMigrations(bridge.pglite, { sql: MIGRATION_SQL });
   const prisma = new PrismaClient({ adapter: bridge.adapter });
-
-  return { pglite, bridge, prisma };
+  return { bridge, prisma };
 };
 
-const { pglite, prisma, bridge } = await setupSuite({ statsLevel: 'basic' });
+const { prisma, bridge } = await setupSuite({ statsLevel: 'basic' });
 
 describe('PGliteBridge', () => {
   beforeEach(async () => {
@@ -47,7 +39,6 @@ describe('PGliteBridge', () => {
     expect(
       () =>
         new PGliteBridge({
-          pglite,
           statsLevel: 'invalid' as 'basic',
         }),
     ).toThrow(`statsLevel must be 'off', 'basic', or 'full'; got invalid`);
@@ -63,8 +54,7 @@ describe('PGliteBridge', () => {
   });
 
   it(`returns undefined stats when statsLevel is 'off'`, async () => {
-    const local = await createReadyPGlite();
-    const localBridge = new PGliteBridge({ pglite: local });
+    const localBridge = new PGliteBridge();
     try {
       await expect(localBridge.stats()).resolves.toBeUndefined();
     } finally {
@@ -73,7 +63,7 @@ describe('PGliteBridge', () => {
   });
 
   it('exposes the underlying pglite instance', () => {
-    expect(bridge.pglite).toBe(pglite);
+    expect(bridge.pglite).toBeInstanceOf(PGlite);
   });
 
   it('resetDb clears user data', async () => {
@@ -89,7 +79,8 @@ describe('PGliteBridge', () => {
   it('reuses an initialized persistent dataDir without re-applying migrations', async () => {
     const { parent, path: dataDir } = createTempDir('bridge-class-data');
 
-    const firstPGlite = await createReadyPGlite(dataDir);
+    const firstPGlite = new PGlite(dataDir);
+    await firstPGlite.waitReady;
     const first = new PGliteBridge({ pglite: firstPGlite, statsLevel: 'basic' });
     await pushMigrations(firstPGlite, {
       sql: 'CREATE TABLE IF NOT EXISTS "Tenant" ("id" TEXT PRIMARY KEY, "name" TEXT NOT NULL, "slug" TEXT NOT NULL)',
@@ -102,8 +93,10 @@ describe('PGliteBridge', () => {
 
     await firstPrisma.$disconnect();
     await first.close();
+    await firstPGlite.close();
 
-    const secondPGlite = await createReadyPGlite(dataDir);
+    const secondPGlite = new PGlite(dataDir);
+    await secondPGlite.waitReady;
     const second = new PGliteBridge({ pglite: secondPGlite, statsLevel: 'basic' });
     const secondPrisma = new PrismaClient({ adapter: second.adapter });
 
@@ -115,6 +108,7 @@ describe('PGliteBridge', () => {
     } finally {
       await secondPrisma.$disconnect();
       await second.close();
+      await secondPGlite.close();
     }
 
     removeTempDir(parent);
@@ -155,21 +149,21 @@ describe('PGliteBridge', () => {
     await expect(prisma.tenant.count()).resolves.toBe(0);
   });
 
-  it('close() closes the underlying PGlite by default', async () => {
-    const local = await createReadyPGlite();
-    const localBridge = new PGliteBridge({ pglite: local });
+  it('close() closes the internally-created PGlite (bridge owns it)', async () => {
+    const localBridge = new PGliteBridge();
     await localBridge.close();
-    expect(local.closed).toBe(true);
+    expect(localBridge.pglite.closed).toBe(true);
   });
 
-  it('close({ closePglite: false }) keeps the PGlite open', async () => {
-    const local = await createReadyPGlite();
-    const localBridge = new PGliteBridge({ pglite: local });
+  it('close() leaves a caller-supplied PGlite open (caller owns it)', async () => {
+    const pglite = new PGlite();
+    await pglite.waitReady;
+    const localBridge = new PGliteBridge({ pglite });
     try {
-      await localBridge.close({ closePglite: false });
-      expect(local.closed).toBe(false);
+      await localBridge.close();
+      expect(pglite.closed).toBe(false);
     } finally {
-      await local.close();
+      await pglite.close();
     }
   });
 
@@ -220,8 +214,7 @@ describe('PGliteBridge', () => {
     const registerSpy = vi.spyOn(FinalizationRegistry.prototype, 'register');
     const unregisterSpy = vi.spyOn(FinalizationRegistry.prototype, 'unregister');
 
-    const local = await createReadyPGlite();
-    const created = new PGliteBridge({ pglite: local });
+    const created = new PGliteBridge();
 
     expect(registerSpy).toHaveBeenCalled();
     const registeredToken = registerSpy.mock.calls.at(-1)?.[2];

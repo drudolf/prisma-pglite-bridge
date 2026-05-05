@@ -1,36 +1,47 @@
 /**
  * `PGliteBridge` bundles a Prisma driver adapter, the underlying PGlite
- * instance, and lifecycle helpers — all backed by a caller-supplied PGlite
- * instance. No TCP, no Docker, no worker threads — everything runs in the
- * same process. Suitable for testing, development, seeding, and scripts.
+ * instance, and lifecycle helpers. No TCP, no Docker, no worker threads —
+ * everything runs in the same process. Suitable for testing, development,
+ * seeding, and scripts.
+ *
+ * **Ownership:** When no `pglite` option is supplied the bridge creates its
+ * own in-memory `PGlite` instance and owns it — `close()` shuts down the
+ * pool _and_ the PGlite instance. When you supply a `pglite` the bridge
+ * treats it as caller-owned and `close()` leaves it open.
  *
  * Schema application is a separate concern: call {@link pushMigrations}
- * (raw SQL / migrations directory) or {@link pushSchema} (WASM-engine
- * diff) before issuing Prisma traffic. When reopening a persistent
- * `dataDir`, the PGlite instance is assumed to already hold the schema
- * and no migration step is required.
+ * (raw SQL / migrations directory) or {@link pushSchema} (WASM-engine diff)
+ * before issuing Prisma traffic. When reopening a persistent `dataDir`, the
+ * PGlite instance is assumed to already hold the schema.
  *
  * ```typescript
- * import { PGlite } from '@electric-sql/pglite';
  * import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
  * import { PrismaClient } from '@prisma/client';
  *
- * const pglite = new PGlite();
- * await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
- *
- * const bridge = new PGliteBridge({ pglite });
+ * // Bridge creates and owns its own in-memory PGlite:
+ * const bridge = new PGliteBridge();
+ * await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
  * const prisma = new PrismaClient({ adapter: bridge.adapter });
  * beforeEach(() => bridge.resetDb());
  * afterAll(async () => {
  *   await prisma.$disconnect();
- *   await bridge.close(); // also closes pglite by default
+ *   await bridge.close(); // closes pool + pglite (bridge owns it)
+ * });
+ *
+ * // Caller-supplied PGlite — caller owns the lifecycle:
+ * import { PGlite } from '@electric-sql/pglite';
+ * const pglite = new PGlite();
+ * const bridge = new PGliteBridge({ pglite });
+ * afterAll(async () => {
+ *   await bridge.close(); // closes pool only; pglite stays open
+ *   await pglite.close(); // caller is responsible
  * });
  * ```
  *
  * Public methods are arrow-function class fields so destructuring stays safe:
  * `const { resetDb } = bridge; await resetDb();` works as expected.
  */
-import type { PGlite } from '@electric-sql/pglite';
+import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 import { PgBridgePool } from '../pool';
@@ -58,10 +69,11 @@ export interface PGliteBridgeOptions {
   bridgeId?: symbol;
 
   /**
-   * PGlite instance to bridge to. The caller owns its lifecycle — `close()`
-   * shuts down the pool only, not the PGlite instance.
+   * PGlite instance to bridge to. When omitted the bridge creates its own
+   * in-memory `PGlite` and owns its lifecycle — `close()` shuts it down.
+   * When provided the caller owns the lifecycle — `close()` leaves it open.
    */
-  pglite: PGlite;
+  pglite?: PGlite;
 
   /**
    * Maximum pool connections (default: 1). Compatibility knob, not a
@@ -112,9 +124,10 @@ export class PGliteBridge {
   readonly adapter: PrismaPg;
 
   /**
-   * The caller-supplied PGlite instance this bridge wraps. Exposed so
-   * helpers like {@link pushMigrations} can run SQL directly through
-   * `pglite.exec(...)` without going through the bridge pool.
+   * The PGlite instance this bridge wraps. Created internally when no
+   * `pglite` option was supplied; otherwise the caller-supplied instance.
+   * Exposed so helpers like {@link pushMigrations} can run SQL directly
+   * through `pglite.exec(...)` without going through the bridge pool.
    */
   readonly pglite: PGlite;
 
@@ -131,20 +144,23 @@ export class PGliteBridge {
   readonly #stats: BridgeStats | undefined;
   readonly #snapshot: SnapshotManager;
   readonly #leakToken: object = {};
+  readonly #ownsPglite: boolean;
   #closing: Promise<void> | undefined;
 
-  constructor(options: PGliteBridgeOptions) {
+  constructor(options: PGliteBridgeOptions = {}) {
     const statsLevel = options.statsLevel ?? 'off';
     if (statsLevel !== 'off' && statsLevel !== 'basic' && statsLevel !== 'full') {
       throw new Error(`statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`);
     }
 
-    this.pglite = options.pglite;
+    this.#ownsPglite = !options.pglite;
+    this.pglite = options.pglite ?? new PGlite();
     this.bridgeId = options.bridgeId ?? Symbol('bridge');
 
     this.#stats = statsLevel === 'off' ? undefined : new BridgeStats(statsLevel);
     this.#pool = new PgBridgePool({
       ...options,
+      pglite: this.pglite,
       bridgeId: this.bridgeId,
       telemetry: this.#stats,
     });
@@ -208,20 +224,17 @@ export class PGliteBridge {
   }
 
   /**
-   * Shut down the pool and close the PGlite instance.
-   *
-   * Pass `closePglite: false` if the PGlite instance is shared with code
-   * outside this bridge (e.g., a second `PGliteBridge` or direct
-   * `pglite.exec(...)` calls that should keep working). Default is `true`
-   * since the dominant case is "this bridge owns the pglite for the
-   * duration of a test or script."
+   * Shut down the pool. When the bridge created its own PGlite (no `pglite`
+   * option at construction), also closes that instance. When the caller
+   * supplied a `pglite`, it is left open — the caller is responsible for
+   * closing it.
    *
    * When `statsLevel` is not `'off'`, call {@link stats} *after* `close()`
    * to collect the frozen snapshot — `durationMs` and `dbSizeBytes` are
    * cached at the moment `close()` is invoked, and subsequent `stats()`
    * calls are safe.
    */
-  close = async ({ closePglite = true }: { closePglite?: boolean } = {}): Promise<void> => {
+  close = async (): Promise<void> => {
     if (!this.#closing) {
       this.#closing = (async () => {
         const closeEntry = this.#stats ? process.hrtime.bigint() : undefined;
@@ -230,7 +243,7 @@ export class PGliteBridge {
           await this.#stats?.freeze(this.pglite, closeEntry);
         }
         leakRegistry.unregister(this.#leakToken);
-        if (closePglite && !this.pglite.closed) {
+        if (this.#ownsPglite && !this.pglite.closed) {
           await this.pglite.close();
         }
       })();

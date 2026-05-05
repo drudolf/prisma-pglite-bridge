@@ -65,6 +65,7 @@ describe('PGliteServer', () => {
     const connectionString = await server.listen();
     cleanups.push(async () => {
       await server.close();
+      if (!options.pglite) await pglite.close();
     });
     return { pglite, server, connectionString };
   };
@@ -512,22 +513,20 @@ describe('PGliteServer', () => {
     });
   });
 
-  it('close() closes the underlying PGlite by default', async () => {
-    const pglite = new PGlite();
-    await pglite.waitReady;
-    const server = new PGliteServer({ pglite });
+  it('close() closes the internally-created PGlite (server owns it)', async () => {
+    const server = new PGliteServer();
     await server.listen();
     await server.close();
-    expect(pglite.closed).toBe(true);
+    expect(server.pglite.closed).toBe(true);
   });
 
-  it('close({ closePglite: false }) keeps the PGlite open', async () => {
+  it('close() leaves a caller-supplied PGlite open (caller owns it)', async () => {
     const pglite = new PGlite();
     await pglite.waitReady;
     const server = new PGliteServer({ pglite });
     await server.listen();
     try {
-      await server.close({ closePglite: false });
+      await server.close();
       expect(pglite.closed).toBe(false);
     } finally {
       await pglite.close();
@@ -535,9 +534,7 @@ describe('PGliteServer', () => {
   });
 
   it('close() rejects when the server has already been closed', async () => {
-    const pglite = new PGlite();
-    await pglite.waitReady;
-    const server = new PGliteServer({ pglite });
+    const server = new PGliteServer();
     await server.listen();
 
     await server.close();
@@ -545,9 +542,7 @@ describe('PGliteServer', () => {
   });
 
   it('close() resolves promptly while a client is still connected', async () => {
-    const pglite = new PGlite();
-    await pglite.waitReady;
-    const server = new PGliteServer({ pglite });
+    const server = new PGliteServer();
     const url = await server.listen();
     const client = new pg.Client(url);
     await client.connect();
@@ -560,6 +555,6 @@ describe('PGliteServer', () => {
       ),
     ]);
     await client.end().catch(() => {});
-    expect(pglite.closed).toBe(true);
+    expect(server.pglite.closed).toBe(true);
   });
 });

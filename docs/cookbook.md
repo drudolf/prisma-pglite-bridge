@@ -44,14 +44,12 @@ the in-memory PGlite version:
 
 ```typescript
 // vitest.setup.ts
-import { PGlite } from '@electric-sql/pglite';
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { beforeEach, vi } from 'vitest';
 
-const pglite = new PGlite();
-const bridge = new PGliteBridge({ pglite });
-await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+const bridge = new PGliteBridge();
+await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
 export const testPrisma = new PrismaClient({ adapter: bridge.adapter });
 
 vi.mock('./lib/prisma', () => ({ prisma: testPrisma }));
@@ -78,7 +76,6 @@ the top level, not inside `beforeAll`:
 
 ```typescript
 // jest.setup.ts
-const { PGlite } = require('@electric-sql/pglite');
 const { PGliteBridge, pushMigrations } = require('prisma-pglite-bridge');
 const { PrismaClient } = require('@prisma/client');
 
@@ -90,9 +87,8 @@ jest.mock('./lib/prisma', () => ({
 }));
 
 beforeAll(async () => {
-  const pglite = new PGlite();
-  const bridge = new PGliteBridge({ pglite });
-  await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+  const bridge = new PGliteBridge();
+  await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
   testPrisma = new PrismaClient({ adapter: bridge.adapter });
   resetDb = bridge.resetDb;
 });
@@ -112,7 +108,6 @@ once that cost matters.
 If your code accepts `PrismaClient` as a parameter:
 
 ```typescript
-import { PGlite } from '@electric-sql/pglite';
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, beforeEach, it, expect } from 'vitest';
@@ -121,9 +116,8 @@ let prisma: PrismaClient;
 let resetDb: PGliteBridge['resetDb'];
 
 beforeAll(async () => {
-  const pglite = new PGlite();
-  const bridge = new PGliteBridge({ pglite });
-  await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+  const bridge = new PGliteBridge();
+  await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
   prisma = new PrismaClient({ adapter: bridge.adapter });
   resetDb = bridge.resetDb;
 });
@@ -162,7 +156,6 @@ if (import.meta.url === new URL(process.argv[1]!, 'file:').href) {
 Then reuse it in tests:
 
 ```typescript
-import { PGlite } from '@electric-sql/pglite';
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
 import { seed } from '../prisma/seed';
@@ -171,9 +164,8 @@ let prisma: PrismaClient;
 let resetDb: PGliteBridge['resetDb'];
 
 beforeAll(async () => {
-  const pglite = new PGlite();
-  const bridge = new PGliteBridge({ pglite });
-  await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+  const bridge = new PGliteBridge();
+  await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
   prisma = new PrismaClient({ adapter: bridge.adapter });
   await seed(prisma);
   await bridge.snapshotDb();
@@ -195,11 +187,9 @@ For test fixtures or prototypes without `prisma/migrations`, swap
 
 ```typescript
 import { readFile } from 'node:fs/promises';
-import { PGlite } from '@electric-sql/pglite';
 import { PGliteBridge, pushSchema } from 'prisma-pglite-bridge';
 
-const pglite = new PGlite();
-const bridge = new PGliteBridge({ pglite });
+const bridge = new PGliteBridge();
 await pushSchema(bridge.adapter, {
   schema: await readFile('prisma/schema.prisma', 'utf8'),
 });
@@ -208,7 +198,8 @@ await pushSchema(bridge.adapter, {
 ## Using PostgreSQL extensions
 
 If your schema uses `uuid-ossp`, `pgcrypto`, or other extensions,
-pass them via the `extensions` option:
+construct PGlite with the `extensions` option and pass it to the
+bridge — the bridge treats it as caller-owned:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
@@ -217,8 +208,9 @@ import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
 import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
 
 const pglite = new PGlite({ extensions: { uuid_ossp, pgcrypto } });
-const bridge = new PGliteBridge({ pglite });
-await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+const bridge = new PGliteBridge({ pglite }); // caller owns pglite
+await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
+// remember to call pglite.close() alongside bridge.close() in teardown
 ```
 
 Extensions are included in the `@electric-sql/pglite` package —
@@ -233,12 +225,10 @@ only — never from environment variables, network input, or values
 that cross a trust boundary.
 
 ```typescript
-import { PGlite } from '@electric-sql/pglite';
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
-const pglite = new PGlite();
-const bridge = new PGliteBridge({ pglite });
-await pushMigrations(pglite, {
+const bridge = new PGliteBridge();
+await pushMigrations(bridge.pglite, {
   sql: `
     CREATE TABLE "User" (id text PRIMARY KEY, name text NOT NULL);
     CREATE TABLE "Post" (
@@ -255,20 +245,22 @@ await pushMigrations(pglite, {
 By default, PGlite runs entirely in memory — the database
 disappears when the process exits. This is ideal for tests. If you
 want data to survive restarts (local development, prototyping),
-pass a `dataDir` when constructing PGlite, and only apply
-migrations on first run:
+pass a `dataDir` when constructing PGlite and supply it to the
+bridge — the bridge treats a caller-supplied PGlite as caller-owned,
+so you control when it closes:
 
 ```typescript
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
 const dataDir = './data/pglite';
 const firstRun = !existsSync(join(dataDir, 'PG_VERSION'));
 
 const pglite = new PGlite(dataDir);
-const bridge = new PGliteBridge({ pglite });
-if (firstRun) await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+const bridge = new PGliteBridge({ pglite }); // caller owns pglite
+if (firstRun) await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 ```
 
@@ -290,15 +282,12 @@ long-running local Postgres without Docker:
 import { PGlite } from '@electric-sql/pglite';
 import { PGliteServer, hasMigrations, pushMigrations } from 'prisma-pglite-bridge';
 
-const server = new PGliteServer({
-  pglite: new PGlite('./data/pglite'),
-  port: 54321,
-});
+// Caller-supplied PGlite because we need a persistent dataDir:
+const mainPglite = new PGlite('./data/pglite');
+const shadowPglite = new PGlite('./data/shadow');
 
-const shadow = new PGliteServer({
-  pglite: new PGlite('./data/shadow'),
-  port: 54322,
-});
+const server = new PGliteServer({ pglite: mainPglite, port: 54321 });
+const shadow = new PGliteServer({ pglite: shadowPglite, port: 54322 });
 
 if (!(await hasMigrations(server.pglite))) {
   await pushMigrations(server.pglite, { migrationsPath: './prisma/migrations' });
@@ -310,8 +299,11 @@ console.log(`DATABASE_URL=${DATABASE_URL}`);
 console.log(`SHADOW_DATABASE_URL=${SHADOW_DATABASE_URL}`);
 
 const shutdown = async () => {
-  await server.close(); // also closes pglite by default
+  await server.close();
   await shadow.close();
+  // pglite instances are caller-owned — close them too
+  await mainPglite.close();
+  await shadowPglite.close();
   process.exit(0);
 };
 process.on('SIGINT', shutdown);
@@ -363,18 +355,16 @@ any migration has been applied, so subsequent runs skip
 ## Long-running script with clean shutdown
 
 ```typescript
-import { PGlite } from '@electric-sql/pglite';
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
-const pglite = new PGlite();
-const bridge = new PGliteBridge({ pglite });
-await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+const bridge = new PGliteBridge();
+await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 
 try {
   await seedDatabase(prisma);
 } finally {
   await prisma.$disconnect();
-  await bridge.close(); // also closes pglite by default
+  await bridge.close(); // closes pool + internally-created PGlite
 }
 ```

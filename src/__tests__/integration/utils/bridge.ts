@@ -1,4 +1,3 @@
-import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
 
 import { PGliteBridge, pushMigrations } from '../../../index.ts';
@@ -14,10 +13,9 @@ interface Bridge {
 let instance: Promise<Bridge> | undefined;
 
 const createInstance = async (): Promise<Bridge> => {
-  const pglite = new PGlite();
-  const bridge = new PGliteBridge({ pglite });
+  const bridge = new PGliteBridge();
 
-  await pushMigrations(pglite, { configRoot: process.cwd() });
+  await pushMigrations(bridge.pglite, { configRoot: process.cwd() });
 
   const prisma = new PrismaClient({ adapter: bridge.adapter });
   await seed(prisma);
