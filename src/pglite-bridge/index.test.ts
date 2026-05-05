@@ -159,6 +159,39 @@ describe('PGliteBridge', () => {
     await expect(prisma.tenant.count()).resolves.toBe(0);
   });
 
+  it('snapshotDb / resetDb / resetSnapshot reject when pool clients are in flight', async () => {
+    let resolveStarted!: () => void;
+    let resolveGate!: () => void;
+    const started = new Promise<void>((r) => {
+      resolveStarted = r;
+    });
+    const gate = new Promise<void>((r) => {
+      resolveGate = r;
+    });
+
+    // Hold a pool client via an interactive transaction.
+    const txP = prisma
+      .$transaction(
+        async () => {
+          resolveStarted();
+          await gate;
+        },
+        { timeout: 30_000 },
+      )
+      .catch(() => undefined);
+
+    await started;
+
+    await expect(bridge.snapshotDb()).rejects.toThrow(/in-flight pool queries/);
+    await expect(bridge.resetSnapshot()).rejects.toThrow(/in-flight pool queries/);
+    await expect(bridge.resetDb()).rejects.toThrow(/in-flight pool queries/);
+
+    resolveGate();
+    await txP;
+
+    await expect(bridge.snapshotDb()).resolves.toBeUndefined();
+  });
+
   it('emitBridgeLeakWarning emits a typed process warning', () => {
     const spy = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
     emitBridgeLeakWarning();
