@@ -1,6 +1,6 @@
 import { beforeEach, vi } from 'vitest';
 
-import getInstance from './bridge.ts';
+import { getInstance } from './bridge.ts';
 
 // Integration tests import `prisma` from './prisma.ts' as if it were a
 // regular PrismaClient. This swap rewires that import at test load time
@@ -8,7 +8,7 @@ import getInstance from './bridge.ts';
 // shares one client wired through PGliteBridge. Without it, each file
 // would instantiate its own bypass-the-bridge client.
 vi.mock('./prisma.ts', async () => {
-  const { default: getInstance } = await import('./bridge.ts');
+  const { getInstance } = await import('./bridge.ts');
   const { prisma } = await getInstance();
   return { prisma };
 });

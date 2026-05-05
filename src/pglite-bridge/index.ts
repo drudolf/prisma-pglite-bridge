@@ -29,7 +29,7 @@
 import type { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 
-import PgBridgePool from '../pool/index.ts';
+import { PgBridgePool } from '../pool/index.ts';
 import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
 import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SnapshotManager } from './snapshot-manager.ts';
@@ -103,7 +103,7 @@ export interface PGliteBridgeConfig {
   timeout?: number;
 }
 
-class PGliteBridge {
+export class PGliteBridge {
   /** Prisma adapter — pass directly to `new PrismaClient({ adapter })`. */
   readonly adapter: PrismaPg;
 
@@ -215,5 +215,3 @@ class PGliteBridge {
     return this.#stats ? this.#stats.snapshot(this.pglite) : undefined;
   };
 }
-
-export default PGliteBridge;

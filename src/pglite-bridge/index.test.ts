@@ -8,7 +8,7 @@ import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
 import { createMockPGlite } from '../__tests__/mocks.ts';
 import { pushMigrations } from '../migrations.ts';
 import type { PGliteBridgeConfig } from './index.ts';
-import PGliteBridge, { emitBridgeLeakWarning } from './index.ts';
+import { emitBridgeLeakWarning, PGliteBridge } from './index.ts';
 
 const MIGRATION_SQL = readFileSync(
   join(process.cwd(), 'prisma/migrations/0001_init/migration.sql'),
@@ -239,7 +239,7 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     );
     const mockPglite = createMockPGlite();
     const { module } = await loadClassWithMocks({ poolEnd });
-    const created = new module.default({ pglite: mockPglite });
+    const created = new module.PGliteBridge({ pglite: mockPglite });
 
     const closingA = created.close();
     const closingB = created.close();
@@ -254,7 +254,7 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     const mockPglite = createMockPGlite();
     const { PoolCtor, module } = await loadClassWithMocks();
 
-    const created = new module.default({ pglite: mockPglite, max: 2 });
+    const created = new module.PGliteBridge({ pglite: mockPglite, max: 2 });
 
     const poolConfig = PoolCtor.mock.calls[0]?.[0] as Record<symbol, { sessionLock: unknown }>;
     const optionsKey = Object.getOwnPropertySymbols(poolConfig).find(
@@ -269,7 +269,7 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     const mockPglite = createMockPGlite();
     const { PoolCtor, module, prismaPg } = await loadClassWithMocks();
 
-    const created = new module.default({ pglite: mockPglite, syncToFs: false });
+    const created = new module.PGliteBridge({ pglite: mockPglite, syncToFs: false });
 
     expect(PoolCtor).toHaveBeenCalledTimes(1);
     const poolConfig = PoolCtor.mock.calls[0]?.[0] as Record<symbol, { syncToFs: boolean }>;

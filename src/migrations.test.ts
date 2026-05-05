@@ -9,7 +9,7 @@ import {
   pushMigrations,
   readMigrationFiles,
 } from './migrations.ts';
-import PGliteBridge from './pglite-bridge/index.ts';
+import { PGliteBridge } from './pglite-bridge/index.ts';
 
 type MigrationsModule = typeof import('./migrations.ts');
 

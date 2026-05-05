@@ -26,7 +26,7 @@ const resetDb = async (db: PGlite) => {
   await db.exec('DISCARD ALL');
 };
 
-const setupPGlite = async ({ reset = true }: { reset?: boolean } = {}): Promise<PGlite> => {
+export const setupPGlite = async ({ reset = true }: { reset?: boolean } = {}): Promise<PGlite> => {
   const pglite = new PGlite();
   await pglite.waitReady;
 
@@ -42,5 +42,3 @@ const setupPGlite = async ({ reset = true }: { reset?: boolean } = {}): Promise<
 
   return pglite;
 };
-
-export default setupPGlite;
