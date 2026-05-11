@@ -1,5 +1,89 @@
 # prisma-pglite-bridge
 
+## 1.0.0
+
+### Major Changes
+
+- [`381654a`](https://github.com/drudolf/prisma-pglite-bridge/commit/381654aae595885e1e2b11e3863227ec33286f2b) Thanks [@drudolf](https://github.com/drudolf)! - **Breaking:** Drop the `createPGliteBridge()` and `createPool()`
+  factory functions. The bridge and pool are now class exports
+  constructed directly:
+
+  - `createPGliteBridge(options)` → `new PGliteBridge(options)`
+  - `createPool(options)` → `new PgBridgePool(options)`
+
+  The class constructors are synchronous; PGlite readiness is awaited
+  internally on the first operation. `PgBridgePool` extends `pg.Pool`
+  directly, so its return is the pool itself — not a `{ pool, close,
+bridgeId }` wrapper. Use `pool.end()` to shut it down and read
+  `pool.bridgeId` for diagnostics filtering.
+
+  The accompanying option/return-type names also collapse:
+
+  - `CreatePGliteBridge` (factory return type) → `PGliteBridge` (the class itself)
+  - `CreatePoolOptions` / `PoolOptions` → `PgBridgePoolOptions`
+
+  Also exposes `PGliteDuplexOptions` from the package barrel so all
+  public input bags (`PGliteBridgeOptions`, `PgBridgePoolOptions`,
+  `PGliteServerOptions`, `PGliteDuplexOptions`, `PushSchemaOptions`,
+  `PushMigrationsOptions`) follow the same `*Options` convention.
+
+  **Breaking — `pglite` is now optional and ownership is determined at
+  construction:** `PGliteBridge` and `PGliteServer` no longer require a
+  `pglite` argument. When omitted, each class creates its own in-memory
+  `PGlite` and owns its lifecycle — `close()` shuts it down. When you
+  supply a `pglite`, the class treats it as caller-owned and `close()`
+  leaves it open. The `{ closePglite: false }` escape hatch on `close()`
+  is removed; the decision is made once, at construction.
+
+  `PgBridgePool` follows the same ownership rule: `pglite` is now
+  optional and `end()` is overridden to close the instance when the
+  pool created it. When you supply a `pglite`, `end()` leaves it open
+  and you are responsible for closing it.
+
+  **Migration:**
+
+  ```ts
+  // before
+  import { createPGliteBridge, createPool } from "prisma-pglite-bridge";
+  const bridge = await createPGliteBridge({ pglite });
+  const { pool, close } = await createPool({ pglite });
+
+  // after — no pglite needed for the common in-memory case:
+  import { PGliteBridge, PgBridgePool } from "prisma-pglite-bridge";
+  const bridge = new PGliteBridge(); // owns its own PGlite
+  const pool = new PgBridgePool(); // owns its own PGlite
+  // later: await pool.end();
+
+  // after — caller-supplied PGlite (e.g. custom dataDir or extensions):
+  const pglite = new PGlite({ extensions: { uuid_ossp } });
+  const bridge = new PGliteBridge({ pglite }); // caller owns; bridge.close() leaves it open
+  // later: await bridge.close(); await pglite.close();
+  ```
+
+### Patch Changes
+
+- [`71f0a11`](https://github.com/drudolf/prisma-pglite-bridge/commit/71f0a117a1e7b9499c14c5e8f7f8149c21925a89) Thanks [@drudolf](https://github.com/drudolf)! - Internal refactor: regroup `src/` into a folder-per-class layout.
+  Top-level `src/` now holds only the public barrel (`index.ts`)
+  plus seven cohesive folders:
+
+  - `duplex/`, `pglite-bridge/`, `pglite-server/`, `pool/`,
+    `schema/`, `telemetry/`
+  - `utils/` slimmed to true cross-cutting helpers
+    (`session-lock`, `time`, `resolve-sync-to-fs`,
+    `wait-pglite-ready`)
+
+  Also rewrites `SnapshotManager` from a closure-based factory
+  into a class, matching the rest of the codebase. Public API is
+  unchanged.
+
+- [`d4eed26`](https://github.com/drudolf/prisma-pglite-bridge/commit/d4eed267b259cb7b4dc1f90eeec58e1b39a21177) Thanks [@drudolf](https://github.com/drudolf)! - Throw with an actionable message when `bridge.snapshotDb()`,
+  `bridge.resetDb()`, or `bridge.resetSnapshot()` is called while pool
+  clients are still checked out. These operations run raw SQL on the
+  PGlite instance bypassing the pool, so concurrent pool traffic could
+  silently corrupt state or deadlock — the guard surfaces the misuse
+  loudly. Working code that calls them outside Prisma traffic
+  (`beforeAll`, between tests, before `$disconnect`) is unaffected.
+
 ## 0.7.0
 
 ### Minor Changes
