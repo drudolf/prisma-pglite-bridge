@@ -83,10 +83,14 @@ export class PgBridgeClient extends pg.Client {
 
     const prior = this.querySubmissionChain;
     let p: Promise<unknown>;
-    try {
-      p = prior === undefined ? submit() : prior.then(submit);
-    } catch (err) {
-      return Promise.reject(err);
+    if (prior === undefined) {
+      try {
+        p = submit();
+      } catch (err) {
+        return Promise.reject(err);
+      }
+    } else {
+      p = prior.then(submit);
     }
     let done: Promise<void>;
     const clearChain = () => {
