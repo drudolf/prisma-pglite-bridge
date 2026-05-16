@@ -406,6 +406,22 @@ describe('BackendMessageFramer', () => {
     expect(outputs[0]?.buffer).toBe(frame.buffer);
   });
 
+  it('coalesces a no-rewrite RowDescription with adjacent pass-through messages', () => {
+    const frame = encodeRowDescription([{ name: 'id', tableOID: 16384, oid: 23, size: 4 }]);
+    const combined = collect([DATA, frame, DATA]);
+    const outputs: Uint8Array[] = [];
+    const framer = new BackendMessageFramer({
+      onChunk: (chunk) => outputs.push(chunk),
+    });
+
+    framer.write(combined);
+    framer.flush();
+
+    expect(collect(outputs)).toEqual(combined);
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]?.buffer).toBe(combined.buffer);
+  });
+
   it('preserves frame length when rewriting (no length header changes)', () => {
     const frame = encodeRowDescription([
       { name: 'a', tableOID: 2606, oid: 18, size: 1 },
