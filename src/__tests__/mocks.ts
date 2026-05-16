@@ -8,6 +8,7 @@ interface MockPGlite {
   dataDir?: string;
   exec: Mock;
   execProtocolRawStream: Mock;
+  execProtocolStream: Mock;
   query: Mock;
   ready: boolean;
   runExclusive: Mock;
@@ -20,6 +21,7 @@ export const createMockPGlite = (overrides: Partial<MockPGlite> = {}): PGlite =>
     closed: false,
     exec: vi.fn().mockResolvedValue(undefined),
     execProtocolRawStream: vi.fn(),
+    execProtocolStream: vi.fn().mockResolvedValue([]),
     query: vi.fn().mockResolvedValue({ fields: [], rows: [] }),
     ready: true,
     runExclusive: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
