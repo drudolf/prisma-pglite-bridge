@@ -13,5 +13,6 @@ future PGlite version no longer supports the verified cleanup behavior.
 Also reduce per-query overhead by avoiding unnecessary pipeline
 concatenation when pg sends contiguous extended-query protocol batches,
 skipping RowDescription copies unless catalog `"char"` fields need
-rewriting, and simplifying `PgBridgeClient` query submission so idle
-clients dispatch immediately with less promise-chain overhead.
+rewriting, coalescing no-rewrite RowDescription frames with adjacent
+backend messages, and simplifying `PgBridgeClient` query submission so
+idle clients dispatch immediately with less promise-chain overhead.

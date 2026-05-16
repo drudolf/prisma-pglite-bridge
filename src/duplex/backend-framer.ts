@@ -106,11 +106,22 @@ export class BackendMessageFramer {
                 this.rfqBytesRead = 0;
               }
             } else if (msgType === ROW_DESCRIPTION) {
-              flushPassthrough(offset);
-              if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
-                this.dropHeldReadyForQuery();
+              if (rowDescriptionNeedsRewrite(chunk, offset, offset + totalLen)) {
+                flushPassthrough(offset);
+                if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
+                  this.dropHeldReadyForQuery();
+                }
+                this.emitRewrittenRowDescription(
+                  Buffer.from(chunk.subarray(offset, offset + totalLen)),
+                );
+              } else {
+                if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
+                  this.dropHeldReadyForQuery();
+                }
+                if (passthroughStart < 0) {
+                  passthroughStart = offset;
+                }
               }
-              this.emitRowDescription(chunk, offset, offset + totalLen);
             } else {
               if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
                 this.dropHeldReadyForQuery();
@@ -284,15 +295,6 @@ export class BackendMessageFramer {
     prefix[0] = this.messageType ?? 0;
     prefix.set(this.headerScratch, 1);
     this.onChunk(prefix);
-  }
-
-  private emitRowDescription(chunk: Uint8Array, start: number, end: number): void {
-    if (!rowDescriptionNeedsRewrite(chunk, start, end)) {
-      this.emitChunkSlice(chunk, start, end);
-      return;
-    }
-
-    this.emitRewrittenRowDescription(Buffer.from(chunk.subarray(start, end)));
   }
 
   private emitRewrittenRowDescription(buf: Buffer): void {
