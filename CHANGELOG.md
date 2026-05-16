@@ -1,5 +1,24 @@
 # prisma-pglite-bridge
 
+## 1.1.0
+
+### Minor Changes
+
+- [`1a123cb`](https://github.com/drudolf/prisma-pglite-bridge/commit/1a123cbe7b68a31f460ca19ad90c55f1c1e08525) Thanks [@drudolf](https://github.com/drudolf)! - Improve bridge performance and memory behavior under Prisma workloads.
+
+  The bridge now periodically clears PGlite's internal parsed protocol
+  message cache after bounded protocol traffic, which prevents retained
+  RSS growth during repeated large reads while preserving the streaming
+  wire-protocol path. The cleanup is best-effort and disables itself if a
+  future PGlite version no longer supports the verified cleanup behavior.
+
+  Also reduce per-query overhead by avoiding unnecessary pipeline
+  concatenation when pg sends contiguous extended-query protocol batches,
+  skipping RowDescription copies unless catalog `"char"` fields need
+  rewriting, coalescing no-rewrite RowDescription frames with adjacent
+  backend messages, and simplifying `PgBridgeClient` query submission so
+  idle clients dispatch immediately with less promise-chain overhead.
+
 ## 1.0.0
 
 ### Major Changes
