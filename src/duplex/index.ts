@@ -37,6 +37,19 @@ import {
 } from './constants.ts';
 import { FrontendMessageBuffer } from './frontend-buffer.ts';
 
+// PGlite 0.4.5's execProtocolRawSync short-circuits X/Terminate before
+// entering the Postgres backend loop, while execProtocolStream still clears
+// its parsed-message array. Re-verify this behavior on PGlite upgrades.
+const TERMINATE_MESSAGE = new Uint8Array([TERMINATE, 0x00, 0x00, 0x00, 0x04]);
+// Keep cleanup infrequent on small queries, but bounded for large read bursts;
+// these thresholds came from the adapter comparison memory profile.
+const PROTOCOL_CLEANUP_RAW_BYTES = 8 * 1024 * 1024;
+const PROTOCOL_CLEANUP_CALLS = 32;
+
+type PGliteProtocolCleanupCapable = PGliteInterface & {
+  execProtocolStream?: PGlite['execProtocolStream'];
+};
+
 export interface PGliteDuplexOptions {
   /**
    * Shared lock that serialises access to the PGlite runtime across
@@ -88,7 +101,7 @@ export interface PGliteDuplexOptions {
  * ```
  */
 export class PGliteDuplex extends Duplex {
-  private readonly pglite: PGlite | PGliteInterface;
+  private readonly pglite: PGliteProtocolCleanupCapable;
   private readonly sessionLock?: SessionLock;
   private readonly bridgeId?: symbol;
   private readonly telemetry?: TelemetrySink;
@@ -117,6 +130,9 @@ export class PGliteDuplex extends Duplex {
   /** Memoized rollback so concurrent teardown paths (e.g., `_final` then
    *  `_destroy`) don't issue duplicate `ROLLBACK` statements. */
   private rollbackPromise?: Promise<void>;
+  private pendingProtocolCleanupBytes = 0;
+  private pendingProtocolCleanupCalls = 0;
+  private protocolCleanupUnsupported = false;
   /** Resolves once the stream has fully torn down (post-`_final` rollback,
    *  post-`_destroy`). Single-shot, mirroring the `'close'` event. */
   readonly onClose: Promise<void>;
@@ -414,17 +430,43 @@ export class PGliteDuplex extends Duplex {
     if (messages.length === 1) {
       batch = messages[0] ?? new Uint8Array(0);
     } else {
-      const total = messages.reduce((sum, p) => sum + p.length, 0);
-      batch = new Uint8Array(total);
-      let offset = 0;
-      for (const part of messages) {
-        batch.set(part, offset);
-        offset += part.length;
-      }
+      batch = this.tryContiguousPipelineBatch(messages) ?? this.concatPipeline(messages);
     }
     await this.runWithTiming((detectErrors) =>
       this.streamProtocol(batch, { detectErrors, suppressIntermediateRfq: true }),
     );
+  }
+
+  private tryContiguousPipelineBatch(messages: Uint8Array[]): Uint8Array | undefined {
+    const first = messages[0];
+    /* c8 ignore next — caller only passes non-empty pipelines */
+    if (first === undefined) return undefined;
+
+    const buffer = first.buffer;
+    const start = first.byteOffset;
+    let end = start + first.byteLength;
+    for (let i = 1; i < messages.length; i++) {
+      const part = messages[i];
+      /* c8 ignore next — pipeline array has no holes */
+      if (part === undefined) return undefined;
+      if (part.buffer !== buffer || part.byteOffset !== end) {
+        return undefined;
+      }
+      end += part.byteLength;
+    }
+
+    return new Uint8Array(buffer, start, end - start);
+  }
+
+  private concatPipeline(messages: Uint8Array[]): Uint8Array {
+    const total = messages.reduce((sum, p) => sum + p.length, 0);
+    const batch = new Uint8Array(total);
+    let offset = 0;
+    for (const part of messages) {
+      batch.set(part, offset);
+      offset += part.length;
+    }
+    return batch;
   }
 
   // ── PGlite execution ──
@@ -496,10 +538,8 @@ export class PGliteDuplex extends Duplex {
   }
 
   /**
-   * Sends a message (or pipelined batch) to PGlite and pushes response
-   * chunks directly to the stream as they arrive. Avoids collecting and
-   * concatenating for large multi-row responses (e.g., findMany 500 rows
-   * = ~503 onRawData chunks).
+   * Sends a message (or pipelined batch) to PGlite and pushes the raw protocol
+   * response to the stream.
    *
    * For pipelined Extended Query batches, pass `suppressIntermediateRfq`
    * so only the final ReadyForQuery reaches the client.
@@ -537,22 +577,63 @@ export class PGliteDuplex extends Duplex {
     // throw a less informative error from inside the WASM runtime.
     await waitPGliteReady(this.pglite, this.timeout);
 
-    // Let framer.write run even during teardown so RFQ tracking stays current.
-    // The onChunk handler above already gates `this.push` on tornDown to avoid
-    // writing to a dead socket — keeping framer state up to date here is what
-    // makes rollback decisions correct after a forced destroy. The in-flight
-    // pglite call is tracked from inside the runExclusive callback in
-    // `runUnderRunExclusive`, so a queued-but-not-yet-started callback never
-    // pins teardown.
-    await this.pglite.execProtocolRawStream(message, {
-      syncToFs: this.syncToFs,
-      onRawData: (chunk: Uint8Array) => {
-        framer.write(chunk);
-      },
-    });
+    // PGlite's raw streaming API still parses backend messages internally, but
+    // does not clear that parsed-message array after returning. Keep the fast
+    // streaming path, then clear PGlite's internal parsed-message state with an
+    // ignored Terminate frame. `throwOnError: false` keeps the cleanup
+    // best-effort if PGlite changes how that frame is handled.
+    let rawBytes = 0;
+    let streamFailed = false;
+    try {
+      await this.pglite.execProtocolRawStream(message, {
+        syncToFs: this.syncToFs,
+        onRawData: (chunk: Uint8Array) => {
+          rawBytes += chunk.byteLength;
+          framer.write(chunk);
+        },
+      });
+    } catch (err) {
+      streamFailed = true;
+      throw err;
+    } finally {
+      this.pendingProtocolCleanupBytes += rawBytes;
+      this.pendingProtocolCleanupCalls++;
+      if (
+        !this.protocolCleanupUnsupported &&
+        (streamFailed ||
+          this.pendingProtocolCleanupBytes >= PROTOCOL_CLEANUP_RAW_BYTES ||
+          this.pendingProtocolCleanupCalls >= PROTOCOL_CLEANUP_CALLS)
+      ) {
+        await this.clearPGliteProtocolMessages();
+        this.pendingProtocolCleanupBytes = 0;
+        this.pendingProtocolCleanupCalls = 0;
+      }
+    }
 
     framer.flush({ dropHeldReadyForQuery: this.tornDown });
     return !errSeen;
+  }
+
+  private async clearPGliteProtocolMessages(): Promise<void> {
+    if (this.protocolCleanupUnsupported) return;
+
+    const { execProtocolStream } = this.pglite;
+    if (typeof execProtocolStream !== 'function') {
+      this.protocolCleanupUnsupported = true;
+      return;
+    }
+
+    try {
+      await execProtocolStream.call(this.pglite, TERMINATE_MESSAGE, {
+        syncToFs: false,
+        throwOnError: false,
+      });
+    } catch {
+      // Best-effort cleanup for PGlite internals; preserve the original query
+      // outcome if the no-op cleanup is unavailable or rejected. Disable
+      // future attempts so a PGlite API change costs only one failed cleanup.
+      this.protocolCleanupUnsupported = true;
+    }
   }
 
   // ── Session lock & rollback ──

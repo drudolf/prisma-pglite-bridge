@@ -10,6 +10,11 @@ import { SessionLock } from '../utils/session-lock.ts';
 import { PGliteDuplex } from './index.ts';
 
 const pglite = await setupPGlite();
+const PROTOCOL_CLEANUP_MESSAGE = Buffer.from([0x58, 0x00, 0x00, 0x00, 0x04]);
+const RFQ_IDLE_MESSAGE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+
+const isProtocolCleanupMessage = (message: unknown): message is Uint8Array =>
+  message instanceof Uint8Array && Buffer.from(message).equals(PROTOCOL_CLEANUP_MESSAGE);
 
 beforeAll(async () => {
   await pglite.exec('CREATE TABLE IF NOT EXISTS conc_test (id serial PRIMARY KEY, val int)');
@@ -40,6 +45,34 @@ describe('PGliteDuplex', () => {
     const { rows } = await client.query('SELECT 1 + 1 AS result');
     expect(rows[0]?.result).toBe(2);
     await client.end();
+  });
+
+  it('keeps real PGlite usable after protocol cleanup clears parsed messages', async () => {
+    const spy = vi.spyOn(pglite, 'execProtocolStream');
+    const client = createClient();
+    let connected = false;
+
+    try {
+      await client.connect();
+      connected = true;
+
+      for (let i = 0; i < 40; i++) {
+        const { rows } = await client.query('SELECT $1::int AS n', [i]);
+        expect(rows[0]?.n).toBe(i);
+      }
+
+      const cleanupCall = spy.mock.calls.find(([message]) => isProtocolCleanupMessage(message));
+      expect(cleanupCall).toBeDefined();
+      expect(cleanupCall?.[1]).toMatchObject({ syncToFs: false, throwOnError: false });
+
+      const { rows } = await client.query('SELECT 42::int AS n');
+      expect(rows[0]?.n).toBe(42);
+    } finally {
+      if (connected) {
+        await client.end();
+      }
+      spy.mockRestore();
+    }
   });
 
   it('executes parameterized queries', async () => {
@@ -165,6 +198,102 @@ describe('PGliteDuplex error paths', () => {
     new Promise((resolve) => {
       duplex.write(chunk, (err) => resolve(err ?? undefined));
     });
+
+  it('cleans protocol messages at the call threshold but not before', async () => {
+    const execProtocolStream = vi.fn().mockResolvedValue([]);
+    const pglite = createMockPGlite({ execProtocolStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    for (let i = 0; i < 30; i++) {
+      await expect(writeAndAwait(duplex, simpleQuery(`SELECT ${i}`))).resolves.toBeUndefined();
+    }
+    expect(execProtocolStream).not.toHaveBeenCalled();
+
+    await expect(writeAndAwait(duplex, simpleQuery('SELECT 31'))).resolves.toBeUndefined();
+
+    const cleanupCall = execProtocolStream.mock.calls.find(([message]) =>
+      isProtocolCleanupMessage(message),
+    );
+    expect(cleanupCall).toBeDefined();
+    expect(cleanupCall?.[1]).toMatchObject({ syncToFs: false, throwOnError: false });
+    expect(
+      (duplex as unknown as { pendingProtocolCleanupCalls: number }).pendingProtocolCleanupCalls,
+    ).toBe(0);
+
+    duplex.destroy();
+  });
+
+  it('cleans protocol messages at the raw-byte threshold', async () => {
+    const execProtocolStream = vi.fn().mockResolvedValue([]);
+    const pglite = createMockPGlite({
+      execProtocolRawStream: vi.fn(async (_message, options) => {
+        options.onRawData(RFQ_IDLE_MESSAGE);
+      }),
+      execProtocolStream,
+    });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    (duplex as unknown as { pendingProtocolCleanupBytes: number }).pendingProtocolCleanupBytes =
+      8 * 1024 * 1024 - RFQ_IDLE_MESSAGE.byteLength;
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+
+    const cleanupCall = execProtocolStream.mock.calls.find(([message]) =>
+      isProtocolCleanupMessage(message),
+    );
+    expect(cleanupCall).toBeDefined();
+
+    duplex.destroy();
+  });
+
+  it('attempts protocol cleanup after a raw stream failure', async () => {
+    const execProtocolStream = vi.fn().mockResolvedValue([]);
+    const streamError = new Error('raw stream failed');
+    const pglite = createMockPGlite({
+      execProtocolRawStream: vi.fn(async () => {
+        throw streamError;
+      }),
+      execProtocolStream,
+    });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBe(streamError);
+
+    const cleanupCall = execProtocolStream.mock.calls.find(([message]) =>
+      isProtocolCleanupMessage(message),
+    );
+    expect(cleanupCall).toBeDefined();
+
+    duplex.destroy();
+  });
+
+  it('disables protocol cleanup after the cleanup frame is rejected', async () => {
+    const execProtocolStream = vi.fn().mockRejectedValue(new Error('unsupported cleanup'));
+    const pglite = createMockPGlite({ execProtocolStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    const internals = duplex as unknown as {
+      pendingProtocolCleanupCalls: number;
+      protocolCleanupUnsupported: boolean;
+    };
+    internals.pendingProtocolCleanupCalls = 31;
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    expect(execProtocolStream).toHaveBeenCalledTimes(1);
+    expect(internals.pendingProtocolCleanupCalls).toBe(0);
+    expect(internals.protocolCleanupUnsupported).toBe(true);
+
+    internals.pendingProtocolCleanupCalls = 31;
+    await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
+    expect(execProtocolStream).toHaveBeenCalledTimes(1);
+
+    duplex.destroy();
+  });
 
   it('fires pending write callbacks with the destroy error when torn down mid-drain', async () => {
     const pglite = createMockPGlite({

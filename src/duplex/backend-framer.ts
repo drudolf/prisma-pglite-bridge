@@ -4,7 +4,7 @@ import {
   READY_FOR_QUERY,
   ROW_DESCRIPTION,
 } from './constants.ts';
-import { rewriteRowDescriptionInPlace } from './row-description.ts';
+import { rewriteRowDescriptionInPlace, rowDescriptionNeedsRewrite } from './row-description.ts';
 
 type BackendMessageFramerOptions = {
   suppressIntermediateReadyForQuery?: boolean;
@@ -110,9 +110,7 @@ export class BackendMessageFramer {
               if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
                 this.dropHeldReadyForQuery();
               }
-              this.emitRewrittenRowDescription(
-                Buffer.from(chunk.subarray(offset, offset + totalLen)),
-              );
+              this.emitRowDescription(chunk, offset, offset + totalLen);
             } else {
               if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
                 this.dropHeldReadyForQuery();
@@ -286,6 +284,15 @@ export class BackendMessageFramer {
     prefix[0] = this.messageType ?? 0;
     prefix.set(this.headerScratch, 1);
     this.onChunk(prefix);
+  }
+
+  private emitRowDescription(chunk: Uint8Array, start: number, end: number): void {
+    if (!rowDescriptionNeedsRewrite(chunk, start, end)) {
+      this.emitChunkSlice(chunk, start, end);
+      return;
+    }
+
+    this.emitRewrittenRowDescription(Buffer.from(chunk.subarray(start, end)));
   }
 
   private emitRewrittenRowDescription(buf: Buffer): void {

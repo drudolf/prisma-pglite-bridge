@@ -388,6 +388,24 @@ describe('BackendMessageFramer', () => {
     expect(collect(outputs)).toEqual(frame);
   });
 
+  it('passes through a RowDescription without catalog char rewrites as a zero-copy slice', () => {
+    const frame = encodeRowDescription([
+      { name: 'id', tableOID: 16384, oid: 23, size: 4 },
+      { name: 'name', tableOID: 16384, oid: 25, size: -1 },
+    ]);
+    const outputs: Uint8Array[] = [];
+    const framer = new BackendMessageFramer({
+      onChunk: (chunk) => outputs.push(chunk),
+    });
+
+    framer.write(frame);
+    framer.flush();
+
+    expect(collect(outputs)).toEqual(frame);
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]?.buffer).toBe(frame.buffer);
+  });
+
   it('preserves frame length when rewriting (no length header changes)', () => {
     const frame = encodeRowDescription([
       { name: 'a', tableOID: 2606, oid: 18, size: 1 },
