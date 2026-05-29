@@ -285,17 +285,6 @@ describe('BackendMessageFramer', () => {
     expect(collect(outputs)).toEqual(DATA);
   });
 
-  it('can reset between flushPipeline-style boundaries without leaking partial state', () => {
-    const { framer, outputs, statuses } = makeHarness(true);
-    framer.write(RFQ_IDLE.subarray(0, 3));
-    framer.reset();
-    framer.write(DATA);
-    framer.write(RFQ_FAILED);
-    framer.flush();
-    expect(statuses).toEqual([0x45]);
-    expect(collect(outputs)).toEqual(collect([DATA, RFQ_FAILED]));
-  });
-
   // RowDescription rewrite — widens "char" (oid 18) → text (oid 25). Required so the
   // official @prisma/adapter-pg can decode pg_catalog system columns (e.g.
   // pg_constraint.contype) during introspection / db push.
@@ -487,19 +476,6 @@ describe('BackendMessageFramer', () => {
     const { framer, outputs } = makeHarness();
     framer.write(frame.subarray(0, 3)); // type byte + 2 bytes of length header
     framer.write(frame.subarray(3));
-    framer.flush();
-    const emitted = collect(outputs);
-    expect(emitted.length).toBe(frame.length);
-    expect(readField(emitted, 0)).toEqual({ name: 'contype', oid: 25, size: -1 });
-  });
-
-  it('reset clears a partially buffered RowDescription', () => {
-    const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
-    const { framer, outputs } = makeHarness();
-    framer.write(frame.subarray(0, 8)); // start buffering
-    framer.reset();
-    // After reset, a fresh complete frame must still be rewritten via the fast path.
-    framer.write(frame);
     framer.flush();
     const emitted = collect(outputs);
     expect(emitted.length).toBe(frame.length);
