@@ -60,7 +60,7 @@
     "changeset": "changeset",
     "bench": "tsx benchmark/run.ts",
     "prepublishOnly": "pnpm test:unit && pnpm test:gc && pnpm build && pnpm check:exports",
-    "prepare": "husky"
+    "prepare": "husky && prisma generate"
   },
   "peerDependencies": {
     "@electric-sql/pglite": "^0.4.0",
