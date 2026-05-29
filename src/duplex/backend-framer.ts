@@ -254,15 +254,6 @@ export class BackendMessageFramer {
     }
   }
 
-  reset(): void {
-    this.messageType = undefined;
-    this.headerBytesRead = 0;
-    this.payloadBytesRemaining = 0;
-    this.rfqBytesRead = 0;
-    this.rowDescBuffer = undefined;
-    this.rowDescOffset = 0;
-  }
-
   private isReadyForQueryFrame(): boolean {
     return this.messageType === READY_FOR_QUERY && this.payloadBytesRemaining === 1;
   }
