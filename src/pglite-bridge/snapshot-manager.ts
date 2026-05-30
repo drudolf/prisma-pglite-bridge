@@ -1,4 +1,5 @@
 import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
+import { quoteIdent } from '../utils/quote-ident.ts';
 
 const SNAPSHOT_SCHEMA = '_pglite_snapshot';
 
@@ -9,9 +10,6 @@ const USER_TABLES_WHERE = `${SYSTEM_SCHEMA_EXCLUSION}
        AND tablename NOT LIKE '_prisma%'`;
 
 const escapeLiteral = (s: string): string => `'${s.replace(/'/g, "''")}'`;
-
-/** JS equivalent of PostgreSQL's `quote_ident()`; matches its escaping rules. */
-const quoteIdent = (identifier: string): string => `"${identifier.replace(/"/g, '""')}"`;
 
 const SNAPSHOT_SCHEMA_IDENT = quoteIdent(SNAPSHOT_SCHEMA);
 const SNAPSHOT_SCHEMA_LITERAL = escapeLiteral(SNAPSHOT_SCHEMA);

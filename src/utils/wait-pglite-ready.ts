@@ -1,7 +1,7 @@
 import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 
 const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
-  let timer: ReturnType<typeof setTimeout>;
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {

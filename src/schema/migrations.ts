@@ -177,7 +177,7 @@ export const hasMigrations = async (pglite: PGlite | PGliteInterface): Promise<b
   const { rows: applied } = await pglite.query<{ count: number }>(
     `SELECT count(*)::int AS count FROM _prisma_migrations WHERE finished_at IS NOT NULL`,
   );
-  return (applied[0] as { count: number }).count > 0;
+  return (applied[0]?.count ?? 0) > 0;
 };
 
 /**

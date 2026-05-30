@@ -328,9 +328,7 @@ export class PGliteDuplex extends Duplex {
 
     const message = this.input.consume(len);
 
-    const session = this.acquireSession();
-    if (session) await session;
-    await this.runUnderRunExclusive(async () => {
+    await this.runUntimed(async () => {
       await this.streamProtocol(message, { detectErrors: false, suppressIntermediateRfq: false });
     });
 
@@ -363,6 +361,14 @@ export class PGliteDuplex extends Duplex {
         this.currentPGliteCall = undefined;
       }
     });
+  }
+
+  /** Acquire the session, then run `op` under runExclusive without timing —
+   *  the untimed path shared by startup and the no-telemetry query branch. */
+  private async runUntimed(op: () => Promise<void>): Promise<void> {
+    const session = this.acquireSession();
+    if (session) await session;
+    await this.runUnderRunExclusive(op);
   }
 
   /**
@@ -491,9 +497,7 @@ export class PGliteDuplex extends Duplex {
     const detectErrors = wantTelemetry || publishQuery;
 
     if (!wantTiming) {
-      const session = this.acquireSession();
-      if (session) await session;
-      await this.runUnderRunExclusive(async () => {
+      await this.runUntimed(async () => {
         await op(false);
       });
       return;
