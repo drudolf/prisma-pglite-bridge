@@ -24,6 +24,7 @@
  * ```
  */
 import type { PrismaPg } from '@prisma/adapter-pg';
+import { quoteIdent } from '../utils/quote-ident.ts';
 
 export interface PushSchemaOptions {
   /** Inline Prisma schema source. */
@@ -68,8 +69,6 @@ const emptyFilter = (): { externalTables: string[]; externalEnums: string[] } =>
   externalTables: [],
   externalEnums: [],
 });
-
-const quoteIdent = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 
 /**
  * Drop every non-system schema (and recreate `public`). Issued as raw SQL
