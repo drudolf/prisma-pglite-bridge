@@ -127,22 +127,17 @@ export class SessionLock {
     return cancelled;
   }
 
-  /**
-   * Grant ownership to the next waiter, if any.
-   *
-   * @returns `true` if a waiter was unblocked; `false` if the queue was empty.
-   */
-  private drainWaitQueue(): boolean {
+  /** Grant ownership to the next waiter, if any. */
+  private drainWaitQueue(): void {
     // Release one waiter at a time and grant ownership before resolving.
     // The waiter's operation will call updateStatus when it completes —
     // if IDLE, ownership is cleared and the next waiter is released.
     // This prevents interleaving where multiple waiters race past acquire
     // and one starts a transaction while others proceed unserialized.
     const next = this.waitQueue.shift();
-    if (!next) return false;
+    if (!next) return;
 
     this.owner = next.id;
     next.resolve();
-    return true;
   }
 }
