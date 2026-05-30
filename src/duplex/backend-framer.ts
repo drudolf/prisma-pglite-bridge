@@ -88,9 +88,7 @@ export class BackendMessageFramer {
             }
             if (msgType === READY_FOR_QUERY && messageLength === 5) {
               flushPassthrough(offset);
-              if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
-                this.dropHeldReadyForQuery();
-              }
+              this.dropStaleHeldReadyForQuery();
               /* c8 ignore next — messageLength === 5 for RFQ; payload is 1 byte */
               const status = chunk[offset + 5] ?? 0;
               this.heldRfq[0] = msgType;
@@ -105,27 +103,17 @@ export class BackendMessageFramer {
                 this.emitReadyForQuery();
                 this.rfqBytesRead = 0;
               }
-            } else if (msgType === ROW_DESCRIPTION) {
-              if (rowDescriptionNeedsRewrite(chunk, offset, offset + totalLen)) {
-                flushPassthrough(offset);
-                if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
-                  this.dropHeldReadyForQuery();
-                }
-                this.emitRewrittenRowDescription(
-                  Buffer.from(chunk.subarray(offset, offset + totalLen)),
-                );
-              } else {
-                if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
-                  this.dropHeldReadyForQuery();
-                }
-                if (passthroughStart < 0) {
-                  passthroughStart = offset;
-                }
-              }
+            } else if (
+              msgType === ROW_DESCRIPTION &&
+              rowDescriptionNeedsRewrite(chunk, offset, offset + totalLen)
+            ) {
+              flushPassthrough(offset);
+              this.dropStaleHeldReadyForQuery();
+              this.emitRewrittenRowDescription(
+                Buffer.from(chunk.subarray(offset, offset + totalLen)),
+              );
             } else {
-              if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
-                this.dropHeldReadyForQuery();
-              }
+              this.dropStaleHeldReadyForQuery();
               if (passthroughStart < 0) {
                 passthroughStart = offset;
               }
@@ -136,9 +124,7 @@ export class BackendMessageFramer {
         }
 
         flushPassthrough(offset);
-        if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
-          this.dropHeldReadyForQuery();
-        }
+        this.dropStaleHeldReadyForQuery();
         /* c8 ignore next — offset < chunk.length guaranteed by outer while */
         this.messageType = chunk[offset] ?? 0;
         this.headerBytesRead = 0;
@@ -278,6 +264,14 @@ export class BackendMessageFramer {
 
   private dropHeldReadyForQuery(): void {
     this.rfqBytesRead = 0;
+  }
+
+  /** Drop a complete held RFQ once a following frame proves it was an
+   *  intermediate one. No-op unless suppressing and a full RFQ is buffered. */
+  private dropStaleHeldReadyForQuery(): void {
+    if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {
+      this.dropHeldReadyForQuery();
+    }
   }
 
   private emitPrefix(): void {
