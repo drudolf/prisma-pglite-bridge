@@ -157,6 +157,9 @@ export class PGliteServer {
         this.#server.removeListener('error', onError);
 
         const { user } = this.#options;
+        // Inside the TCP listen callback the server is bound to a port, so
+        // address() is always AddressInfo — never the Unix-socket string or the
+        // pre-listen null that Node's union return type also allows.
         const { address, family, port } = this.#server.address() as net.AddressInfo;
 
         this.#connectionString =
