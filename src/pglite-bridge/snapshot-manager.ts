@@ -2,8 +2,10 @@ import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 
 const SNAPSHOT_SCHEMA = '_pglite_snapshot';
 
-const USER_TABLES_WHERE = `schemaname NOT IN ('pg_catalog', 'information_schema')
-       AND schemaname != '${SNAPSHOT_SCHEMA}'
+const SYSTEM_SCHEMA_EXCLUSION = `schemaname NOT IN ('pg_catalog', 'information_schema')
+       AND schemaname != '${SNAPSHOT_SCHEMA}'`;
+
+const USER_TABLES_WHERE = `${SYSTEM_SCHEMA_EXCLUSION}
        AND tablename NOT LIKE '_prisma%'`;
 
 const escapeLiteral = (s: string): string => `'${s.replace(/'/g, "''")}'`;
@@ -70,8 +72,7 @@ export class SnapshotManager {
       const { rows: seqs } = await pglite.query<{ name: string; value: string }>(
         `SELECT quote_literal(quote_ident(schemaname) || '.' || quote_ident(sequencename)) AS name, last_value::text AS value
          FROM pg_sequences
-         WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-         AND schemaname != '${SNAPSHOT_SCHEMA}'
+         WHERE ${SYSTEM_SCHEMA_EXCLUSION}
          AND last_value IS NOT NULL`,
       );
 
@@ -150,7 +151,7 @@ export class SnapshotManager {
        FROM pg_tables
        WHERE ${USER_TABLES_WHERE}`,
     );
-    return rows.length > 0 ? rows.map((row) => row.qualified).join(', ') : '';
+    return rows.map((row) => row.qualified).join(', ');
   }
 
   /**
