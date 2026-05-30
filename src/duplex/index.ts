@@ -37,9 +37,9 @@ import {
 } from './constants.ts';
 import { FrontendMessageBuffer } from './frontend-buffer.ts';
 
-// PGlite 0.4.5's execProtocolRawSync short-circuits X/Terminate before
-// entering the Postgres backend loop, while execProtocolStream still clears
-// its parsed-message array. Re-verify this behavior on PGlite upgrades.
+// PGlite's execProtocolRawSync short-circuits X/Terminate before entering
+// the Postgres backend loop, while execProtocolStream still clears its
+// parsed-message array. Verified through PGlite 0.4.6; re-verify on upgrades.
 const TERMINATE_MESSAGE = new Uint8Array([TERMINATE, 0x00, 0x00, 0x00, 0x04]);
 // Keep cleanup infrequent on small queries, but bounded for large read bursts;
 // these thresholds came from the adapter comparison memory profile.
