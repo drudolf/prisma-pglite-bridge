@@ -22,10 +22,11 @@
 
 ## `this.pglite.execProtocolRawStream is not a function`
 
-The bridge uses PGlite 0.4's streaming protocol API. Some packages
-in the Prisma ecosystem (e.g. `@prisma/dev`) still pin
-`@electric-sql/pglite` to 0.3.x, which pnpm will install alongside
-0.4 — and the bridge can end up with the older copy.
+The bridge uses the streaming protocol API introduced in PGlite 0.4
+(also present in 0.5). Some packages in the Prisma ecosystem (e.g.
+`@prisma/dev`) still pin `@electric-sql/pglite` to 0.3.x, which pnpm
+will install alongside the newer copy — and the bridge can end up
+with the older one.
 
 Check your tree:
 
@@ -33,7 +34,8 @@ Check your tree:
 pnpm why @electric-sql/pglite
 ```
 
-If you see more than one version, force a single 0.4.x via
+If you see more than one version, force a single supported version
+(0.4.x or 0.5.x) via
 `pnpm.overrides` in your project's `package.json`:
 
 ```json
