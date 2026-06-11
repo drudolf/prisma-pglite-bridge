@@ -109,6 +109,14 @@ describe('PgBridgePool — pglite lifecycle', () => {
     expect(pool.pglite.closed).toBe(true);
   });
 
+  it('end(callback) closes the internally-created PGlite before invoking the callback', async () => {
+    const pool = new PgBridgePool();
+    const closedAtCallback = await new Promise<boolean>((resolve) => {
+      pool.end(() => resolve(pool.pglite.closed));
+    });
+    expect(closedAtCallback).toBe(true);
+  });
+
   it('end() leaves a caller-supplied PGlite open (caller owns it)', async () => {
     const local = new PGlite();
     await local.waitReady;

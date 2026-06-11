@@ -355,6 +355,16 @@ describe('pushMigrations', () => {
     }
   });
 
+  it('hasMigrations returns false when the finished-count query returns no rows', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ exists: true }] })
+      .mockResolvedValueOnce({ rows: [] });
+    const pglite = { query } as unknown as PGlite;
+
+    await expect(hasMigrations(pglite)).resolves.toBe(false);
+  });
+
   it('hasSchema returns false on an empty database', async () => {
     const pglite = new PGlite();
     try {

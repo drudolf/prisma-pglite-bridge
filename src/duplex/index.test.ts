@@ -295,6 +295,45 @@ describe('PGliteDuplex error paths', () => {
     duplex.destroy();
   });
 
+  it('disables protocol cleanup when execProtocolStream is missing', async () => {
+    const pglite = createMockPGlite({ execProtocolStream: undefined });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    const internals = duplex as unknown as {
+      pendingProtocolCleanupCalls: number;
+      protocolCleanupUnsupported: boolean;
+    };
+    internals.pendingProtocolCleanupCalls = 31;
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    expect(internals.protocolCleanupUnsupported).toBe(true);
+    expect(internals.pendingProtocolCleanupCalls).toBe(0);
+
+    duplex.destroy();
+  });
+
+  it('skips the cleanup frame once protocol cleanup is marked unsupported', async () => {
+    const execProtocolStream = vi.fn().mockResolvedValue([]);
+    const pglite = createMockPGlite({ execProtocolStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    // The threshold path in streamProtocol checks the same flag before
+    // calling cleanup, so the method's own early return is only reachable
+    // by invoking it directly.
+    const internals = duplex as unknown as {
+      protocolCleanupUnsupported: boolean;
+      clearPGliteProtocolMessages: () => Promise<void>;
+    };
+    internals.protocolCleanupUnsupported = true;
+
+    await internals.clearPGliteProtocolMessages();
+    expect(execProtocolStream).not.toHaveBeenCalled();
+
+    duplex.destroy();
+  });
+
   it('fires pending write callbacks with the destroy error when torn down mid-drain', async () => {
     const pglite = createMockPGlite({
       runExclusive: vi.fn(() => new Promise<void>(() => {})),
