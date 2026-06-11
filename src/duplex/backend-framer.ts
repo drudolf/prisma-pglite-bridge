@@ -8,6 +8,14 @@ import { rewriteRowDescriptionInPlace, rowDescriptionNeedsRewrite } from './row-
 
 type BackendMessageFramerOptions = {
   suppressIntermediateReadyForQuery?: boolean;
+  /**
+   * Widen system-catalog "char" columns (OID 18) to text (OID 25) in
+   * RowDescription frames. Required for `@prisma/adapter-pg`, which rejects
+   * OID 18 — but native clients (Prisma CLI engine, psql) need the real OID;
+   * with the rewrite, the engine's constraint introspection misreads
+   * `pg_constraint.contype` values as text. Defaults to true (bridge path).
+   */
+  rewriteSystemCatalogCharOids?: boolean;
   onChunk: (chunk: Uint8Array) => void;
   onErrorResponse?: () => void;
   onReadyForQuery?: (status: number) => void;
@@ -24,6 +32,7 @@ type BackendMessageFramerOptions = {
  */
 export class BackendMessageFramer {
   private readonly suppressIntermediateReadyForQuery: boolean;
+  private readonly rewriteSystemCatalogCharOids: boolean;
   private readonly onChunk: (chunk: Uint8Array) => void;
   private readonly onErrorResponse?: () => void;
   private readonly onReadyForQuery?: (status: number) => void;
@@ -40,6 +49,7 @@ export class BackendMessageFramer {
 
   constructor(options: BackendMessageFramerOptions) {
     this.suppressIntermediateReadyForQuery = options.suppressIntermediateReadyForQuery ?? false;
+    this.rewriteSystemCatalogCharOids = options.rewriteSystemCatalogCharOids ?? true;
     this.onChunk = options.onChunk;
     this.onErrorResponse = options.onErrorResponse;
     this.onReadyForQuery = options.onReadyForQuery;
@@ -105,6 +115,7 @@ export class BackendMessageFramer {
               }
             } else if (
               msgType === ROW_DESCRIPTION &&
+              this.rewriteSystemCatalogCharOids &&
               rowDescriptionNeedsRewrite(chunk, offset, offset + totalLen)
             ) {
               flushPassthrough(offset);
@@ -176,7 +187,7 @@ export class BackendMessageFramer {
         }
 
         this.dropHeldReadyForQuery();
-        if (this.messageType === ROW_DESCRIPTION) {
+        if (this.messageType === ROW_DESCRIPTION && this.rewriteSystemCatalogCharOids) {
           // Valid RowDescription always carries at least a 2-byte fieldCount,
           // so payloadBytesRemaining is > 0 here — no zero-payload finalize needed.
           this.rowDescBuffer = Buffer.alloc(5 + this.payloadBytesRemaining);

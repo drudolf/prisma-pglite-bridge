@@ -531,4 +531,51 @@ describe('BackendMessageFramer', () => {
     expect(emitted.length).toBe(frame.length + RFQ_FAILED.length);
     expect(readField(emitted, 0)).toEqual({ name: 'contype', oid: 25, size: -1 });
   });
+
+  // Native clients (e.g. the Prisma CLI schema engine) need the real oid 18 —
+  // the 18→25 widening exists only for @prisma/adapter-pg, so it must be
+  // switchable off via `rewriteSystemCatalogCharOids` (default `true`).
+  describe('rewriteSystemCatalogCharOids option', () => {
+    const makeOptionHarness = (rewriteSystemCatalogCharOids: boolean) => {
+      const outputs: Uint8Array[] = [];
+      const framer = new BackendMessageFramer({
+        rewriteSystemCatalogCharOids,
+        onChunk: (chunk) => outputs.push(chunk.slice()),
+      });
+      return { framer, outputs };
+    };
+
+    it('emits a system-catalog char RowDescription byte-identical when disabled (fast path)', () => {
+      const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
+      const { framer, outputs } = makeOptionHarness(false);
+      framer.write(frame);
+      framer.flush();
+      const emitted = collect(outputs);
+      expect(emitted).toEqual(frame);
+      expect(readField(emitted, 0)).toEqual({ name: 'contype', oid: 18, size: 1 });
+    });
+
+    it('emits a split system-catalog char RowDescription byte-identical when disabled (slow path)', () => {
+      const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
+      const splitAt = Math.floor(frame.length / 2);
+      expect(splitAt).toBeGreaterThan(5); // ensure the split lands inside the payload
+      const { framer, outputs } = makeOptionHarness(false);
+      framer.write(frame.subarray(0, splitAt));
+      framer.write(frame.subarray(splitAt));
+      framer.flush();
+      const emitted = collect(outputs);
+      expect(emitted).toEqual(frame);
+      expect(readField(emitted, 0)).toEqual({ name: 'contype', oid: 18, size: 1 });
+    });
+
+    it('still rewrites system-catalog char oids when the option is explicitly true', () => {
+      const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
+      const { framer, outputs } = makeOptionHarness(true);
+      framer.write(frame);
+      framer.flush();
+      const emitted = collect(outputs);
+      expect(emitted).toHaveLength(frame.length);
+      expect(readField(emitted, 0)).toEqual({ name: 'contype', oid: 25, size: -1 });
+    });
+  });
 });

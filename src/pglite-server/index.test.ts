@@ -123,6 +123,23 @@ describe('PGliteServer', () => {
     }
   });
 
+  it('serves system-catalog "char" columns with their real oid 18 (no RowDescription rewrite)', async () => {
+    // Native clients (e.g. the Prisma CLI schema engine) need the real oid 18;
+    // the 18→25 widening exists only for @prisma/adapter-pg. The server path
+    // must create its duplexes with the rewrite disabled — on PostgreSQL 18
+    // a rewritten oid breaks `prisma db pull`.
+    const { connectionString: url } = await startServer();
+    const client = new pg.Client(url);
+    await client.connect();
+    try {
+      const r = await client.query('SELECT relkind FROM pg_class LIMIT 1');
+      expect(r.rows).toHaveLength(1);
+      expect(r.fields[0]?.dataTypeID).toBe(18);
+    } finally {
+      await client.end();
+    }
+  });
+
   it('serializes transactions across two concurrent clients', async () => {
     const { connectionString: url } = await startServer();
     const a = new pg.Client(url);

@@ -39,7 +39,8 @@ import { FrontendMessageBuffer } from './frontend-buffer.ts';
 
 // PGlite's execProtocolRawSync short-circuits X/Terminate before entering
 // the Postgres backend loop, while execProtocolStream still clears its
-// parsed-message array. Verified through PGlite 0.4.6; re-verify on upgrades.
+// parsed-message array. Verified through PGlite 0.4.6 and 0.5.1;
+// re-verify on upgrades.
 const TERMINATE_MESSAGE = new Uint8Array([TERMINATE, 0x00, 0x00, 0x00, 0x04]);
 // Keep cleanup infrequent on small queries, but bounded for large read bursts;
 // these thresholds came from the adapter comparison memory profile.
@@ -77,6 +78,13 @@ export interface PGliteDuplexOptions {
    * weaker durability. Default `true`.
    */
   syncToFs?: boolean;
+  /**
+   * Widen system-catalog "char" columns (OID 18) to text (OID 25) in
+   * RowDescription frames. Required for `@prisma/adapter-pg`, which rejects
+   * OID 18. Native clients (Prisma CLI engine, psql) need the real OID —
+   * `PGliteServer` disables this. Default `true`.
+   */
+  rewriteSystemCatalogCharOids?: boolean;
 }
 
 /**
@@ -106,6 +114,7 @@ export class PGliteDuplex extends Duplex {
   private readonly bridgeId?: symbol;
   private readonly telemetry?: TelemetrySink;
   private readonly syncToFs: boolean;
+  private readonly rewriteSystemCatalogCharOids: boolean;
   private readonly timeout?: number;
   private readonly duplexId: symbol;
   /** Incoming bytes framed directly from a queued chunk buffer */
@@ -149,6 +158,7 @@ export class PGliteDuplex extends Duplex {
     this.telemetry = options.telemetry;
     this.timeout = options.timeout;
     this.syncToFs = options.syncToFs ?? true;
+    this.rewriteSystemCatalogCharOids = options.rewriteSystemCatalogCharOids ?? true;
 
     this.duplexId = Symbol('duplex');
     this.onClose = new Promise<void>((resolve) => this.once('close', () => resolve()));
@@ -558,6 +568,7 @@ export class PGliteDuplex extends Duplex {
     let errSeen = false;
     const framer = new BackendMessageFramer({
       suppressIntermediateReadyForQuery: suppressIntermediateRfq,
+      rewriteSystemCatalogCharOids: this.rewriteSystemCatalogCharOids,
       onChunk: (chunk) => {
         /* c8 ignore next — race-only: tornDown becomes true mid-stream */
         if (!this.tornDown && chunk.length > 0) {

@@ -739,3 +739,86 @@ describe('PGliteDuplex error paths', () => {
     duplex.destroy();
   });
 });
+
+describe('PGliteDuplex RowDescription rewrite option', () => {
+  const startupBytes = (): Buffer => {
+    const buf = Buffer.alloc(8);
+    buf.writeUInt32BE(8, 0);
+    buf.writeUInt32BE(0x00030000, 4);
+    return buf;
+  };
+
+  const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+    new Promise((resolve) => {
+      duplex.write(chunk, (err) => resolve(err ?? undefined));
+    });
+
+  // RowDescription ('T') with a single pg_class.relkind field — tableOID 1259
+  // (system catalog), dataTypeOID 18 ("char"), size 1. The 18→25 rewrite
+  // targets exactly this shape.
+  const FIELD_NAME = 'relkind';
+  const OID_OFFSET = 1 + 4 + 2 + FIELD_NAME.length + 1 + 4 + 2;
+  const catalogCharRowDescription = (): Buffer => {
+    const name = Buffer.from(`${FIELD_NAME}\0`);
+    const payload = Buffer.alloc(2 + name.length + 18);
+    payload.writeInt16BE(1, 0); // field count
+    name.copy(payload, 2);
+    let p = 2 + name.length;
+    payload.writeUInt32BE(1259, p); // pg_class — system catalog table oid
+    p += 4;
+    payload.writeInt16BE(1, p); // column attribute number
+    p += 2;
+    payload.writeUInt32BE(18, p); // "char"
+    p += 4;
+    payload.writeInt16BE(1, p); // dataTypeSize
+    p += 2;
+    payload.writeInt32BE(-1, p); // typeModifier
+    p += 4;
+    payload.writeInt16BE(0, p); // formatCode
+    const frame = Buffer.alloc(5 + payload.length);
+    frame[0] = 0x54; // 'T'
+    frame.writeUInt32BE(4 + payload.length, 1);
+    payload.copy(frame, 5);
+    return frame;
+  };
+
+  const createRowDescriptionPGlite = (frame: Buffer) =>
+    createMockPGlite({
+      execProtocolRawStream: vi.fn(async (_message, options) => {
+        options.onRawData(frame);
+        options.onRawData(RFQ_IDLE_MESSAGE);
+      }),
+    });
+
+  it('pushes a system-catalog char RowDescription with oid 18 intact when the rewrite is disabled', async () => {
+    const frame = catalogCharRowDescription();
+    const duplex = new PGliteDuplex(createRowDescriptionPGlite(frame), {
+      rewriteSystemCatalogCharOids: false,
+    });
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+
+    const emitted: Buffer = duplex.read() ?? Buffer.alloc(0);
+    expect(emitted.length).toBe(frame.length + RFQ_IDLE_MESSAGE.length);
+    expect(emitted.subarray(0, frame.length).equals(frame)).toBe(true);
+    expect(emitted.readUInt32BE(OID_OFFSET)).toBe(18);
+
+    duplex.destroy();
+  });
+
+  it('rewrites a system-catalog char RowDescription to oid 25 by default', async () => {
+    const frame = catalogCharRowDescription();
+    const duplex = new PGliteDuplex(createRowDescriptionPGlite(frame));
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+
+    const emitted: Buffer = duplex.read() ?? Buffer.alloc(0);
+    expect(emitted.length).toBe(frame.length + RFQ_IDLE_MESSAGE.length);
+    expect(emitted.readUInt32BE(OID_OFFSET)).toBe(25);
+    expect(emitted.readInt16BE(OID_OFFSET + 4)).toBe(-1);
+
+    duplex.destroy();
+  });
+});

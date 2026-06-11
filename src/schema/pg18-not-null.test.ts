@@ -210,4 +210,18 @@ describe('wrapFactoryForPg18', () => {
 
     expect(main.isDisposed()).toBe(true);
   });
+
+  it('delegates other factory methods with this bound to the original', async () => {
+    const { factory } = createFakeFactory();
+    let observed: unknown;
+    (factory as unknown as Record<string, unknown>).describe = function (this: unknown) {
+      observed = this;
+      return 'described';
+    };
+
+    const wrapped = wrapFactoryForPg18(factory) as unknown as { describe: () => string };
+
+    expect(wrapped.describe()).toBe('described');
+    expect(observed).toBe(factory);
+  });
 });

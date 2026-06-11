@@ -196,6 +196,12 @@ export class PGliteServer {
       sessionLock: this.#sessionLock,
       timeout: this.#options.timeout,
       syncToFs: resolveSyncToFs(this.pglite, this.#options.syncToFs),
+      // Native clients (Prisma CLI engine, psql, GUIs) need real catalog
+      // OIDs; the 18→25 widening is an @prisma/adapter-pg accommodation that
+      // belongs to the bridge path only. With it, the CLI engine misreads
+      // pg_constraint.contype as text and fails on PostgreSQL 18's
+      // NOT NULL rows (contype 'n') — see prisma/prisma#29635.
+      rewriteSystemCatalogCharOids: false,
     });
     socket.duplex.on('error', () => socket.destroy());
     socket.once('close', () => {
