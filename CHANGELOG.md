@@ -1,5 +1,35 @@
 # prisma-pglite-bridge
 
+## 1.2.0
+
+### Minor Changes
+
+- [`7235952`](https://github.com/drudolf/prisma-pglite-bridge/commit/7235952fac9813e827336ec3adb340cf31b4b05b) Thanks [@drudolf](https://github.com/drudolf)! - Allow PGlite 0.5.x: the `@electric-sql/pglite` peer range is now
+  `^0.4.0 || ^0.5.0`. Validated against PGlite 0.5.1 (PostgreSQL 18.3) across
+  the full test suite, including Prisma CLI compatibility — together with the
+  PostgreSQL 18 introspection workaround and the `PGliteServer` catalog-OID
+  fix shipped in this release.
+
+### Patch Changes
+
+- [`100bd85`](https://github.com/drudolf/prisma-pglite-bridge/commit/100bd85ce9c41928a53cb2275742210c7b063226) Thanks [@drudolf](https://github.com/drudolf)! - Shield the schema engine from PostgreSQL 18's `contype = 'n'` rows during
+  `pushSchema`. PostgreSQL 18 represents NOT NULL constraints as `pg_constraint`
+  rows, which the Prisma schema engine's constraint introspection does not
+  handle and panics on — the `pushSchema` promise then never settles. The bridge
+  now appends `'n'` to the engine's introspection denylist before the query
+  runs; a semantic no-op on PostgreSQL ≤ 17. This unblocks running against
+  PGlite 0.5.x (PostgreSQL 18.3).
+
+- [`7235952`](https://github.com/drudolf/prisma-pglite-bridge/commit/7235952fac9813e827336ec3adb340cf31b4b05b) Thanks [@drudolf](https://github.com/drudolf)! - `PGliteServer` no longer widens system-catalog `"char"` columns (OID 18) to
+  text (OID 25) in RowDescription frames. The widening is an
+  `@prisma/adapter-pg` accommodation that belongs to the bridge path only;
+  native clients (Prisma CLI engine, psql, GUIs) need the real OID. With the
+  rewrite, the CLI's schema engine misread `pg_constraint.contype` as text and
+  failed on PostgreSQL 18's NOT NULL constraint rows (`prisma db pull`,
+  `prisma migrate dev`). The rewrite is now controlled by a new
+  `rewriteSystemCatalogCharOids` option on `PGliteDuplex` (default `true`;
+  the server passes `false`).
+
 ## 1.1.0
 
 ### Minor Changes
