@@ -71,6 +71,38 @@ describe('PgBridgeClient', () => {
     }
   });
 
+  it('forwards synchronous query-config errors to the callback', async () => {
+    const pglite = new PGlite();
+    await pglite.waitReady;
+    const expected = new Error('types getter boom');
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    // Evaluating `config.types` happens synchronously inside the recursive
+    // promise-form call, so the callback path must catch the throw itself.
+    const config = {
+      text: 'SELECT 1',
+      get types(): never {
+        throw expected;
+      },
+    };
+
+    try {
+      const calls: Array<{ err: unknown; res: unknown }> = [];
+      client.query(config, (err: unknown, res: unknown) => {
+        calls.push({ err, res });
+      });
+      expect(calls).toEqual([{ err: expected, res: undefined }]);
+    } finally {
+      await pglite.close();
+    }
+  });
+
   it('preserves pg synchronous TypeError for nullish queries', async () => {
     const pglite = new PGlite();
     await pglite.waitReady;
