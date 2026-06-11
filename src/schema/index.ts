@@ -25,6 +25,7 @@
  */
 import type { PrismaPg } from '@prisma/adapter-pg';
 import { quoteIdent } from '../utils/quote-ident.ts';
+import { wrapFactoryForPg18 } from './pg18-not-null.ts';
 
 export interface PushSchemaOptions {
   /** Inline Prisma schema source. */
@@ -62,7 +63,9 @@ export interface PushSchemaResult {
 
 const bindAdapter = async (adapter: PrismaPg): Promise<object> => {
   const { bindMigrationAwareSqlAdapterFactory } = await import('@prisma/driver-adapter-utils');
-  return bindMigrationAwareSqlAdapterFactory(adapter);
+  // wrapFactoryForPg18 shields the engine from PostgreSQL 18's contype 'n'
+  // rows, which panic its constraint introspection — see pg18-not-null.ts.
+  return bindMigrationAwareSqlAdapterFactory(wrapFactoryForPg18(adapter));
 };
 
 const emptyFilter = (): { externalTables: string[]; externalEnums: string[] } => ({
