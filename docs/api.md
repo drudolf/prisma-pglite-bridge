@@ -211,6 +211,12 @@ The first call in a Node process emits an
 [`ExperimentalWarning`](./troubleshooting.md#experimentalwarning-importing-webassembly-module-instances-is-an-experimental-feature)
 about WebAssembly imports.
 
+`schemaEngine` injects an alternative schema-engine WASM module
+(shape: `SchemaEngineModule`) instead of dynamically importing
+`@prisma/schema-engine-wasm` — for example a build compiled from
+`prisma-engines` source. When omitted, the published package is
+used as before.
+
 ## `resetSchema(adapter)`
 
 Drops every non-system schema and recreates `public`. Useful as a

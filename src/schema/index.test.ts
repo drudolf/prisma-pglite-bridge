@@ -233,3 +233,146 @@ describe('resetSchema', () => {
     }
   });
 });
+
+interface RecordedEngineInit {
+  init: { datamodels: Array<[string, string]> };
+  adapter: object;
+}
+
+interface RecordedPushInput {
+  force: boolean;
+  schema: { files: Array<{ path: string; content: string }> };
+}
+
+interface FakePushResult {
+  executedSteps: number;
+  warnings: string[];
+  unexecutable: string[];
+}
+
+// Return type stays inferred on purpose: the precise structural type of
+// `module` is what makes it assignable to the future SchemaEngineModule.
+const makeFakeSchemaEngine = (behavior?: { pushResult?: FakePushResult; pushError?: Error }) => {
+  const newCalls: RecordedEngineInit[] = [];
+  const pushInputs: RecordedPushInput[] = [];
+  const counters = { free: 0 };
+  const pushResult = behavior?.pushResult ?? {
+    executedSteps: 1,
+    warnings: [],
+    unexecutable: [],
+  };
+  const module = {
+    SchemaEngine: {
+      new: async (
+        init: { datamodels: Array<[string, string]> },
+        _debugCallback: (msg: string) => void,
+        adapter: object,
+      ) => {
+        newCalls.push({ init, adapter });
+        return {
+          schemaPush: async (input: object): Promise<FakePushResult> => {
+            pushInputs.push(input as RecordedPushInput);
+            if (behavior?.pushError) {
+              throw behavior.pushError;
+            }
+            return pushResult;
+          },
+          free: (): void => {
+            counters.free += 1;
+          },
+        };
+      },
+    },
+  };
+  return { module, newCalls, pushInputs, counters };
+};
+
+describe('pushSchema with injected schema engine', () => {
+  const cleanups: Array<() => Promise<void>> = [];
+  afterEach(async () => {
+    while (cleanups.length) {
+      const fn = cleanups.pop();
+      await fn?.();
+    }
+  });
+
+  const makeBridge = async (): Promise<{ pglite: PGlite; bridge: PGliteBridge }> => {
+    const pglite = new PGlite();
+    await pglite.waitReady;
+    const bridge = new PGliteBridge({ pglite });
+    cleanups.push(async () => {
+      await bridge.close();
+    });
+    return { pglite, bridge };
+  };
+
+  it('constructs the injected engine with the schema and bound adapter and returns its result', async () => {
+    const { bridge } = await makeBridge();
+    const fake = makeFakeSchemaEngine({
+      pushResult: { executedSteps: 7, warnings: ['careful'], unexecutable: ['nope'] },
+    });
+
+    const result = await pushSchema(bridge.adapter, {
+      schema: SCHEMA_BASE,
+      schemaEngine: fake.module,
+    });
+
+    expect(fake.newCalls).toHaveLength(1);
+    expect(fake.newCalls[0]?.init.datamodels).toEqual([['schema.prisma', SCHEMA_BASE]]);
+    expect(fake.newCalls[0]?.adapter).toBeTypeOf('object');
+    expect(fake.newCalls[0]?.adapter).not.toBeNull();
+    expect(result).toEqual({
+      executedSteps: 7,
+      warnings: ['careful'],
+      unexecutable: ['nope'],
+    });
+  });
+
+  it('passes force: false by default and force: true when acceptDataLoss is set', async () => {
+    const { bridge } = await makeBridge();
+    const fake = makeFakeSchemaEngine();
+
+    await pushSchema(bridge.adapter, {
+      schema: SCHEMA_BASE,
+      schemaEngine: fake.module,
+    });
+    await pushSchema(bridge.adapter, {
+      schema: SCHEMA_BASE,
+      acceptDataLoss: true,
+      schemaEngine: fake.module,
+    });
+
+    expect(fake.pushInputs.map((input) => input.force)).toEqual([false, true]);
+  });
+
+  it('frees the engine exactly once when schemaPush rejects', async () => {
+    const { bridge } = await makeBridge();
+    const pushError = new Error('schemaPush exploded');
+    const fake = makeFakeSchemaEngine({ pushError });
+
+    await expect(
+      pushSchema(bridge.adapter, {
+        schema: SCHEMA_BASE,
+        schemaEngine: fake.module,
+      }),
+    ).rejects.toBe(pushError);
+
+    expect(fake.counters.free).toBe(1);
+  });
+
+  it('threads the filename option into the datamodels tuple and the pushed schema files', async () => {
+    const { bridge } = await makeBridge();
+    const fake = makeFakeSchemaEngine();
+
+    await pushSchema(bridge.adapter, {
+      schema: SCHEMA_BASE,
+      filename: 'custom.prisma',
+      schemaEngine: fake.module,
+    });
+
+    expect(fake.newCalls[0]?.init.datamodels).toEqual([['custom.prisma', SCHEMA_BASE]]);
+    expect(fake.pushInputs[0]?.schema.files).toEqual([
+      { path: 'custom.prisma', content: SCHEMA_BASE },
+    ]);
+  });
+});
