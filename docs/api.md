@@ -215,7 +215,13 @@ about WebAssembly imports.
 (shape: `SchemaEngineModule`) instead of dynamically importing
 `@prisma/schema-engine-wasm` — for example a build compiled from
 `prisma-engines` source. When omitted, the published package is
-used as before.
+used as before. The repo ships the build recipe:
+`pnpm build:schema-engine` compiles the engine from upstream
+`prisma/prisma-engines` at the exact commit matching the installed
+package (override with `PRISMA_ENGINES_REF`) into
+`vendor/schema-engine/`, ready to import. Requires a Rust toolchain
+— the script checks and prints exact install commands for anything
+missing.
 
 ## `resetSchema(adapter)`
 
