@@ -27,6 +27,32 @@ import type { PrismaPg } from '@prisma/adapter-pg';
 import { quoteIdent } from '../utils/quote-ident.ts';
 import { wrapFactoryForPg18 } from './pg18-not-null.ts';
 
+/**
+ * Structural shape of the schema-engine WASM module consumed by
+ * {@link pushSchema}. Matches `@prisma/schema-engine-wasm` (wasm-bindgen
+ * exposes construction as a static method literally named `new`). Allows
+ * injecting an alternative engine build — e.g. one compiled from
+ * `prisma-engines` source — instead of the published npm package.
+ */
+export interface SchemaEngineModule {
+  SchemaEngine: {
+    // biome-ignore lint/suspicious/useAdjacentOverloadSignatures: 'new' is a
+    // static method name in wasm-bindgen output, not a construct signature.
+    'new'(
+      init: { datamodels: Array<[string, string]> },
+      debugCallback: (msg: string) => void,
+      adapter: object,
+    ): Promise<{
+      schemaPush(input: object): Promise<{
+        executedSteps: number;
+        warnings: string[];
+        unexecutable: string[];
+      }>;
+      free(): void;
+    }>;
+  };
+}
+
 export interface PushSchemaOptions {
   /** Inline Prisma schema source. */
   schema: string;
@@ -44,6 +70,11 @@ export interface PushSchemaOptions {
   acceptDataLoss?: boolean;
   /** Logical filename used in schema-engine error messages. Default: `'schema.prisma'`. */
   filename?: string;
+  /**
+   * Schema-engine module to use instead of dynamically importing
+   * `@prisma/schema-engine-wasm`. See {@link SchemaEngineModule}.
+   */
+  schemaEngine?: SchemaEngineModule;
 }
 
 export interface PushSchemaResult {
@@ -119,7 +150,8 @@ export const pushSchema = async (
   if (options.forceReset) {
     await dropAllUserSchemas(adapter);
   }
-  const { SchemaEngine } = await import('@prisma/schema-engine-wasm');
+  const { SchemaEngine }: SchemaEngineModule =
+    options.schemaEngine ?? (await import('@prisma/schema-engine-wasm'));
   const bound = await bindAdapter(adapter);
 
   const engine = await SchemaEngine.new(
