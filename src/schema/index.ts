@@ -36,8 +36,8 @@ import { wrapFactoryForPg18 } from './pg18-not-null.ts';
  */
 export interface SchemaEngineModule {
   SchemaEngine: {
-    // biome-ignore lint/suspicious/useAdjacentOverloadSignatures: 'new' is a
-    // static method name in wasm-bindgen output, not a construct signature.
+    // Quoted: wasm-bindgen exposes construction as a static method literally
+    // named `new`; unquoted it would parse as a construct signature.
     'new'(
       init: { datamodels: Array<[string, string]> },
       debugCallback: (msg: string) => void,
