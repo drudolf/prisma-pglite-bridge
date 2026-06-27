@@ -15,5 +15,12 @@ minimumReleaseAgeExclude:
   - "@commitlint/read@21.0.2"
   - "@commitlint/rules@21.0.2"
   - "@commitlint/top-level@21.0.2"
+  - pg-connection-string@2.14.0
+  - pg-protocol@1.15.0
+  - pg@8.22.0
 overrides:
   "@hono/node-server@<1.19.13": ^1.19.13
+  # PgBridgeClient subclasses pg.Client and must be driven by the same pg copy
+  # @prisma/adapter-pg uses. adapter-pg's range (^8.16.3) lets pnpm keep a second
+  # pg next to the bridge's direct dep; force a single copy.
+  pg: ^8.22.0
