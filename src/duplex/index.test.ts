@@ -334,6 +334,21 @@ describe('PGliteDuplex error paths', () => {
     duplex.destroy();
   });
 
+  it('skips protocol cleanup when the runtime PGlite does not accumulate raw-stream results', async () => {
+    const execProtocolStream = vi.fn().mockResolvedValue([]);
+    const pglite = createMockPGlite({ execProtocolStream });
+    const duplex = new PGliteDuplex(pglite, { protocolCleanupNeeded: false });
+    duplex.on('error', () => {});
+
+    const internals = duplex as unknown as { pendingProtocolCleanupCalls: number };
+    internals.pendingProtocolCleanupCalls = 31; // one more call would hit the threshold
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    expect(execProtocolStream).not.toHaveBeenCalled();
+
+    duplex.destroy();
+  });
+
   it('fires pending write callbacks with the destroy error when torn down mid-drain', async () => {
     const pglite = createMockPGlite({
       runExclusive: vi.fn(() => new Promise<void>(() => {})),

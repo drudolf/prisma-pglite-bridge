@@ -12,6 +12,8 @@ export interface PgBridgeClientOptions {
   telemetry?: TelemetrySink;
   syncToFs: boolean;
   timeout?: number;
+  /** Forwarded to {@link PGliteDuplex}; see PGliteDuplexOptions.protocolCleanupNeeded. */
+  protocolCleanupNeeded?: boolean;
 }
 
 type PgBridgeClientConfig = pg.ClientConfig & {

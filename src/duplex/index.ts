@@ -85,6 +85,13 @@ export interface PGliteDuplexOptions {
    * `PGliteServer` disables this. Default `true`.
    */
   rewriteSystemCatalogCharOids?: boolean;
+  /**
+   * Whether the underlying PGlite still accumulates parsed protocol messages
+   * during raw streaming, requiring the bridge's periodic cleanup. PGlite
+   * >= 0.5.3 (electric-sql/pglite#1030) no longer does, so `PgBridgePool`
+   * passes `false` there to skip the redundant cleanup. Default `true`.
+   */
+  protocolCleanupNeeded?: boolean;
 }
 
 /**
@@ -142,6 +149,7 @@ export class PGliteDuplex extends Duplex {
   private pendingProtocolCleanupBytes = 0;
   private pendingProtocolCleanupCalls = 0;
   private protocolCleanupUnsupported = false;
+  private readonly protocolCleanupNeeded: boolean;
   /** Resolves once the stream has fully torn down (post-`_final` rollback,
    *  post-`_destroy`). Single-shot, mirroring the `'close'` event. */
   readonly onClose: Promise<void>;
@@ -159,6 +167,7 @@ export class PGliteDuplex extends Duplex {
     this.timeout = options.timeout;
     this.syncToFs = options.syncToFs ?? true;
     this.rewriteSystemCatalogCharOids = options.rewriteSystemCatalogCharOids ?? true;
+    this.protocolCleanupNeeded = options.protocolCleanupNeeded ?? true;
 
     this.duplexId = Symbol('duplex');
     this.onClose = new Promise<void>((resolve) => this.once('close', () => resolve()));
@@ -614,6 +623,7 @@ export class PGliteDuplex extends Duplex {
       this.pendingProtocolCleanupBytes += rawBytes;
       this.pendingProtocolCleanupCalls++;
       if (
+        this.protocolCleanupNeeded &&
         !this.protocolCleanupUnsupported &&
         (streamFailed ||
           this.pendingProtocolCleanupBytes >= PROTOCOL_CLEANUP_RAW_BYTES ||
@@ -630,7 +640,7 @@ export class PGliteDuplex extends Duplex {
   }
 
   private async clearPGliteProtocolMessages(): Promise<void> {
-    if (this.protocolCleanupUnsupported) return;
+    if (!this.protocolCleanupNeeded || this.protocolCleanupUnsupported) return;
 
     const { execProtocolStream } = this.pglite;
     if (typeof execProtocolStream !== 'function') {
