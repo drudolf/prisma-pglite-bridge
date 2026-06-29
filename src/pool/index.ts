@@ -11,6 +11,7 @@
 import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import pg from 'pg';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
+import { pgliteNeedsProtocolCleanup } from '../utils/pglite-capabilities.ts';
 import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SessionLock } from '../utils/session-lock.ts';
 import { PgBridgeClient, type PgBridgeClientOptions } from './pg-bridge-client.ts';
@@ -139,6 +140,7 @@ export class PgBridgePool extends pg.Pool {
         telemetry,
         syncToFs: resolveSyncToFs(resolvedPglite, syncToFs),
         timeout,
+        protocolCleanupNeeded: pgliteNeedsProtocolCleanup(),
       },
     };
 
