@@ -1,5 +1,22 @@
 # prisma-pglite-bridge
 
+## 1.3.0
+
+### Minor Changes
+
+- [`335ec35`](https://github.com/drudolf/prisma-pglite-bridge/commit/335ec3532719eff06ee497d9455c567864d43c00) Thanks [@drudolf](https://github.com/drudolf)! - `pushSchema` accepts a `schemaEngine` option to inject an alternative
+  schema-engine WASM module (new exported type `SchemaEngineModule`) instead of
+  dynamically importing `@prisma/schema-engine-wasm`. This decouples the bridge
+  from the published package — e.g. for engine builds compiled directly from
+  `prisma-engines` source. When omitted, behavior is unchanged.
+
+### Patch Changes
+
+- [`ff0ac79`](https://github.com/drudolf/prisma-pglite-bridge/commit/ff0ac798ad6defd1eb4a8ffe3b4f9faf0116afed) Thanks [@drudolf](https://github.com/drudolf)! - Skip the redundant PGlite protocol-message cleanup on PGlite >= 0.5.3, where
+  electric-sql/pglite#1030 removed the raw-stream result accumulation the cleanup
+  compensated for. The bridge reads its resolved PGlite version and only runs the
+  cleanup on older runtimes, or when the version can't be determined.
+
 ## 1.2.0
 
 ### Minor Changes
