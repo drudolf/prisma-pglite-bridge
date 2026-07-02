@@ -16,6 +16,132 @@ pnpm bench --json > results.json          # machine-readable output
 The first run generates schema SQL via `prisma migrate diff`, so Prisma's
 CLI must be resolvable (`pnpm install` takes care of that).
 
+## Reference results (2026-07-02)
+
+Raw JSON for every table below is committed under
+[`results/`](./results/) — re-run the commands and diff.
+
+### Methodology
+
+- **Machines:** Apple M3 Max (16 cores, 128GB, macOS 26.5.1, Node
+  24.18.0) and Intel Core i9-9980HK (8 cores, macOS 26.3.1, Node
+  24.14.1). Normal background load, not a quiesced lab — the
+  *p50 spread* column (min–max of per-repeat p50s) shows run
+  stability; treat cross-adapter ratios as the signal and absolute
+  numbers as indicative.
+- **Versions:** bridge 1.3.0, `@electric-sql/pglite` 0.5.3 (both
+  PGlite adapters resolve the same copy), `pglite-prisma-adapter`
+  0.7.2, `@prisma/adapter-pg` 7.8.0, `pg` 8.22.0, Prisma 7.8.0.
+- **Real Postgres:** PostgreSQL 18.4 via `embedded-postgres`
+  18.4.0-beta.17 — native binaries on both architectures (verified:
+  no Rosetta), loopback TCP on port 5433, same machine. Note the
+  server's version string reports the packager's x86_64 build host
+  on both slices; the arm64 slice was confirmed native via process
+  inspection.
+- **Statistics:** percentiles computed per repeat, median across
+  repeats. No outlier trimming. Latency: n=1000, warmup=100, r=5.
+  Micro: n=50, warmup=5, r=3. Memory: one process per adapter
+  (fresh baseline), r=3.
+- PGlite ≥ 0.5.3 matters: it ships the raw-stream parse skip
+  ([electric-sql/pglite#1030]) this bridge's protocol path is built
+  around. On older engines the bridge compensates at runtime and
+  tail latencies are higher.
+
+### Read-path latency — `findmany-focused` (`findMany({ take: 100 })`)
+
+**Apple M3 Max:**
+
+| Adapter | p50 | p95 | p99 | max | p50 spread |
+| ----------------------- | ---------- | ---------- | ---------- | ------ | ---------- |
+| `prisma-pglite-bridge` | **0.43ms** | **0.50ms** | **1.21ms** | 6.43ms | 0.43–0.44 |
+| `pglite-prisma-adapter` | 0.83ms | 0.91ms | 1.83ms | **2.81ms** | 0.82–0.84 |
+| `postgres-pg` (native) | **0.43ms** | 1.03ms | 1.43ms | 11.28ms | 0.42–0.62 |
+
+**Intel Core i9-9980HK:**
+
+| Adapter | p50 | p95 | p99 | max | p50 spread |
+| ----------------------- | ---------- | ---------- | ---------- | ------ | ---------- |
+| `prisma-pglite-bridge` | 1.07ms | 1.56ms | **2.51ms** | 8.45ms | 1.03–1.74 |
+| `pglite-prisma-adapter` | 2.16ms | 3.20ms | 4.92ms | 24.29ms | 2.10–2.58 |
+| `postgres-pg` (native) | **0.97ms** | **1.41ms** | 2.85ms | **4.87ms** | 0.94–1.05 |
+
+Where the bridge **loses**, so you don't have to squint: native
+Postgres wins p50 and p95 on Intel and posts the best worst-case
+there; on the M3 Max the direct adapter has the tightest max
+(2.81ms vs the bridge's 6.43ms). The bridge's claim is the best
+p50-through-p99 *envelope* against the direct adapter (~2x on every
+percentile, both machines) and parity with native Postgres on hot
+read loops — not universal dominance.
+
+### Operation breadth — `micro` (p50, ratio vs bridge)
+
+**Apple M3 Max:**
+
+| Operation | bridge | direct adapter | native Postgres |
+| -------------- | ------ | -------------- | --------------- |
+| single create | **0.13ms** | 0.20ms (1.6x) | 0.20ms (1.6x) |
+| 100 createMany | **6.87ms** | 7.37ms (1.1x) | 9.27ms (1.4x) |
+| findMany 100 | **0.47ms** | 0.86ms (1.8x) | 0.97ms (2.1x) |
+| nested create | **0.59ms** | 1.15ms (1.9x) | 2.34ms (4.0x) |
+| deep include | **0.72ms** | 1.25ms (1.7x) | 2.00ms (2.8x) |
+| interactive tx | **0.74ms** | 1.05ms (1.4x) | 3.22ms (4.3x) |
+| update + find | **0.30ms** | 0.48ms (1.6x) | 2.75ms (9.3x) |
+
+**Intel Core i9-9980HK:**
+
+| Operation | bridge | direct adapter | native Postgres |
+| -------------- | ------ | -------------- | --------------- |
+| single create | **0.53ms** | 0.75ms (1.4x) | 0.62ms (1.2x) |
+| 100 createMany | 16.14ms | 17.77ms (1.1x) | **15.14ms** (0.9x) |
+| findMany 100 | 1.24ms | 2.37ms (1.9x) | **1.15ms** (0.9x) |
+| nested create | **2.28ms** | 3.42ms (1.5x) | 2.36ms (1.0x) |
+| deep include | **1.91ms** | 3.16ms (1.7x) | 1.91ms (1.0x) |
+| interactive tx | **1.84ms** | 3.04ms (1.7x) | 1.87ms (1.0x) |
+| update + find | 1.18ms | 1.52ms (1.3x) | **0.98ms** (0.8x) |
+
+Against the direct adapter the bridge wins every operation on both
+machines (1.1–1.9x). Against native Postgres the picture is
+architecture-dependent: on the M3 Max the in-process path avoids
+per-query loopback TCP and wins everything (up to 9x on
+`update + find`); on Intel, native Postgres wins `createMany`,
+`findMany` and `update + find` outright and ties the rest.
+
+### Memory and cold start
+
+Post-setup baseline RSS and peak growth during the leak-detect
+workload (1k mixed ops), one process per adapter, Intel machine:
+
+| Adapter | baseline RSS | peak delta | retained delta | setup time |
+| ----------------------- | ------ | ------ | ------ | ------- |
+| `prisma-pglite-bridge` | 1784MB | +71MB | +71MB | 1565ms |
+| `pglite-prisma-adapter` | 1868MB | +75MB | +75MB | 1497ms |
+| `postgres-pg` client | **354MB** | **+33MB** | **+33MB** | **93ms** |
+
+Read this honestly: PGlite keeps the entire database (WASM engine +
+data) inside your process — the baseline scales with your dataset,
+and this scenario's seeded dataset costs ~1.4GB of RSS that a
+Postgres client never carries client-side. Postgres server memory is
+sampled on the postmaster only (+20MB baseline); per-connection
+backend memory is **not** captured, so the Postgres server column
+undercounts. Setup time is the WASM cold-start honesty item:
+~0.5s (M3 Max) to ~1.5s (Intel) before the first query, vs ~0.1s
+for a Postgres connection. Apple Silicon memory numbers are not
+published: the scenario produces unstable readings there (negative
+RSS deltas under 16KB pages and aggressive page reclaim) — raw JSON
+is in `results/` regardless; fixing the methodology is an open item.
+
+### What this means
+
+For a test suite issuing ~1000 Prisma queries, the bridge saves
+roughly one second per run versus the direct PGlite adapter, and it
+buys zero-infrastructure Postgres at near-native-Postgres speed. It
+does not make PGlite a production database, and none of these
+numbers describe production Postgres over a real network — the value
+is operational (no Docker, no server, instant snapshot/reset), not a
+raw-speed victory over PostgreSQL itself.
+
+[electric-sql/pglite#1030]: https://github.com/electric-sql/pglite/pull/1030
+
 ## Adapters
 
 | Flag value                        | What it benchmarks                                                   |
