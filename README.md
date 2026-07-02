@@ -4,15 +4,33 @@ In-process PGlite bridge for Prisma. Replaces the TCP socket in
 `pg.Client` with a Duplex stream that speaks PostgreSQL wire protocol
 directly to PGlite's WASM engine.
 
+Everything else is your production stack: the real `pg` client and
+the official `@prisma/adapter-pg` run unchanged, so tests exercise
+the identical adapter, wire-protocol serialization, and type-parsing
+code path they ship with — only the transport differs.
+
 ## Install
 
 Requires **Prisma 7+** and **Node.js 20+**.
 
 ```sh
+pnpm add -D prisma-pglite-bridge
+```
+
+pnpm and npm auto-install the peer dependencies —
+`@electric-sql/pglite`, `@prisma/adapter-pg`, and `pg`. In a
+Prisma-on-Postgres project they are already your production stack;
+the bridge deliberately reuses your copies rather than bundling
+its own.
+
+On Yarn (which does not auto-install peers), or to keep the peers
+visible in your `package.json` so upgrades stay deliberate and
+bot-managed, list them explicitly:
+
+```sh
 pnpm add -D prisma-pglite-bridge @electric-sql/pglite @prisma/adapter-pg pg
 ```
 
-The last three are peer dependencies you may already have.
 TypeScript users also need `@types/pg`.
 
 ## Quickstart
