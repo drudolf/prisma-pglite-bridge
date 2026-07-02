@@ -29,9 +29,14 @@ Raw JSON for every table below is committed under
   *p50 spread* column (min–max of per-repeat p50s) shows run
   stability; treat cross-adapter ratios as the signal and absolute
   numbers as indicative.
-- **Versions:** bridge 1.3.0, `@electric-sql/pglite` 0.5.3 (both
+- **Versions:** bridge 1.4.0 + prepared-statement caching (default
+  from the following release), `@electric-sql/pglite` 0.5.3 (both
   PGlite adapters resolve the same copy), `pglite-prisma-adapter`
   0.7.2, `@prisma/adapter-pg` 7.8.0, `pg` 8.22.0, Prisma 7.8.0.
+  The bridge rows use its default configuration (named prepared
+  statements on); native Postgres appears twice — default
+  configuration and with `BENCH_POSTGRES_PREPARED=1` giving it the
+  same statement-caching lever.
 - **Real Postgres:** PostgreSQL 18.4 via `embedded-postgres`
   18.4.0-beta.17 — native binaries on both architectures (verified:
   no Rosetta), loopback TCP on port 5433, same machine. Note the
@@ -63,26 +68,33 @@ Raw JSON for every table below is committed under
 **Apple M3 Max:**
 
 | Adapter | p50 | p95 | p99 | max | p50 spread |
-| ----------------------- | ---------- | ---------- | ---------- | ------ | ---------- |
-| `prisma-pglite-bridge` | **0.43ms** | **0.50ms** | **1.21ms** | 6.43ms | 0.43–0.44 |
-| `pglite-prisma-adapter` | 0.83ms | 0.91ms | 1.83ms | **2.81ms** | 0.82–0.84 |
-| `postgres-pg` (native) | **0.43ms** | 1.03ms | 1.43ms | 11.28ms | 0.42–0.62 |
+| ------------------------- | ---------- | ---------- | ---------- | ------ | ---------- |
+| `prisma-pglite-bridge` | **0.48ms** | **0.56ms** | **0.98ms** | 4.06ms | 0.46–0.63 |
+| `pglite-prisma-adapter` | 0.94ms | 1.19ms | 2.26ms | 10.43ms | 0.88–1.03 |
+| `postgres-pg` (default) | 0.87ms | 1.52ms | 2.30ms | 8.58ms | 0.74–1.03 |
+| `postgres-pg` (prepared) | 0.52ms | 0.66ms | 1.25ms | **2.86ms** | 0.44–0.52 |
 
 **Intel Core i9-9980HK:**
 
 | Adapter | p50 | p95 | p99 | max | p50 spread |
-| ----------------------- | ---------- | ---------- | ---------- | ------ | ---------- |
-| `prisma-pglite-bridge` | 1.07ms | 1.56ms | **2.51ms** | 8.45ms | 1.03–1.74 |
-| `pglite-prisma-adapter` | 2.16ms | 3.20ms | 4.92ms | 24.29ms | 2.10–2.58 |
-| `postgres-pg` (native) | **0.97ms** | **1.41ms** | 2.85ms | **4.87ms** | 0.94–1.05 |
+| ------------------------- | ---------- | ---------- | ---------- | ------ | ---------- |
+| `prisma-pglite-bridge` | 1.00ms | 1.43ms | **2.06ms** | 8.21ms | 0.95–1.17 |
+| `pglite-prisma-adapter` | 2.00ms | 2.98ms | 4.48ms | 5.92ms | 1.96–2.08 |
+| `postgres-pg` (default) | 0.92ms | 1.36ms | 2.63ms | **4.64ms** | 0.87–1.02 |
+| `postgres-pg` (prepared) | **0.80ms** | **1.18ms** | 2.42ms | 4.80ms | 0.67–0.96 |
 
-Where the bridge **loses**, so you don't have to squint: native
-Postgres wins p50 and p95 on Intel and posts the best worst-case
-there; on the M3 Max the direct adapter has the tightest max
-(2.81ms vs the bridge's 6.43ms). The bridge's claim is the best
-p50-through-p99 *envelope* against the direct adapter (~2x on every
-percentile, both machines) and parity with native Postgres on hot
-read loops — not universal dominance.
+Where the bridge **loses**, so you don't have to squint: on Intel,
+native Postgres wins p50/p95 in either configuration and posts the
+best worst-case — the bridge's wins there are p99 and the ~2x margin
+over the direct adapter. On the M3 Max the bridge leads every
+percentile against every opponent, with overlapping p50 spreads
+against prepared-native (call it a tie at p50, a clear bridge win at
+p95/p99); prepared-native keeps the tightest max. Note the
+prepared-statement asymmetry: statement caching buys the bridge
+~0.1–0.4ms per query (WASM parse/plan is expensive) but is also
+worth ~0.1ms to native Postgres — and unlike many production setups
+(transaction-mode poolers break named statements), the bridge can
+always run with it on, which it now does by default.
 
 ### Operation breadth — `micro` (p50, ratio vs bridge)
 
@@ -90,32 +102,34 @@ read loops — not universal dominance.
 
 | Operation | bridge | direct adapter | native Postgres |
 | -------------- | ------ | -------------- | --------------- |
-| single create | **0.13ms** | 0.20ms (1.6x) | 0.20ms (1.6x) |
-| 100 createMany | **6.87ms** | 7.37ms (1.1x) | 9.27ms (1.4x) |
-| findMany 100 | **0.47ms** | 0.86ms (1.8x) | 0.97ms (2.1x) |
-| nested create | **0.59ms** | 1.15ms (1.9x) | 2.34ms (4.0x) |
-| deep include | **0.72ms** | 1.25ms (1.7x) | 2.00ms (2.8x) |
-| interactive tx | **0.74ms** | 1.05ms (1.4x) | 3.22ms (4.3x) |
-| update + find | **0.30ms** | 0.48ms (1.6x) | 2.75ms (9.3x) |
+| single create | **0.14ms** | 0.21ms (1.5x) | 0.30ms (2.1x) |
+| 100 createMany | **7.31ms** | 8.48ms (1.2x) | 10.24ms (1.4x) |
+| findMany 100 | **0.48ms** | 0.95ms (2.0x) | 0.72ms (1.5x) |
+| nested create | **0.63ms** | 1.31ms (2.1x) | 0.97ms (1.5x) |
+| deep include | **0.73ms** | 1.36ms (1.8x) | 0.73ms (1.0x) |
+| interactive tx | 0.76ms | 1.16ms (1.5x) | **0.60ms** (0.8x) |
+| update + find | **0.31ms** | 0.52ms (1.7x) | 0.31ms (1.0x) |
 
 **Intel Core i9-9980HK:**
 
 | Operation | bridge | direct adapter | native Postgres |
 | -------------- | ------ | -------------- | --------------- |
-| single create | **0.53ms** | 0.75ms (1.4x) | 0.62ms (1.2x) |
-| 100 createMany | 16.14ms | 17.77ms (1.1x) | **15.14ms** (0.9x) |
-| findMany 100 | 1.24ms | 2.37ms (1.9x) | **1.15ms** (0.9x) |
-| nested create | **2.28ms** | 3.42ms (1.5x) | 2.36ms (1.0x) |
-| deep include | **1.91ms** | 3.16ms (1.7x) | 1.91ms (1.0x) |
-| interactive tx | **1.84ms** | 3.04ms (1.7x) | 1.87ms (1.0x) |
-| update + find | 1.18ms | 1.52ms (1.3x) | **0.98ms** (0.8x) |
+| single create | **0.52ms** | 0.74ms (1.4x) | 0.58ms (1.1x) |
+| 100 createMany | 16.86ms | 17.74ms (1.1x) | **15.57ms** (0.9x) |
+| findMany 100 | 1.33ms | 2.76ms (2.1x) | **1.04ms** (0.8x) |
+| nested create | 2.31ms | 3.85ms (1.7x) | **2.16ms** (0.9x) |
+| deep include | 2.07ms | 3.85ms (1.9x) | **1.98ms** (1.0x) |
+| interactive tx | 2.26ms | 3.00ms (1.3x) | **1.98ms** (0.9x) |
+| update + find | 1.16ms | 1.64ms (1.4x) | **1.05ms** (0.9x) |
 
 Against the direct adapter the bridge wins every operation on both
-machines (1.1–1.9x). Against native Postgres the picture is
-architecture-dependent: on the M3 Max the in-process path avoids
-per-query loopback TCP and wins everything (up to 9x on
-`update + find`); on Intel, native Postgres wins `createMany`,
-`findMany` and `update + find` outright and ties the rest.
+machines (1.1–2.1x). Against native Postgres (default config) the
+picture is architecture-dependent: on the M3 Max the bridge wins or
+ties everything except `interactive tx`; on Intel, native Postgres
+wins most operations by ~10%. Micro runs at n=50 are noisier than
+the read-path probe — single-operation ratios near 1.0x move between
+runs; the stable signals are the bridge-vs-direct-adapter margin and
+the order-of-magnitude agreement with native Postgres.
 
 ### Memory and cold start
 
@@ -174,11 +188,13 @@ for this scenario's seed, vs ~0.1s for a Postgres connection.
 
 For a test suite issuing ~1000 Prisma queries, the bridge saves
 roughly one second per run versus the direct PGlite adapter, and it
-buys zero-infrastructure Postgres at near-native-Postgres speed. It
-does not make PGlite a production database, and none of these
-numbers describe production Postgres over a real network — the value
-is operational (no Docker, no server, instant snapshot/reset), not a
-raw-speed victory over PostgreSQL itself.
+buys zero-infrastructure Postgres at native-Postgres speed — ahead
+of a local native server on every read percentile on Apple Silicon,
+within ~10% on x86. It does not make PGlite a production database,
+and none of these numbers describe production Postgres over a real
+network — the value is operational (no Docker, no server, instant
+snapshot/reset) plus a latency profile that no longer asks you to
+trade speed for it.
 
 [electric-sql/pglite#1030]: https://github.com/electric-sql/pglite/pull/1030
 

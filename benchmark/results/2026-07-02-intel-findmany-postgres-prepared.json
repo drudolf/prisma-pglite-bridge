@@ -1,0 +1,850 @@
+[
+  {
+    "adapter": "postgres-pg",
+    "scenario": "findmany-focused",
+    "repeats": 5,
+    "errors": [],
+    "setupTime": {
+      "median": 86.47958500000004,
+      "min": 75.5012099999999,
+      "max": 101.52050000000008,
+      "mean": 86.75965599999999,
+      "stddev": 8.61485128296965
+    },
+    "teardownTime": {
+      "median": 0.3548499999997148,
+      "min": 0.26722500000050786,
+      "max": 1.216939999999795,
+      "mean": 0.5376318000001448,
+      "stddev": 0.3492513324624665
+    },
+    "baseline": {
+      "clientRss": {
+        "median": 360210432,
+        "min": 262750208,
+        "max": 366157824,
+        "mean": 342453452.8,
+        "stddev": 39913067.27599001
+      },
+      "serverRss": {
+        "median": 67944448,
+        "min": 67481600,
+        "max": 69238784,
+        "mean": 68109926.4,
+        "stddev": 594428.8159776913
+      },
+      "combinedRss": {
+        "median": 427978752,
+        "min": 330694656,
+        "max": 435396608,
+        "mean": 410563379.2,
+        "stddev": 40030709.33250788
+      }
+    },
+    "peakDelta": {
+      "rss": {
+        "median": 2727936,
+        "min": -2277376,
+        "max": 96358400,
+        "mean": 20513587.2,
+        "stddev": 37975011.017627336
+      },
+      "heapUsed": {
+        "median": 69736,
+        "min": -6085208,
+        "max": 582552,
+        "mean": -1054929.6,
+        "stddev": 2522789.9783147704
+      },
+      "arrayBuffers": {
+        "median": 0,
+        "min": -8192,
+        "max": 0,
+        "mean": -1638.4,
+        "stddev": 3276.8000000000006
+      }
+    },
+    "serverPeakDelta": {
+      "rss": {
+        "median": 1355776,
+        "min": 638976,
+        "max": 1687552,
+        "mean": 1292697.6,
+        "stddev": 349757.14979259536
+      }
+    },
+    "combinedPeakDelta": {
+      "rss": {
+        "median": 4169728,
+        "min": -589824,
+        "max": 96997376,
+        "mean": 21806284.8,
+        "stddev": 37642445.41450808
+      }
+    },
+    "retainedDelta": {
+      "rss": {
+        "median": 2805760,
+        "min": -2265088,
+        "max": 96358400,
+        "mean": 20532428.8,
+        "stddev": 37965866.94412071
+      },
+      "heapUsed": {
+        "median": 30504,
+        "min": -6117240,
+        "max": 487480,
+        "mean": -1102966.4,
+        "stddev": 2513186.465447687
+      },
+      "arrayBuffers": {
+        "median": 0,
+        "min": -8192,
+        "max": 0,
+        "mean": -1638.4,
+        "stddev": 3276.8000000000006
+      }
+    },
+    "serverRetainedDelta": {
+      "rss": {
+        "median": -18255872,
+        "min": -19169280,
+        "max": -17891328,
+        "mean": -18325504,
+        "stddev": 456515.69212021615
+      }
+    },
+    "combinedRetainedDelta": {
+      "rss": {
+        "median": -15814656,
+        "min": -20156416,
+        "max": 78004224,
+        "mean": 2206924.8,
+        "stddev": 37940447.08934223
+      }
+    },
+    "repeatSlices": {
+      "firstRepeat": {
+        "repeats": 1,
+        "setupTime": {
+          "median": 101.52050000000008,
+          "min": 101.52050000000008,
+          "max": 101.52050000000008,
+          "mean": 101.52050000000008,
+          "stddev": 0
+        },
+        "teardownTime": {
+          "median": 1.216939999999795,
+          "min": 1.216939999999795,
+          "max": 1.216939999999795,
+          "mean": 1.216939999999795,
+          "stddev": 0
+        },
+        "baseline": {
+          "clientRss": {
+            "median": 262750208,
+            "min": 262750208,
+            "max": 262750208,
+            "mean": 262750208,
+            "stddev": 0
+          },
+          "serverRss": {
+            "median": 67944448,
+            "min": 67944448,
+            "max": 67944448,
+            "mean": 67944448,
+            "stddev": 0
+          },
+          "combinedRss": {
+            "median": 330694656,
+            "min": 330694656,
+            "max": 330694656,
+            "mean": 330694656,
+            "stddev": 0
+          }
+        },
+        "peakDelta": {
+          "rss": {
+            "median": 96358400,
+            "min": 96358400,
+            "max": 96358400,
+            "mean": 96358400,
+            "stddev": 0
+          },
+          "heapUsed": {
+            "median": 582552,
+            "min": 582552,
+            "max": 582552,
+            "mean": 582552,
+            "stddev": 0
+          },
+          "arrayBuffers": {
+            "median": -8192,
+            "min": -8192,
+            "max": -8192,
+            "mean": -8192,
+            "stddev": 0
+          }
+        },
+        "serverPeakDelta": {
+          "rss": {
+            "median": 638976,
+            "min": 638976,
+            "max": 638976,
+            "mean": 638976,
+            "stddev": 0
+          }
+        },
+        "combinedPeakDelta": {
+          "rss": {
+            "median": 96997376,
+            "min": 96997376,
+            "max": 96997376,
+            "mean": 96997376,
+            "stddev": 0
+          }
+        },
+        "retainedDelta": {
+          "rss": {
+            "median": 96358400,
+            "min": 96358400,
+            "max": 96358400,
+            "mean": 96358400,
+            "stddev": 0
+          },
+          "heapUsed": {
+            "median": 487480,
+            "min": 487480,
+            "max": 487480,
+            "mean": 487480,
+            "stddev": 0
+          },
+          "arrayBuffers": {
+            "median": -8192,
+            "min": -8192,
+            "max": -8192,
+            "mean": -8192,
+            "stddev": 0
+          }
+        },
+        "serverRetainedDelta": {
+          "rss": {
+            "median": -18354176,
+            "min": -18354176,
+            "max": -18354176,
+            "mean": -18354176,
+            "stddev": 0
+          }
+        },
+        "combinedRetainedDelta": {
+          "rss": {
+            "median": 78004224,
+            "min": 78004224,
+            "max": 78004224,
+            "mean": 78004224,
+            "stddev": 0
+          }
+        }
+      },
+      "warmedRepeats": {
+        "repeats": 4,
+        "setupTime": {
+          "median": 81.89479800000026,
+          "min": 75.5012099999999,
+          "max": 88.40218699999969,
+          "mean": 83.06944499999997,
+          "stddev": 4.9680269888557325
+        },
+        "teardownTime": {
+          "median": 0.33421500000076776,
+          "min": 0.26722500000050786,
+          "max": 0.5149289999999382,
+          "mean": 0.36780475000023216,
+          "stddev": 0.09090919631778938
+        },
+        "baseline": {
+          "clientRss": {
+            "median": 360210432,
+            "min": 360120320,
+            "max": 366157824,
+            "mean": 362379264,
+            "stddev": 2475159.455854107
+          },
+          "serverRss": {
+            "median": 67858432,
+            "min": 67481600,
+            "max": 69238784,
+            "mean": 68151296,
+            "stddev": 658122.179051884
+          },
+          "combinedRss": {
+            "median": 427978752,
+            "min": 427692032,
+            "max": 435396608,
+            "mean": 430530560,
+            "stddev": 3103315.4174566274
+          }
+        },
+        "peakDelta": {
+          "rss": {
+            "median": 2437120,
+            "min": -2277376,
+            "max": 3321856,
+            "mean": 1552384,
+            "stddev": 2233985.9618395097
+          },
+          "heapUsed": {
+            "median": 68712,
+            "min": -6085208,
+            "max": 89560,
+            "mean": -1464300,
+            "stddev": 2667895.4198723757
+          },
+          "arrayBuffers": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "serverPeakDelta": {
+          "rss": {
+            "median": 1355776,
+            "min": 1339392,
+            "max": 1687552,
+            "mean": 1456128,
+            "stddev": 139158.54831091047
+          }
+        },
+        "combinedPeakDelta": {
+          "rss": {
+            "median": 3792896,
+            "min": -589824,
+            "max": 4661248,
+            "mean": 3008512,
+            "stddev": 2100192.795477596
+          }
+        },
+        "retainedDelta": {
+          "rss": {
+            "median": 2441216,
+            "min": -2265088,
+            "max": 3321856,
+            "mean": 1575936,
+            "stddev": 2239580.237698127
+          },
+          "heapUsed": {
+            "median": 27224,
+            "min": -6117240,
+            "max": 57200,
+            "mean": -1500578,
+            "stddev": 2665456.403763528
+          },
+          "arrayBuffers": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "serverRetainedDelta": {
+          "rss": {
+            "median": -18255872,
+            "min": -19169280,
+            "max": -17891328,
+            "mean": -18318336,
+            "stddev": 510148.3316840309
+          }
+        },
+        "combinedRetainedDelta": {
+          "rss": {
+            "median": -15847424,
+            "min": -20156416,
+            "max": -15151104,
+            "mean": -16742400,
+            "stddev": 1990566.4506607158
+          }
+        }
+      }
+    },
+    "operations": [
+      {
+        "name": "findMany 100",
+        "repeats": 5,
+        "p50": {
+          "median": 0.8048819999999068,
+          "min": 0.6745169999994687,
+          "max": 0.9617470000011963,
+          "mean": 0.7898949999999786,
+          "stddev": 0.10201793953858851
+        },
+        "p95": {
+          "median": 1.1812789999994493,
+          "min": 1.0252799999998388,
+          "max": 1.3795089999998709,
+          "mean": 1.2080109999996238,
+          "stddev": 0.12805747827108488
+        },
+        "p99": {
+          "median": 2.4150030000000697,
+          "min": 2.2456120000006194,
+          "max": 3.1376319999999396,
+          "mean": 2.5171620000000985,
+          "stddev": 0.32039257318655795
+        },
+        "min": {
+          "median": 0.6117309999999634,
+          "min": 0.6037820000001375,
+          "max": 0.7491040000004432,
+          "mean": 0.6387000000000626,
+          "stddev": 0.055415426022181614
+        },
+        "max": {
+          "median": 4.800984999999855,
+          "min": 4.368695000000116,
+          "max": 8.664883999999802,
+          "mean": 5.5790649999999005,
+          "stddev": 1.5978868757722018
+        },
+        "mean": {
+          "median": 0.8503653880000093,
+          "min": 0.7797643640000006,
+          "max": 1.0393601890000008,
+          "mean": 0.8722320778000003,
+          "stddev": 0.0927799916148524
+        },
+        "stddev": {
+          "median": 0.31523651632692107,
+          "min": 0.3033760915496682,
+          "max": 0.47013521656190266,
+          "mean": 0.35174274072247824,
+          "stddev": 0.06188864159871714
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      }
+    ],
+    "runs": [
+      {
+        "repeat": 1,
+        "peakDelta": {
+          "rss": 96358400,
+          "heapUsed": 582552,
+          "arrayBuffers": -8192
+        },
+        "serverPeakDelta": {
+          "rss": 638976
+        },
+        "combinedPeakDelta": {
+          "rss": 96997376
+        },
+        "retainedDelta": {
+          "rss": 96358400,
+          "heapUsed": 487480,
+          "arrayBuffers": -8192
+        },
+        "serverRetainedDelta": {
+          "rss": -18354176
+        },
+        "combinedRetainedDelta": {
+          "rss": 78004224
+        },
+        "adapter": "postgres-pg",
+        "scenario": "findmany-focused",
+        "setupTime": 101.52050000000008,
+        "teardownTime": 1.216939999999795,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 262750208,
+            "heapUsed": 25089720,
+            "arrayBuffers": 2139079
+          },
+          "peak": {
+            "rss": 359108608,
+            "heapUsed": 25672272,
+            "arrayBuffers": 2130887
+          },
+          "after": {
+            "rss": 359108608,
+            "heapUsed": 25577200,
+            "arrayBuffers": 2130887
+          },
+          "serverBefore": {
+            "rss": 67944448
+          },
+          "serverPeak": {
+            "rss": 68583424
+          },
+          "serverAfter": {
+            "rss": 49590272
+          },
+          "combinedBefore": {
+            "rss": 330694656
+          },
+          "combinedPeak": {
+            "rss": 427692032
+          },
+          "combinedAfter": {
+            "rss": 408698880
+          }
+        },
+        "operations": [
+          {
+            "name": "findMany 100",
+            "iterations": 1000,
+            "min": 0.6098719999999958,
+            "p50": 0.8048819999999068,
+            "p95": 1.3795089999998709,
+            "p99": 2.4764029999996637,
+            "max": 4.800984999999855,
+            "mean": 0.8942439559999943,
+            "stddev": 0.3562011206971937,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      },
+      {
+        "repeat": 2,
+        "peakDelta": {
+          "rss": -2277376,
+          "heapUsed": -6085208,
+          "arrayBuffers": 0
+        },
+        "serverPeakDelta": {
+          "rss": 1687552
+        },
+        "combinedPeakDelta": {
+          "rss": -589824
+        },
+        "retainedDelta": {
+          "rss": -2265088,
+          "heapUsed": -6117240,
+          "arrayBuffers": 0
+        },
+        "serverRetainedDelta": {
+          "rss": -17891328
+        },
+        "combinedRetainedDelta": {
+          "rss": -20156416
+        },
+        "adapter": "postgres-pg",
+        "scenario": "findmany-focused",
+        "setupTime": 75.5012099999999,
+        "teardownTime": 0.5149289999999382,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 360210432,
+            "heapUsed": 25617024,
+            "arrayBuffers": 2130887
+          },
+          "peak": {
+            "rss": 357933056,
+            "heapUsed": 19531816,
+            "arrayBuffers": 2130887
+          },
+          "after": {
+            "rss": 357945344,
+            "heapUsed": 19499784,
+            "arrayBuffers": 2130887
+          },
+          "serverBefore": {
+            "rss": 67481600
+          },
+          "serverPeak": {
+            "rss": 69169152
+          },
+          "serverAfter": {
+            "rss": 49590272
+          },
+          "combinedBefore": {
+            "rss": 427692032
+          },
+          "combinedPeak": {
+            "rss": 427102208
+          },
+          "combinedAfter": {
+            "rss": 407535616
+          }
+        },
+        "operations": [
+          {
+            "name": "findMany 100",
+            "iterations": 1000,
+            "min": 0.6117309999999634,
+            "p50": 0.6975290000000314,
+            "p95": 1.1812789999994493,
+            "p99": 2.3111600000002,
+            "max": 4.495861999999761,
+            "mean": 0.7974264919999974,
+            "stddev": 0.31376475847670576,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      },
+      {
+        "repeat": 3,
+        "peakDelta": {
+          "rss": 2437120,
+          "heapUsed": 89560,
+          "arrayBuffers": 0
+        },
+        "serverPeakDelta": {
+          "rss": 1355776
+        },
+        "combinedPeakDelta": {
+          "rss": 3792896
+        },
+        "retainedDelta": {
+          "rss": 2441216,
+          "heapUsed": 57200,
+          "arrayBuffers": 0
+        },
+        "serverRetainedDelta": {
+          "rss": -18255872
+        },
+        "combinedRetainedDelta": {
+          "rss": -15814656
+        },
+        "adapter": "postgres-pg",
+        "scenario": "findmany-focused",
+        "setupTime": 81.89479800000026,
+        "teardownTime": 0.26722500000050786,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 360120320,
+            "heapUsed": 19566392,
+            "arrayBuffers": 2130887
+          },
+          "peak": {
+            "rss": 362557440,
+            "heapUsed": 19655952,
+            "arrayBuffers": 2130887
+          },
+          "after": {
+            "rss": 362561536,
+            "heapUsed": 19623592,
+            "arrayBuffers": 2130887
+          },
+          "serverBefore": {
+            "rss": 67858432
+          },
+          "serverPeak": {
+            "rss": 69214208
+          },
+          "serverAfter": {
+            "rss": 49602560
+          },
+          "combinedBefore": {
+            "rss": 427978752
+          },
+          "combinedPeak": {
+            "rss": 431771648
+          },
+          "combinedAfter": {
+            "rss": 412164096
+          }
+        },
+        "operations": [
+          {
+            "name": "findMany 100",
+            "iterations": 1000,
+            "min": 0.6037820000001375,
+            "p50": 0.6745169999994687,
+            "p95": 1.1327700000001641,
+            "p99": 2.2456120000006194,
+            "max": 4.368695000000116,
+            "mean": 0.7797643640000006,
+            "stddev": 0.3033760915496682,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      },
+      {
+        "repeat": 4,
+        "peakDelta": {
+          "rss": 2727936,
+          "heapUsed": 69736,
+          "arrayBuffers": 0
+        },
+        "serverPeakDelta": {
+          "rss": 1441792
+        },
+        "combinedPeakDelta": {
+          "rss": 4169728
+        },
+        "retainedDelta": {
+          "rss": 2805760,
+          "heapUsed": 30504,
+          "arrayBuffers": 0
+        },
+        "serverRetainedDelta": {
+          "rss": -17956864
+        },
+        "combinedRetainedDelta": {
+          "rss": -15151104
+        },
+        "adapter": "postgres-pg",
+        "scenario": "findmany-focused",
+        "setupTime": 86.47958500000004,
+        "teardownTime": 0.3548499999997148,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 363028480,
+            "heapUsed": 19643288,
+            "arrayBuffers": 2130887
+          },
+          "peak": {
+            "rss": 365756416,
+            "heapUsed": 19713024,
+            "arrayBuffers": 2130887
+          },
+          "after": {
+            "rss": 365834240,
+            "heapUsed": 19673792,
+            "arrayBuffers": 2130887
+          },
+          "serverBefore": {
+            "rss": 68026368
+          },
+          "serverPeak": {
+            "rss": 69468160
+          },
+          "serverAfter": {
+            "rss": 50069504
+          },
+          "combinedBefore": {
+            "rss": 431054848
+          },
+          "combinedPeak": {
+            "rss": 435224576
+          },
+          "combinedAfter": {
+            "rss": 415903744
+          }
+        },
+        "operations": [
+          {
+            "name": "findMany 100",
+            "iterations": 1000,
+            "min": 0.619010999999773,
+            "p50": 0.8107999999992899,
+            "p95": 1.0252799999998388,
+            "p99": 2.4150030000000697,
+            "max": 5.5648989999999685,
+            "mean": 0.8503653880000093,
+            "stddev": 0.31523651632692107,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      },
+      {
+        "repeat": 5,
+        "peakDelta": {
+          "rss": 3321856,
+          "heapUsed": 68712,
+          "arrayBuffers": 0
+        },
+        "serverPeakDelta": {
+          "rss": 1339392
+        },
+        "combinedPeakDelta": {
+          "rss": 4661248
+        },
+        "retainedDelta": {
+          "rss": 3321856,
+          "heapUsed": 27224,
+          "arrayBuffers": 0
+        },
+        "serverRetainedDelta": {
+          "rss": -19169280
+        },
+        "combinedRetainedDelta": {
+          "rss": -15847424
+        },
+        "adapter": "postgres-pg",
+        "scenario": "findmany-focused",
+        "setupTime": 88.40218699999969,
+        "teardownTime": 0.33421500000076776,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 366157824,
+            "heapUsed": 19749360,
+            "arrayBuffers": 2130887
+          },
+          "peak": {
+            "rss": 369479680,
+            "heapUsed": 19818072,
+            "arrayBuffers": 2130887
+          },
+          "after": {
+            "rss": 369479680,
+            "heapUsed": 19776584,
+            "arrayBuffers": 2130887
+          },
+          "serverBefore": {
+            "rss": 69238784
+          },
+          "serverPeak": {
+            "rss": 70578176
+          },
+          "serverAfter": {
+            "rss": 50069504
+          },
+          "combinedBefore": {
+            "rss": 435396608
+          },
+          "combinedPeak": {
+            "rss": 440057856
+          },
+          "combinedAfter": {
+            "rss": 419549184
+          }
+        },
+        "operations": [
+          {
+            "name": "findMany 100",
+            "iterations": 1000,
+            "min": 0.7491040000004432,
+            "p50": 0.9617470000011963,
+            "p95": 1.3212169999987964,
+            "p99": 3.1376319999999396,
+            "max": 8.664883999999802,
+            "mean": 1.0393601890000008,
+            "stddev": 0.47013521656190266,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      }
+    ],
+    "operationAttributionSummary": [
+      {
+        "name": "findMany 100",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      }
+    ]
+  }
+]
