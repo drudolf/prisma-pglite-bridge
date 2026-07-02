@@ -1,0 +1,3962 @@
+[
+  {
+    "adapter": "prisma-pglite-bridge",
+    "scenario": "micro",
+    "repeats": 3,
+    "errors": [],
+    "setupTime": {
+      "median": 1492.0583530000004,
+      "min": 1356.3052860000007,
+      "max": 2347.88458,
+      "mean": 1732.082739666667,
+      "stddev": 438.95037966981823
+    },
+    "teardownTime": {
+      "median": 6.278925000002346,
+      "min": 6.0951960000002146,
+      "max": 6.984478999999737,
+      "mean": 6.452866666667433,
+      "stddev": 0.3833169629029471
+    },
+    "baseline": {
+      "clientRss": {
+        "median": 1905061888,
+        "min": 1709862912,
+        "max": 1977053184,
+        "mean": 1863992661.3333333,
+        "stddev": 112879497.39170833
+      },
+      "serverRss": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0,
+        "stddev": 0
+      },
+      "combinedRss": {
+        "median": 1905061888,
+        "min": 1709862912,
+        "max": 1977053184,
+        "mean": 1863992661.3333333,
+        "stddev": 112879497.39170833
+      }
+    },
+    "peakDelta": {
+      "rss": {
+        "median": 315392,
+        "min": -610304,
+        "max": 98455552,
+        "mean": 32720213.333333332,
+        "stddev": 46483439.99380945
+      },
+      "heapUsed": {
+        "median": 433512,
+        "min": 285640,
+        "max": 1072408,
+        "mean": 597186.6666666666,
+        "stddev": 341411.79323248664
+      },
+      "arrayBuffers": {
+        "median": 2850816,
+        "min": 2850816,
+        "max": 2850816,
+        "mean": 2850816,
+        "stddev": 0
+      }
+    },
+    "serverPeakDelta": {
+      "rss": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0,
+        "stddev": 0
+      }
+    },
+    "combinedPeakDelta": {
+      "rss": {
+        "median": 315392,
+        "min": -610304,
+        "max": 98455552,
+        "mean": 32720213.333333332,
+        "stddev": 46483439.99380945
+      }
+    },
+    "retainedDelta": {
+      "rss": {
+        "median": 307200,
+        "min": -602112,
+        "max": 98557952,
+        "mean": 32754346.666666668,
+        "stddev": 46531656.380197465
+      },
+      "heapUsed": {
+        "median": -95600,
+        "min": -106328,
+        "max": 335672,
+        "mean": 44581.333333333336,
+        "stddev": 205878.77446260027
+      },
+      "arrayBuffers": {
+        "median": 1777140,
+        "min": 1777140,
+        "max": 1777140,
+        "mean": 1777140,
+        "stddev": 0
+      }
+    },
+    "serverRetainedDelta": {
+      "rss": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0,
+        "stddev": 0
+      }
+    },
+    "combinedRetainedDelta": {
+      "rss": {
+        "median": 307200,
+        "min": -602112,
+        "max": 98557952,
+        "mean": 32754346.666666668,
+        "stddev": 46531656.380197465
+      }
+    },
+    "repeatSlices": {
+      "firstRepeat": {
+        "repeats": 1,
+        "setupTime": {
+          "median": 2347.88458,
+          "min": 2347.88458,
+          "max": 2347.88458,
+          "mean": 2347.88458,
+          "stddev": 0
+        },
+        "teardownTime": {
+          "median": 6.984478999999737,
+          "min": 6.984478999999737,
+          "max": 6.984478999999737,
+          "mean": 6.984478999999737,
+          "stddev": 0
+        },
+        "baseline": {
+          "clientRss": {
+            "median": 1709862912,
+            "min": 1709862912,
+            "max": 1709862912,
+            "mean": 1709862912,
+            "stddev": 0
+          },
+          "serverRss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          },
+          "combinedRss": {
+            "median": 1709862912,
+            "min": 1709862912,
+            "max": 1709862912,
+            "mean": 1709862912,
+            "stddev": 0
+          }
+        },
+        "peakDelta": {
+          "rss": {
+            "median": 98455552,
+            "min": 98455552,
+            "max": 98455552,
+            "mean": 98455552,
+            "stddev": 0
+          },
+          "heapUsed": {
+            "median": 1072408,
+            "min": 1072408,
+            "max": 1072408,
+            "mean": 1072408,
+            "stddev": 0
+          },
+          "arrayBuffers": {
+            "median": 2850816,
+            "min": 2850816,
+            "max": 2850816,
+            "mean": 2850816,
+            "stddev": 0
+          }
+        },
+        "serverPeakDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedPeakDelta": {
+          "rss": {
+            "median": 98455552,
+            "min": 98455552,
+            "max": 98455552,
+            "mean": 98455552,
+            "stddev": 0
+          }
+        },
+        "retainedDelta": {
+          "rss": {
+            "median": 98557952,
+            "min": 98557952,
+            "max": 98557952,
+            "mean": 98557952,
+            "stddev": 0
+          },
+          "heapUsed": {
+            "median": 335672,
+            "min": 335672,
+            "max": 335672,
+            "mean": 335672,
+            "stddev": 0
+          },
+          "arrayBuffers": {
+            "median": 1777140,
+            "min": 1777140,
+            "max": 1777140,
+            "mean": 1777140,
+            "stddev": 0
+          }
+        },
+        "serverRetainedDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedRetainedDelta": {
+          "rss": {
+            "median": 98557952,
+            "min": 98557952,
+            "max": 98557952,
+            "mean": 98557952,
+            "stddev": 0
+          }
+        }
+      },
+      "warmedRepeats": {
+        "repeats": 2,
+        "setupTime": {
+          "median": 1356.3052860000007,
+          "min": 1356.3052860000007,
+          "max": 1492.0583530000004,
+          "mean": 1424.1818195000005,
+          "stddev": 67.87653349999982
+        },
+        "teardownTime": {
+          "median": 6.0951960000002146,
+          "min": 6.0951960000002146,
+          "max": 6.278925000002346,
+          "mean": 6.18706050000128,
+          "stddev": 0.09186450000106561
+        },
+        "baseline": {
+          "clientRss": {
+            "median": 1905061888,
+            "min": 1905061888,
+            "max": 1977053184,
+            "mean": 1941057536,
+            "stddev": 35995648
+          },
+          "serverRss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          },
+          "combinedRss": {
+            "median": 1905061888,
+            "min": 1905061888,
+            "max": 1977053184,
+            "mean": 1941057536,
+            "stddev": 35995648
+          }
+        },
+        "peakDelta": {
+          "rss": {
+            "median": -610304,
+            "min": -610304,
+            "max": 315392,
+            "mean": -147456,
+            "stddev": 462848
+          },
+          "heapUsed": {
+            "median": 285640,
+            "min": 285640,
+            "max": 433512,
+            "mean": 359576,
+            "stddev": 73936
+          },
+          "arrayBuffers": {
+            "median": 2850816,
+            "min": 2850816,
+            "max": 2850816,
+            "mean": 2850816,
+            "stddev": 0
+          }
+        },
+        "serverPeakDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedPeakDelta": {
+          "rss": {
+            "median": -610304,
+            "min": -610304,
+            "max": 315392,
+            "mean": -147456,
+            "stddev": 462848
+          }
+        },
+        "retainedDelta": {
+          "rss": {
+            "median": -602112,
+            "min": -602112,
+            "max": 307200,
+            "mean": -147456,
+            "stddev": 454656
+          },
+          "heapUsed": {
+            "median": -106328,
+            "min": -106328,
+            "max": -95600,
+            "mean": -100964,
+            "stddev": 5364
+          },
+          "arrayBuffers": {
+            "median": 1777140,
+            "min": 1777140,
+            "max": 1777140,
+            "mean": 1777140,
+            "stddev": 0
+          }
+        },
+        "serverRetainedDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedRetainedDelta": {
+          "rss": {
+            "median": -602112,
+            "min": -602112,
+            "max": 307200,
+            "mean": -147456,
+            "stddev": 454656
+          }
+        }
+      }
+    },
+    "operations": [
+      {
+        "name": "single create",
+        "repeats": 3,
+        "p50": {
+          "median": 0.5313539999988279,
+          "min": 0.5179989999996906,
+          "max": 0.5797519999996439,
+          "mean": 0.5430349999993874,
+          "stddev": 0.02652913584480734
+        },
+        "p95": {
+          "median": 0.6805600000006962,
+          "min": 0.648153000000093,
+          "max": 0.9159270000000106,
+          "mean": 0.7482133333336,
+          "stddev": 0.11932716623434554
+        },
+        "p99": {
+          "median": 1.6682120000004943,
+          "min": 1.6674200000015844,
+          "max": 1.9666120000001683,
+          "mean": 1.7674146666674158,
+          "stddev": 0.14085415630161432
+        },
+        "min": {
+          "median": 0.5074430000022403,
+          "min": 0.5011709999998857,
+          "max": 0.5398890000005849,
+          "mean": 0.5161676666675703,
+          "stddev": 0.01696782715080469
+        },
+        "max": {
+          "median": 1.6682120000004943,
+          "min": 1.6674200000015844,
+          "max": 1.9666120000001683,
+          "mean": 1.7674146666674158,
+          "stddev": 0.14085415630161432
+        },
+        "mean": {
+          "median": 0.5769532800002344,
+          "min": 0.563286299999927,
+          "max": 0.6500409000000218,
+          "mean": 0.596760160000061,
+          "stddev": 0.03808608255684101
+        },
+        "stddev": {
+          "median": 0.16541023062874785,
+          "min": 0.16410714032520027,
+          "max": 0.21471824455547733,
+          "mean": 0.18141187183647514,
+          "stddev": 0.02355716959310717
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "100 createMany",
+        "repeats": 3,
+        "p50": {
+          "median": 16.14260699999977,
+          "min": 16.009131000002526,
+          "max": 19.409919999999147,
+          "mean": 17.187219333333815,
+          "stddev": 1.5726310546002626
+        },
+        "p95": {
+          "median": 20.276879000000918,
+          "min": 18.731362000000445,
+          "max": 23.796416000000136,
+          "mean": 20.934885666667167,
+          "stddev": 2.1195003476859253
+        },
+        "p99": {
+          "median": 25.773482000000513,
+          "min": 21.038048000002163,
+          "max": 28.54975999999988,
+          "mean": 25.12043000000085,
+          "stddev": 3.1012161032682095
+        },
+        "min": {
+          "median": 13.117642999999589,
+          "min": 12.902791000000434,
+          "max": 14.639948000000004,
+          "mean": 13.553460666666675,
+          "stddev": 0.7732534684031425
+        },
+        "max": {
+          "median": 25.773482000000513,
+          "min": 21.038048000002163,
+          "max": 28.54975999999988,
+          "mean": 25.12043000000085,
+          "stddev": 3.1012161032682095
+        },
+        "mean": {
+          "median": 16.17012007999987,
+          "min": 15.956053460000257,
+          "max": 19.48817137999993,
+          "mean": 17.204781640000018,
+          "stddev": 1.616963750985606
+        },
+        "stddev": {
+          "median": 2.3786256102965257,
+          "min": 1.9979420851734602,
+          "max": 2.6829787572531623,
+          "mean": 2.353182150907716,
+          "stddev": 0.2802431536395502
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "findMany 100",
+        "repeats": 3,
+        "p50": {
+          "median": 1.241331000000173,
+          "min": 1.1820260000004055,
+          "max": 1.5891280000032566,
+          "mean": 1.3374950000012784,
+          "stddev": 0.17957105515410846
+        },
+        "p95": {
+          "median": 1.8463510000001406,
+          "min": 1.489611999999397,
+          "max": 5.45702700000038,
+          "mean": 2.930996666666639,
+          "stddev": 1.7921007434892362
+        },
+        "p99": {
+          "median": 2.0984290000005785,
+          "min": 1.6795079999992595,
+          "max": 13.289068999998563,
+          "mean": 5.6890019999994665,
+          "stddev": 5.376779550649067
+        },
+        "min": {
+          "median": 0.991453000000547,
+          "min": 0.9266640000005282,
+          "max": 1.2706109999999171,
+          "mean": 1.062909333333664,
+          "stddev": 0.14923000230562455
+        },
+        "max": {
+          "median": 2.0984290000005785,
+          "min": 1.6795079999992595,
+          "max": 13.289068999998563,
+          "mean": 5.6890019999994665,
+          "stddev": 5.376779550649067
+        },
+        "mean": {
+          "median": 1.2930772400000752,
+          "min": 1.1734228599999188,
+          "max": 2.281474500000186,
+          "mean": 1.5826582000000602,
+          "stddev": 0.49654637817811476
+        },
+        "stddev": {
+          "median": 0.27049486247167354,
+          "min": 0.20416076438321623,
+          "max": 1.93846463802121,
+          "mean": 0.8043734216253666,
+          "stddev": 0.8023807153182564
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "nested create",
+        "repeats": 3,
+        "p50": {
+          "median": 2.276119999999537,
+          "min": 1.9122569999999541,
+          "max": 2.9517570000025444,
+          "mean": 2.380044666667345,
+          "stddev": 0.43068961349434126
+        },
+        "p95": {
+          "median": 3.1374400000004243,
+          "min": 2.8749930000003587,
+          "max": 5.366680999999517,
+          "mean": 3.7930380000001,
+          "stddev": 1.1178800846655041
+        },
+        "p99": {
+          "median": 5.24841699999979,
+          "min": 4.689140000000407,
+          "max": 6.592089000001579,
+          "mean": 5.509882000000592,
+          "stddev": 0.7985723443831622
+        },
+        "min": {
+          "median": 1.788408999999774,
+          "min": 1.7739120000005641,
+          "max": 2.3098290000016277,
+          "mean": 1.9573833333339887,
+          "stddev": 0.24928698550979575
+        },
+        "max": {
+          "median": 5.24841699999979,
+          "min": 4.689140000000407,
+          "max": 6.592089000001579,
+          "mean": 5.509882000000592,
+          "stddev": 0.7985723443831622
+        },
+        "mean": {
+          "median": 2.3630518000000666,
+          "min": 2.082940320000016,
+          "max": 3.272565960000211,
+          "mean": 2.5728526933334313,
+          "stddev": 0.5078153220539116
+        },
+        "stddev": {
+          "median": 0.5218817640076628,
+          "min": 0.5215260663623044,
+          "max": 0.9823996693272306,
+          "mean": 0.6752691665657325,
+          "stddev": 0.21717410976004425
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "deep include",
+        "repeats": 3,
+        "p50": {
+          "median": 1.9137579999996888,
+          "min": 1.8175389999996696,
+          "max": 2.3750200000031327,
+          "mean": 2.0354390000008302,
+          "stddev": 0.2433118241573608
+        },
+        "p95": {
+          "median": 2.62896499999988,
+          "min": 2.4490139999998064,
+          "max": 2.6631630000010773,
+          "mean": 2.580380666666921,
+          "stddev": 0.09393358162177542
+        },
+        "p99": {
+          "median": 2.7170329999971727,
+          "min": 2.7052010000006703,
+          "max": 2.9611899999999878,
+          "mean": 2.7944746666659435,
+          "stddev": 0.11798446460584094
+        },
+        "min": {
+          "median": 1.7781169999998383,
+          "min": 1.7590449999988778,
+          "max": 2.237624000001233,
+          "mean": 1.9249286666666496,
+          "stddev": 0.2212460378747739
+        },
+        "max": {
+          "median": 2.7170329999971727,
+          "min": 2.7052010000006703,
+          "max": 2.9611899999999878,
+          "mean": 2.7944746666659435,
+          "stddev": 0.11798446460584094
+        },
+        "mean": {
+          "median": 2.0393871799999035,
+          "min": 1.9019470399998681,
+          "max": 2.3988621599997715,
+          "mean": 2.113398793333181,
+          "stddev": 0.20950648088985305
+        },
+        "stddev": {
+          "median": 0.20902688515816278,
+          "min": 0.11064254892339048,
+          "max": 0.2866091083003882,
+          "mean": 0.20209284746064715,
+          "stddev": 0.0720051764983488
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "interactive tx",
+        "repeats": 3,
+        "p50": {
+          "median": 1.8443710000001374,
+          "min": 1.7139769999994314,
+          "max": 2.2520970000005036,
+          "mean": 1.9368150000000242,
+          "stddev": 0.22920544416494237
+        },
+        "p95": {
+          "median": 2.633283000001029,
+          "min": 2.3151569999999992,
+          "max": 2.6434660000013537,
+          "mean": 2.530635333334127,
+          "stddev": 0.15242289301937084
+        },
+        "p99": {
+          "median": 6.011849999998958,
+          "min": 3.1452360000002955,
+          "max": 9.0917129999998,
+          "mean": 6.082932999999684,
+          "stddev": 2.428159353989163
+        },
+        "min": {
+          "median": 1.6934840000003533,
+          "min": 1.672508999999991,
+          "max": 2.1254169999992882,
+          "mean": 1.8304699999998775,
+          "stddev": 0.20873473958231153
+        },
+        "max": {
+          "median": 6.011849999998958,
+          "min": 3.1452360000002955,
+          "max": 9.0917129999998,
+          "mean": 6.082932999999684,
+          "stddev": 2.428159353989163
+        },
+        "mean": {
+          "median": 2.061262339999976,
+          "min": 1.8757193000000187,
+          "max": 2.3349944400003735,
+          "mean": 2.090658693333456,
+          "stddev": 0.1886469767362069
+        },
+        "stddev": {
+          "median": 0.6256392279035063,
+          "min": 0.19003626258784093,
+          "max": 1.0267087686094103,
+          "mean": 0.6141280863669192,
+          "stddev": 0.34166708978937355
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "update + find",
+        "repeats": 3,
+        "p50": {
+          "median": 1.1756299999997282,
+          "min": 0.9459000000006199,
+          "max": 1.2052120000007562,
+          "mean": 1.108914000000368,
+          "stddev": 0.1158992287232135
+        },
+        "p95": {
+          "median": 1.2658679999985907,
+          "min": 1.1618020000005345,
+          "max": 1.4644220000009227,
+          "mean": 1.297364000000016,
+          "stddev": 0.12553542557680966
+        },
+        "p99": {
+          "median": 1.4795279999998456,
+          "min": 1.2926119999992807,
+          "max": 1.8623220000008587,
+          "mean": 1.5448206666666617,
+          "stddev": 0.23712123518824355
+        },
+        "min": {
+          "median": 0.9659730000003037,
+          "min": 0.8997630000003483,
+          "max": 1.1670310000008612,
+          "mean": 1.0109223333338377,
+          "stddev": 0.11364675646175278
+        },
+        "max": {
+          "median": 1.4795279999998456,
+          "min": 1.2926119999992807,
+          "max": 1.8623220000008587,
+          "mean": 1.5448206666666617,
+          "stddev": 0.23712123518824355
+        },
+        "mean": {
+          "median": 1.1585390399998505,
+          "min": 0.9775519200000418,
+          "max": 1.246386460000067,
+          "mean": 1.1274924733333196,
+          "stddev": 0.11192533061701088
+        },
+        "stddev": {
+          "median": 0.08643777186620452,
+          "min": 0.08565185081632812,
+          "max": 0.12012567392817278,
+          "mean": 0.09740509887023514,
+          "stddev": 0.016069076227269427
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      }
+    ],
+    "runs": [
+      {
+        "repeat": 1,
+        "peakDelta": {
+          "rss": 98455552,
+          "heapUsed": 1072408,
+          "arrayBuffers": 2850816
+        },
+        "serverPeakDelta": {
+          "rss": 0
+        },
+        "combinedPeakDelta": {
+          "rss": 98455552
+        },
+        "retainedDelta": {
+          "rss": 98557952,
+          "heapUsed": 335672,
+          "arrayBuffers": 1777140
+        },
+        "serverRetainedDelta": {
+          "rss": 0
+        },
+        "combinedRetainedDelta": {
+          "rss": 98557952
+        },
+        "adapter": "prisma-pglite-bridge",
+        "scenario": "micro",
+        "setupTime": 2347.88458,
+        "teardownTime": 6.984478999999737,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 1709862912,
+            "heapUsed": 38516048,
+            "arrayBuffers": 53580047
+          },
+          "peak": {
+            "rss": 1808318464,
+            "heapUsed": 39588456,
+            "arrayBuffers": 56430863
+          },
+          "after": {
+            "rss": 1808420864,
+            "heapUsed": 38851720,
+            "arrayBuffers": 55357187
+          },
+          "serverBefore": {
+            "rss": 0
+          },
+          "serverPeak": {
+            "rss": 0
+          },
+          "serverAfter": {
+            "rss": 0
+          },
+          "combinedBefore": {
+            "rss": 1709862912
+          },
+          "combinedPeak": {
+            "rss": 1808318464
+          },
+          "combinedAfter": {
+            "rss": 1808420864
+          }
+        },
+        "operations": [
+          {
+            "name": "single create",
+            "iterations": 50,
+            "min": 0.5398890000005849,
+            "p50": 0.5797519999996439,
+            "p95": 0.9159270000000106,
+            "p99": 1.9666120000001683,
+            "max": 1.9666120000001683,
+            "mean": 0.6500409000000218,
+            "stddev": 0.21471824455547733,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "100 createMany",
+            "iterations": 50,
+            "min": 14.639948000000004,
+            "p50": 19.409919999999147,
+            "p95": 23.796416000000136,
+            "p99": 28.54975999999988,
+            "max": 28.54975999999988,
+            "mean": 19.48817137999993,
+            "stddev": 2.6829787572531623,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "findMany 100",
+            "iterations": 50,
+            "min": 0.991453000000547,
+            "p50": 1.241331000000173,
+            "p95": 1.8463510000001406,
+            "p99": 2.0984290000005785,
+            "max": 2.0984290000005785,
+            "mean": 1.2930772400000752,
+            "stddev": 0.27049486247167354,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "nested create",
+            "iterations": 50,
+            "min": 1.788408999999774,
+            "p50": 2.276119999999537,
+            "p95": 2.8749930000003587,
+            "p99": 5.24841699999979,
+            "max": 5.24841699999979,
+            "mean": 2.3630518000000666,
+            "stddev": 0.5218817640076628,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "deep include",
+            "iterations": 50,
+            "min": 1.7781169999998383,
+            "p50": 1.9137579999996888,
+            "p95": 2.62896499999988,
+            "p99": 2.9611899999999878,
+            "max": 2.9611899999999878,
+            "mean": 2.0393871799999035,
+            "stddev": 0.2866091083003882,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "interactive tx",
+            "iterations": 50,
+            "min": 1.6934840000003533,
+            "p50": 1.8443710000001374,
+            "p95": 2.3151569999999992,
+            "p99": 9.0917129999998,
+            "max": 9.0917129999998,
+            "mean": 2.061262339999976,
+            "stddev": 1.0267087686094103,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "update + find",
+            "iterations": 50,
+            "min": 0.8997630000003483,
+            "p50": 0.9459000000006199,
+            "p95": 1.1618020000005345,
+            "p99": 1.2926119999992807,
+            "max": 1.2926119999992807,
+            "mean": 0.9775519200000418,
+            "stddev": 0.08565185081632812,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      },
+      {
+        "repeat": 2,
+        "peakDelta": {
+          "rss": -610304,
+          "heapUsed": 433512,
+          "arrayBuffers": 2850816
+        },
+        "serverPeakDelta": {
+          "rss": 0
+        },
+        "combinedPeakDelta": {
+          "rss": -610304
+        },
+        "retainedDelta": {
+          "rss": -602112,
+          "heapUsed": -95600,
+          "arrayBuffers": 1777140
+        },
+        "serverRetainedDelta": {
+          "rss": 0
+        },
+        "combinedRetainedDelta": {
+          "rss": -602112
+        },
+        "adapter": "prisma-pglite-bridge",
+        "scenario": "micro",
+        "setupTime": 1356.3052860000007,
+        "teardownTime": 6.0951960000002146,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 1905061888,
+            "heapUsed": 34627472,
+            "arrayBuffers": 53580047
+          },
+          "peak": {
+            "rss": 1904451584,
+            "heapUsed": 35060984,
+            "arrayBuffers": 56430863
+          },
+          "after": {
+            "rss": 1904459776,
+            "heapUsed": 34531872,
+            "arrayBuffers": 55357187
+          },
+          "serverBefore": {
+            "rss": 0
+          },
+          "serverPeak": {
+            "rss": 0
+          },
+          "serverAfter": {
+            "rss": 0
+          },
+          "combinedBefore": {
+            "rss": 1905061888
+          },
+          "combinedPeak": {
+            "rss": 1904451584
+          },
+          "combinedAfter": {
+            "rss": 1904459776
+          }
+        },
+        "operations": [
+          {
+            "name": "single create",
+            "iterations": 50,
+            "min": 0.5011709999998857,
+            "p50": 0.5179989999996906,
+            "p95": 0.648153000000093,
+            "p99": 1.6682120000004943,
+            "max": 1.6682120000004943,
+            "mean": 0.563286299999927,
+            "stddev": 0.16541023062874785,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "100 createMany",
+            "iterations": 50,
+            "min": 13.117642999999589,
+            "p50": 16.14260699999977,
+            "p95": 18.731362000000445,
+            "p99": 25.773482000000513,
+            "max": 25.773482000000513,
+            "mean": 16.17012007999987,
+            "stddev": 2.3786256102965257,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "findMany 100",
+            "iterations": 50,
+            "min": 0.9266640000005282,
+            "p50": 1.1820260000004055,
+            "p95": 1.489611999999397,
+            "p99": 1.6795079999992595,
+            "max": 1.6795079999992595,
+            "mean": 1.1734228599999188,
+            "stddev": 0.20416076438321623,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "nested create",
+            "iterations": 50,
+            "min": 1.7739120000005641,
+            "p50": 1.9122569999999541,
+            "p95": 3.1374400000004243,
+            "p99": 4.689140000000407,
+            "max": 4.689140000000407,
+            "mean": 2.082940320000016,
+            "stddev": 0.5215260663623044,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "deep include",
+            "iterations": 50,
+            "min": 1.7590449999988778,
+            "p50": 1.8175389999996696,
+            "p95": 2.4490139999998064,
+            "p99": 2.7052010000006703,
+            "max": 2.7052010000006703,
+            "mean": 1.9019470399998681,
+            "stddev": 0.20902688515816278,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "interactive tx",
+            "iterations": 50,
+            "min": 1.672508999999991,
+            "p50": 1.7139769999994314,
+            "p95": 2.633283000001029,
+            "p99": 6.011849999998958,
+            "max": 6.011849999998958,
+            "mean": 1.8757193000000187,
+            "stddev": 0.6256392279035063,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "update + find",
+            "iterations": 50,
+            "min": 0.9659730000003037,
+            "p50": 1.1756299999997282,
+            "p95": 1.2658679999985907,
+            "p99": 1.4795279999998456,
+            "max": 1.4795279999998456,
+            "mean": 1.1585390399998505,
+            "stddev": 0.08643777186620452,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      },
+      {
+        "repeat": 3,
+        "peakDelta": {
+          "rss": 315392,
+          "heapUsed": 285640,
+          "arrayBuffers": 2850816
+        },
+        "serverPeakDelta": {
+          "rss": 0
+        },
+        "combinedPeakDelta": {
+          "rss": 315392
+        },
+        "retainedDelta": {
+          "rss": 307200,
+          "heapUsed": -106328,
+          "arrayBuffers": 1777140
+        },
+        "serverRetainedDelta": {
+          "rss": 0
+        },
+        "combinedRetainedDelta": {
+          "rss": 307200
+        },
+        "adapter": "prisma-pglite-bridge",
+        "scenario": "micro",
+        "setupTime": 1492.0583530000004,
+        "teardownTime": 6.278925000002346,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 1977053184,
+            "heapUsed": 35285184,
+            "arrayBuffers": 53580047
+          },
+          "peak": {
+            "rss": 1977368576,
+            "heapUsed": 35570824,
+            "arrayBuffers": 56430863
+          },
+          "after": {
+            "rss": 1977360384,
+            "heapUsed": 35178856,
+            "arrayBuffers": 55357187
+          },
+          "serverBefore": {
+            "rss": 0
+          },
+          "serverPeak": {
+            "rss": 0
+          },
+          "serverAfter": {
+            "rss": 0
+          },
+          "combinedBefore": {
+            "rss": 1977053184
+          },
+          "combinedPeak": {
+            "rss": 1977368576
+          },
+          "combinedAfter": {
+            "rss": 1977360384
+          }
+        },
+        "operations": [
+          {
+            "name": "single create",
+            "iterations": 50,
+            "min": 0.5074430000022403,
+            "p50": 0.5313539999988279,
+            "p95": 0.6805600000006962,
+            "p99": 1.6674200000015844,
+            "max": 1.6674200000015844,
+            "mean": 0.5769532800002344,
+            "stddev": 0.16410714032520027,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "100 createMany",
+            "iterations": 50,
+            "min": 12.902791000000434,
+            "p50": 16.009131000002526,
+            "p95": 20.276879000000918,
+            "p99": 21.038048000002163,
+            "max": 21.038048000002163,
+            "mean": 15.956053460000257,
+            "stddev": 1.9979420851734602,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "findMany 100",
+            "iterations": 50,
+            "min": 1.2706109999999171,
+            "p50": 1.5891280000032566,
+            "p95": 5.45702700000038,
+            "p99": 13.289068999998563,
+            "max": 13.289068999998563,
+            "mean": 2.281474500000186,
+            "stddev": 1.93846463802121,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "nested create",
+            "iterations": 50,
+            "min": 2.3098290000016277,
+            "p50": 2.9517570000025444,
+            "p95": 5.366680999999517,
+            "p99": 6.592089000001579,
+            "max": 6.592089000001579,
+            "mean": 3.272565960000211,
+            "stddev": 0.9823996693272306,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "deep include",
+            "iterations": 50,
+            "min": 2.237624000001233,
+            "p50": 2.3750200000031327,
+            "p95": 2.6631630000010773,
+            "p99": 2.7170329999971727,
+            "max": 2.7170329999971727,
+            "mean": 2.3988621599997715,
+            "stddev": 0.11064254892339048,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "interactive tx",
+            "iterations": 50,
+            "min": 2.1254169999992882,
+            "p50": 2.2520970000005036,
+            "p95": 2.6434660000013537,
+            "p99": 3.1452360000002955,
+            "max": 3.1452360000002955,
+            "mean": 2.3349944400003735,
+            "stddev": 0.19003626258784093,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "update + find",
+            "iterations": 50,
+            "min": 1.1670310000008612,
+            "p50": 1.2052120000007562,
+            "p95": 1.4644220000009227,
+            "p99": 1.8623220000008587,
+            "max": 1.8623220000008587,
+            "mean": 1.246386460000067,
+            "stddev": 0.12012567392817278,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      }
+    ],
+    "operationAttributionSummary": [
+      {
+        "name": "single create",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "100 createMany",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "findMany 100",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "nested create",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "deep include",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "interactive tx",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "update + find",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      }
+    ]
+  },
+  {
+    "adapter": "pglite-prisma-adapter",
+    "scenario": "micro",
+    "repeats": 3,
+    "errors": [],
+    "setupTime": {
+      "median": 1444.3531470000007,
+      "min": 1396.6064729999998,
+      "max": 1481.7458369999986,
+      "mean": 1440.9018189999997,
+      "stddev": 34.84357017972148
+    },
+    "teardownTime": {
+      "median": 5.488767999999254,
+      "min": 5.098745000002964,
+      "max": 5.653261999999813,
+      "mean": 5.413591666667344,
+      "stddev": 0.23253800641515118
+    },
+    "baseline": {
+      "clientRss": {
+        "median": 1949872128,
+        "min": 1865940992,
+        "max": 2016931840,
+        "mean": 1944248320,
+        "stddev": 61769892.65143888
+      },
+      "serverRss": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0,
+        "stddev": 0
+      },
+      "combinedRss": {
+        "median": 1949872128,
+        "min": 1865940992,
+        "max": 2016931840,
+        "mean": 1944248320,
+        "stddev": 61769892.65143888
+      }
+    },
+    "peakDelta": {
+      "rss": {
+        "median": 1478656,
+        "min": 335872,
+        "max": 18894848,
+        "mean": 6903125.333333333,
+        "stddev": 8492253.262173684
+      },
+      "heapUsed": {
+        "median": 462056,
+        "min": 333856,
+        "max": 527048,
+        "mean": 440986.6666666667,
+        "stddev": 80265.08091456846
+      },
+      "arrayBuffers": {
+        "median": 2850816,
+        "min": 2850816,
+        "max": 2850816,
+        "mean": 2850816,
+        "stddev": 0
+      }
+    },
+    "serverPeakDelta": {
+      "rss": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0,
+        "stddev": 0
+      }
+    },
+    "combinedPeakDelta": {
+      "rss": {
+        "median": 1478656,
+        "min": 335872,
+        "max": 18894848,
+        "mean": 6903125.333333333,
+        "stddev": 8492253.262173684
+      }
+    },
+    "retainedDelta": {
+      "rss": {
+        "median": 1490944,
+        "min": 335872,
+        "max": 18894848,
+        "mean": 6907221.333333333,
+        "stddev": 8489638.494691802
+      },
+      "heapUsed": {
+        "median": -112200,
+        "min": -133240,
+        "max": 97992,
+        "mean": -49149.333333333336,
+        "stddev": 104398.59316208347
+      },
+      "arrayBuffers": {
+        "median": 1777140,
+        "min": 1777140,
+        "max": 1777140,
+        "mean": 1777140,
+        "stddev": 0
+      }
+    },
+    "serverRetainedDelta": {
+      "rss": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0,
+        "stddev": 0
+      }
+    },
+    "combinedRetainedDelta": {
+      "rss": {
+        "median": 1490944,
+        "min": 335872,
+        "max": 18894848,
+        "mean": 6907221.333333333,
+        "stddev": 8489638.494691802
+      }
+    },
+    "repeatSlices": {
+      "firstRepeat": {
+        "repeats": 1,
+        "setupTime": {
+          "median": 1444.3531470000007,
+          "min": 1444.3531470000007,
+          "max": 1444.3531470000007,
+          "mean": 1444.3531470000007,
+          "stddev": 0
+        },
+        "teardownTime": {
+          "median": 5.653261999999813,
+          "min": 5.653261999999813,
+          "max": 5.653261999999813,
+          "mean": 5.653261999999813,
+          "stddev": 0
+        },
+        "baseline": {
+          "clientRss": {
+            "median": 1865940992,
+            "min": 1865940992,
+            "max": 1865940992,
+            "mean": 1865940992,
+            "stddev": 0
+          },
+          "serverRss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          },
+          "combinedRss": {
+            "median": 1865940992,
+            "min": 1865940992,
+            "max": 1865940992,
+            "mean": 1865940992,
+            "stddev": 0
+          }
+        },
+        "peakDelta": {
+          "rss": {
+            "median": 18894848,
+            "min": 18894848,
+            "max": 18894848,
+            "mean": 18894848,
+            "stddev": 0
+          },
+          "heapUsed": {
+            "median": 527048,
+            "min": 527048,
+            "max": 527048,
+            "mean": 527048,
+            "stddev": 0
+          },
+          "arrayBuffers": {
+            "median": 2850816,
+            "min": 2850816,
+            "max": 2850816,
+            "mean": 2850816,
+            "stddev": 0
+          }
+        },
+        "serverPeakDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedPeakDelta": {
+          "rss": {
+            "median": 18894848,
+            "min": 18894848,
+            "max": 18894848,
+            "mean": 18894848,
+            "stddev": 0
+          }
+        },
+        "retainedDelta": {
+          "rss": {
+            "median": 18894848,
+            "min": 18894848,
+            "max": 18894848,
+            "mean": 18894848,
+            "stddev": 0
+          },
+          "heapUsed": {
+            "median": 97992,
+            "min": 97992,
+            "max": 97992,
+            "mean": 97992,
+            "stddev": 0
+          },
+          "arrayBuffers": {
+            "median": 1777140,
+            "min": 1777140,
+            "max": 1777140,
+            "mean": 1777140,
+            "stddev": 0
+          }
+        },
+        "serverRetainedDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedRetainedDelta": {
+          "rss": {
+            "median": 18894848,
+            "min": 18894848,
+            "max": 18894848,
+            "mean": 18894848,
+            "stddev": 0
+          }
+        }
+      },
+      "warmedRepeats": {
+        "repeats": 2,
+        "setupTime": {
+          "median": 1396.6064729999998,
+          "min": 1396.6064729999998,
+          "max": 1481.7458369999986,
+          "mean": 1439.1761549999992,
+          "stddev": 42.569681999999375
+        },
+        "teardownTime": {
+          "median": 5.098745000002964,
+          "min": 5.098745000002964,
+          "max": 5.488767999999254,
+          "mean": 5.293756500001109,
+          "stddev": 0.19501149999814515
+        },
+        "baseline": {
+          "clientRss": {
+            "median": 1949872128,
+            "min": 1949872128,
+            "max": 2016931840,
+            "mean": 1983401984,
+            "stddev": 33529856
+          },
+          "serverRss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          },
+          "combinedRss": {
+            "median": 1949872128,
+            "min": 1949872128,
+            "max": 2016931840,
+            "mean": 1983401984,
+            "stddev": 33529856
+          }
+        },
+        "peakDelta": {
+          "rss": {
+            "median": 335872,
+            "min": 335872,
+            "max": 1478656,
+            "mean": 907264,
+            "stddev": 571392
+          },
+          "heapUsed": {
+            "median": 333856,
+            "min": 333856,
+            "max": 462056,
+            "mean": 397956,
+            "stddev": 64100
+          },
+          "arrayBuffers": {
+            "median": 2850816,
+            "min": 2850816,
+            "max": 2850816,
+            "mean": 2850816,
+            "stddev": 0
+          }
+        },
+        "serverPeakDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedPeakDelta": {
+          "rss": {
+            "median": 335872,
+            "min": 335872,
+            "max": 1478656,
+            "mean": 907264,
+            "stddev": 571392
+          }
+        },
+        "retainedDelta": {
+          "rss": {
+            "median": 335872,
+            "min": 335872,
+            "max": 1490944,
+            "mean": 913408,
+            "stddev": 577536
+          },
+          "heapUsed": {
+            "median": -133240,
+            "min": -133240,
+            "max": -112200,
+            "mean": -122720,
+            "stddev": 10520
+          },
+          "arrayBuffers": {
+            "median": 1777140,
+            "min": 1777140,
+            "max": 1777140,
+            "mean": 1777140,
+            "stddev": 0
+          }
+        },
+        "serverRetainedDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedRetainedDelta": {
+          "rss": {
+            "median": 335872,
+            "min": 335872,
+            "max": 1490944,
+            "mean": 913408,
+            "stddev": 577536
+          }
+        }
+      }
+    },
+    "operations": [
+      {
+        "name": "single create",
+        "repeats": 3,
+        "p50": {
+          "median": 0.7462169999998878,
+          "min": 0.7082449999998062,
+          "max": 0.7586389999996754,
+          "mean": 0.7377003333331231,
+          "stddev": 0.021436557828956447
+        },
+        "p95": {
+          "median": 0.9327469999989262,
+          "min": 0.9249009999994087,
+          "max": 1.0146100000019942,
+          "mean": 0.957419333333443,
+          "stddev": 0.040566564183599156
+        },
+        "p99": {
+          "median": 1.8741430000009132,
+          "min": 1.8240239999995538,
+          "max": 1.8784390000000712,
+          "mean": 1.8588686666668461,
+          "stddev": 0.024701241539164573
+        },
+        "min": {
+          "median": 0.7108309999994162,
+          "min": 0.7003140000015264,
+          "max": 0.711447000001499,
+          "mean": 0.7075306666674805,
+          "stddev": 0.005109146851563469
+        },
+        "max": {
+          "median": 1.8741430000009132,
+          "min": 1.8240239999995538,
+          "max": 1.8784390000000712,
+          "mean": 1.8588686666668461,
+          "stddev": 0.024701241539164573
+        },
+        "mean": {
+          "median": 0.8075795399999152,
+          "min": 0.7742271000001346,
+          "max": 0.8203745400002663,
+          "mean": 0.8007270600001054,
+          "stddev": 0.01945274472925409
+        },
+        "stddev": {
+          "median": 0.17219880641782936,
+          "min": 0.16097788639523275,
+          "max": 0.1761991469662072,
+          "mean": 0.1697919465930898,
+          "stddev": 0.006442899140621634
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "100 createMany",
+        "repeats": 3,
+        "p50": {
+          "median": 17.771138000000064,
+          "min": 15.706765999999334,
+          "max": 17.983556999999564,
+          "mean": 17.153820333332988,
+          "stddev": 1.0268901728373796
+        },
+        "p95": {
+          "median": 21.228791000001365,
+          "min": 19.880365000000893,
+          "max": 21.48143799999889,
+          "mean": 20.863531333333714,
+          "stddev": 0.7028132307146128
+        },
+        "p99": {
+          "median": 22.166118000001006,
+          "min": 21.61495500000092,
+          "max": 44.39581400000043,
+          "mean": 29.39229566666745,
+          "stddev": 10.611475453399065
+        },
+        "min": {
+          "median": 14.443565999999919,
+          "min": 13.500175999999556,
+          "max": 16.75689599999896,
+          "mean": 14.900212666666144,
+          "stddev": 1.3681985536298114
+        },
+        "max": {
+          "median": 22.166118000001006,
+          "min": 21.61495500000092,
+          "max": 44.39581400000043,
+          "mean": 29.39229566666745,
+          "stddev": 10.611475453399065
+        },
+        "mean": {
+          "median": 18.25711459999984,
+          "min": 15.965701219999938,
+          "max": 18.351378820000047,
+          "mean": 17.52473154666661,
+          "stddev": 1.103072407835754
+        },
+        "stddev": {
+          "median": 1.7753603923173795,
+          "min": 1.0385226914219965,
+          "max": 3.9962757214306093,
+          "mean": 2.2700529350566616,
+          "stddev": 1.2571439271917582
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "findMany 100",
+        "repeats": 3,
+        "p50": {
+          "median": 2.3660190000009607,
+          "min": 2.1166880000000674,
+          "max": 2.5778919999975187,
+          "mean": 2.3535329999995156,
+          "stddev": 0.1884926303606931
+        },
+        "p95": {
+          "median": 2.666428000000451,
+          "min": 2.666317999999592,
+          "max": 3.091247000000294,
+          "mean": 2.807997666666779,
+          "stddev": 0.2002875294011264
+        },
+        "p99": {
+          "median": 6.2553529999968305,
+          "min": 5.462172999999893,
+          "max": 8.359511000000566,
+          "mean": 6.692345666665763,
+          "stddev": 1.2225284767245828
+        },
+        "min": {
+          "median": 1.953520999999455,
+          "min": 1.903506999999081,
+          "max": 2.362475000001723,
+          "mean": 2.073167666666753,
+          "stddev": 0.20558761293757125
+        },
+        "max": {
+          "median": 6.2553529999968305,
+          "min": 5.462172999999893,
+          "max": 8.359511000000566,
+          "mean": 6.692345666665763,
+          "stddev": 1.2225284767245828
+        },
+        "mean": {
+          "median": 2.33761820000007,
+          "min": 2.297433200000123,
+          "max": 2.6953341800001365,
+          "mean": 2.44346186000011,
+          "stddev": 0.1788546108675905
+        },
+        "stddev": {
+          "median": 0.6166429652790324,
+          "min": 0.4614173250138281,
+          "max": 0.8854373501345797,
+          "mean": 0.6544992134758133,
+          "stddev": 0.17516290907134216
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "nested create",
+        "repeats": 3,
+        "p50": {
+          "median": 3.415563000000475,
+          "min": 3.1399399999972957,
+          "max": 4.018309000002773,
+          "mean": 3.5246040000001813,
+          "stddev": 0.36678829479992736
+        },
+        "p95": {
+          "median": 5.379926999998133,
+          "min": 4.117604000002757,
+          "max": 5.630501999999979,
+          "mean": 5.042677666666957,
+          "stddev": 0.6620764931753939
+        },
+        "p99": {
+          "median": 6.180327000001853,
+          "min": 4.650870999998006,
+          "max": 7.307893000001059,
+          "mean": 6.046363666666973,
+          "stddev": 1.0888529463411487
+        },
+        "min": {
+          "median": 3.0027740000004997,
+          "min": 2.9517180000002554,
+          "max": 3.6349690000024566,
+          "mean": 3.1964870000010706,
+          "stddev": 0.31075341459954803
+        },
+        "max": {
+          "median": 6.180327000001853,
+          "min": 4.650870999998006,
+          "max": 7.307893000001059,
+          "mean": 6.046363666666973,
+          "stddev": 1.0888529463411487
+        },
+        "mean": {
+          "median": 3.807631959999999,
+          "min": 3.2827782199999636,
+          "max": 4.232855040000286,
+          "mean": 3.774421740000083,
+          "stddev": 0.3885774740510256
+        },
+        "stddev": {
+          "median": 0.5823451487390862,
+          "min": 0.4048115141148679,
+          "max": 0.9105558895009247,
+          "mean": 0.6325708507849596,
+          "stddev": 0.20950148634024665
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "deep include",
+        "repeats": 3,
+        "p50": {
+          "median": 3.1613969999998517,
+          "min": 2.9877029999988736,
+          "max": 3.9114149999986694,
+          "mean": 3.3535049999991315,
+          "stddev": 0.4008242154059542
+        },
+        "p95": {
+          "median": 4.314943999999741,
+          "min": 3.890791999998328,
+          "max": 4.407899000001635,
+          "mean": 4.204544999999901,
+          "stddev": 0.2250790479865959
+        },
+        "p99": {
+          "median": 5.054101999998238,
+          "min": 4.9009849999984,
+          "max": 6.4248289999995905,
+          "mean": 5.459971999998743,
+          "stddev": 0.6851145776487387
+        },
+        "min": {
+          "median": 2.9397250000001804,
+          "min": 2.8684529999991355,
+          "max": 3.611116000000038,
+          "mean": 3.1397646666664514,
+          "stddev": 0.3345633812125387
+        },
+        "max": {
+          "median": 5.054101999998238,
+          "min": 4.9009849999984,
+          "max": 6.4248289999995905,
+          "mean": 5.459971999998743,
+          "stddev": 0.6851145776487387
+        },
+        "mean": {
+          "median": 3.3397522000000754,
+          "min": 3.1433782800000336,
+          "max": 3.9721943799997828,
+          "mean": 3.4851082866666303,
+          "stddev": 0.3536291144244771
+        },
+        "stddev": {
+          "median": 0.41201886998380804,
+          "min": 0.3966268256692798,
+          "max": 0.45297320633387234,
+          "mean": 0.42053963399565336,
+          "stddev": 0.0237792797481191
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "interactive tx",
+        "repeats": 3,
+        "p50": {
+          "median": 3.036812000002101,
+          "min": 2.6270219999987603,
+          "max": 3.0564369999992778,
+          "mean": 2.9067570000000464,
+          "stddev": 0.1979647069985151
+        },
+        "p95": {
+          "median": 3.8050699999985227,
+          "min": 3.4811920000011014,
+          "max": 4.912621999999828,
+          "mean": 4.066294666666484,
+          "stddev": 0.6128766630032123
+        },
+        "p99": {
+          "median": 5.536667000000307,
+          "min": 5.156622999998945,
+          "max": 6.211955999999191,
+          "mean": 5.635081999999481,
+          "stddev": 0.4364218673034979
+        },
+        "min": {
+          "median": 2.534877999998571,
+          "min": 2.3918869999997696,
+          "max": 2.886267999998381,
+          "mean": 2.6043443333322407,
+          "stddev": 0.20772148322537587
+        },
+        "max": {
+          "median": 5.536667000000307,
+          "min": 5.156622999998945,
+          "max": 6.211955999999191,
+          "mean": 5.635081999999481,
+          "stddev": 0.4364218673034979
+        },
+        "mean": {
+          "median": 3.1765189999995345,
+          "min": 2.7742475000000923,
+          "max": 3.250809100000188,
+          "mean": 3.0671918666666045,
+          "stddev": 0.20935146876446778
+        },
+        "stddev": {
+          "median": 0.5047554536684398,
+          "min": 0.4025290897638676,
+          "max": 0.6689217759564299,
+          "mean": 0.5254021064629124,
+          "stddev": 0.10972990785844386
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "update + find",
+        "repeats": 3,
+        "p50": {
+          "median": 1.5200689999983297,
+          "min": 1.4332499999982247,
+          "max": 1.6574350000009872,
+          "mean": 1.5369179999991804,
+          "stddev": 0.09229534172907884
+        },
+        "p95": {
+          "median": 1.9939910000030068,
+          "min": 1.7929779999976745,
+          "max": 2.3060420000001614,
+          "mean": 2.0310036666669475,
+          "stddev": 0.21108627011219838
+        },
+        "p99": {
+          "median": 2.18639500000063,
+          "min": 1.848969999999099,
+          "max": 3.8164859999997134,
+          "mean": 2.6172836666664807,
+          "stddev": 0.8590803551319324
+        },
+        "min": {
+          "median": 1.3030980000003183,
+          "min": 1.2996349999993981,
+          "max": 1.620825000001787,
+          "mean": 1.4078526666671678,
+          "stddev": 0.15060081709992082
+        },
+        "max": {
+          "median": 2.18639500000063,
+          "min": 1.848969999999099,
+          "max": 3.8164859999997134,
+          "mean": 2.6172836666664807,
+          "stddev": 0.8590803551319324
+        },
+        "mean": {
+          "median": 1.6515277199998672,
+          "min": 1.511726139999955,
+          "max": 1.675702699999747,
+          "mean": 1.6129855199998566,
+          "stddev": 0.07227818455095086
+        },
+        "stddev": {
+          "median": 0.2251226317889345,
+          "min": 0.05267548426129799,
+          "max": 0.4218267419062683,
+          "mean": 0.23320828598550025,
+          "stddev": 0.1508137838706079
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      }
+    ],
+    "runs": [
+      {
+        "repeat": 1,
+        "peakDelta": {
+          "rss": 18894848,
+          "heapUsed": 527048,
+          "arrayBuffers": 2850816
+        },
+        "serverPeakDelta": {
+          "rss": 0
+        },
+        "combinedPeakDelta": {
+          "rss": 18894848
+        },
+        "retainedDelta": {
+          "rss": 18894848,
+          "heapUsed": 97992,
+          "arrayBuffers": 1777140
+        },
+        "serverRetainedDelta": {
+          "rss": 0
+        },
+        "combinedRetainedDelta": {
+          "rss": 18894848
+        },
+        "adapter": "pglite-prisma-adapter",
+        "scenario": "micro",
+        "setupTime": 1444.3531470000007,
+        "teardownTime": 5.653261999999813,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 1865940992,
+            "heapUsed": 34190928,
+            "arrayBuffers": 53580047
+          },
+          "peak": {
+            "rss": 1884835840,
+            "heapUsed": 34717976,
+            "arrayBuffers": 56430863
+          },
+          "after": {
+            "rss": 1884835840,
+            "heapUsed": 34288920,
+            "arrayBuffers": 55357187
+          },
+          "serverBefore": {
+            "rss": 0
+          },
+          "serverPeak": {
+            "rss": 0
+          },
+          "serverAfter": {
+            "rss": 0
+          },
+          "combinedBefore": {
+            "rss": 1865940992
+          },
+          "combinedPeak": {
+            "rss": 1884835840
+          },
+          "combinedAfter": {
+            "rss": 1884835840
+          }
+        },
+        "operations": [
+          {
+            "name": "single create",
+            "iterations": 50,
+            "min": 0.7108309999994162,
+            "p50": 0.7462169999998878,
+            "p95": 0.9249009999994087,
+            "p99": 1.8240239999995538,
+            "max": 1.8240239999995538,
+            "mean": 0.8075795399999152,
+            "stddev": 0.16097788639523275,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "100 createMany",
+            "iterations": 50,
+            "min": 14.443565999999919,
+            "p50": 17.771138000000064,
+            "p95": 21.48143799999889,
+            "p99": 44.39581400000043,
+            "max": 44.39581400000043,
+            "mean": 18.351378820000047,
+            "stddev": 3.9962757214306093,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "findMany 100",
+            "iterations": 50,
+            "min": 1.953520999999455,
+            "p50": 2.1166880000000674,
+            "p95": 2.666317999999592,
+            "p99": 8.359511000000566,
+            "max": 8.359511000000566,
+            "mean": 2.297433200000123,
+            "stddev": 0.8854373501345797,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "nested create",
+            "iterations": 50,
+            "min": 3.0027740000004997,
+            "p50": 3.415563000000475,
+            "p95": 5.630501999999979,
+            "p99": 7.307893000001059,
+            "max": 7.307893000001059,
+            "mean": 3.807631959999999,
+            "stddev": 0.9105558895009247,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "deep include",
+            "iterations": 50,
+            "min": 2.9397250000001804,
+            "p50": 3.1613969999998517,
+            "p95": 4.314943999999741,
+            "p99": 4.9009849999984,
+            "max": 4.9009849999984,
+            "mean": 3.3397522000000754,
+            "stddev": 0.41201886998380804,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "interactive tx",
+            "iterations": 50,
+            "min": 2.3918869999997696,
+            "p50": 2.6270219999987603,
+            "p95": 3.4811920000011014,
+            "p99": 5.536667000000307,
+            "max": 5.536667000000307,
+            "mean": 2.7742475000000923,
+            "stddev": 0.5047554536684398,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "update + find",
+            "iterations": 50,
+            "min": 1.3030980000003183,
+            "p50": 1.5200689999983297,
+            "p95": 2.3060420000001614,
+            "p99": 3.8164859999997134,
+            "max": 3.8164859999997134,
+            "mean": 1.6515277199998672,
+            "stddev": 0.4218267419062683,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      },
+      {
+        "repeat": 2,
+        "peakDelta": {
+          "rss": 1478656,
+          "heapUsed": 333856,
+          "arrayBuffers": 2850816
+        },
+        "serverPeakDelta": {
+          "rss": 0
+        },
+        "combinedPeakDelta": {
+          "rss": 1478656
+        },
+        "retainedDelta": {
+          "rss": 1490944,
+          "heapUsed": -133240,
+          "arrayBuffers": 1777140
+        },
+        "serverRetainedDelta": {
+          "rss": 0
+        },
+        "combinedRetainedDelta": {
+          "rss": 1490944
+        },
+        "adapter": "pglite-prisma-adapter",
+        "scenario": "micro",
+        "setupTime": 1396.6064729999998,
+        "teardownTime": 5.098745000002964,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 1949872128,
+            "heapUsed": 34669792,
+            "arrayBuffers": 53580047
+          },
+          "peak": {
+            "rss": 1951350784,
+            "heapUsed": 35003648,
+            "arrayBuffers": 56430863
+          },
+          "after": {
+            "rss": 1951363072,
+            "heapUsed": 34536552,
+            "arrayBuffers": 55357187
+          },
+          "serverBefore": {
+            "rss": 0
+          },
+          "serverPeak": {
+            "rss": 0
+          },
+          "serverAfter": {
+            "rss": 0
+          },
+          "combinedBefore": {
+            "rss": 1949872128
+          },
+          "combinedPeak": {
+            "rss": 1951350784
+          },
+          "combinedAfter": {
+            "rss": 1951363072
+          }
+        },
+        "operations": [
+          {
+            "name": "single create",
+            "iterations": 50,
+            "min": 0.7003140000015264,
+            "p50": 0.7082449999998062,
+            "p95": 0.9327469999989262,
+            "p99": 1.8784390000000712,
+            "max": 1.8784390000000712,
+            "mean": 0.7742271000001346,
+            "stddev": 0.17219880641782936,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "100 createMany",
+            "iterations": 50,
+            "min": 13.500175999999556,
+            "p50": 15.706765999999334,
+            "p95": 19.880365000000893,
+            "p99": 21.61495500000092,
+            "max": 21.61495500000092,
+            "mean": 15.965701219999938,
+            "stddev": 1.7753603923173795,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "findMany 100",
+            "iterations": 50,
+            "min": 1.903506999999081,
+            "p50": 2.3660190000009607,
+            "p95": 2.666428000000451,
+            "p99": 6.2553529999968305,
+            "max": 6.2553529999968305,
+            "mean": 2.33761820000007,
+            "stddev": 0.6166429652790324,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "nested create",
+            "iterations": 50,
+            "min": 2.9517180000002554,
+            "p50": 3.1399399999972957,
+            "p95": 4.117604000002757,
+            "p99": 4.650870999998006,
+            "max": 4.650870999998006,
+            "mean": 3.2827782199999636,
+            "stddev": 0.4048115141148679,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "deep include",
+            "iterations": 50,
+            "min": 2.8684529999991355,
+            "p50": 2.9877029999988736,
+            "p95": 3.890791999998328,
+            "p99": 5.054101999998238,
+            "max": 5.054101999998238,
+            "mean": 3.1433782800000336,
+            "stddev": 0.3966268256692798,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "interactive tx",
+            "iterations": 50,
+            "min": 2.534877999998571,
+            "p50": 3.036812000002101,
+            "p95": 4.912621999999828,
+            "p99": 6.211955999999191,
+            "max": 6.211955999999191,
+            "mean": 3.250809100000188,
+            "stddev": 0.6689217759564299,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "update + find",
+            "iterations": 50,
+            "min": 1.620825000001787,
+            "p50": 1.6574350000009872,
+            "p95": 1.7929779999976745,
+            "p99": 1.848969999999099,
+            "max": 1.848969999999099,
+            "mean": 1.675702699999747,
+            "stddev": 0.05267548426129799,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      },
+      {
+        "repeat": 3,
+        "peakDelta": {
+          "rss": 335872,
+          "heapUsed": 462056,
+          "arrayBuffers": 2850816
+        },
+        "serverPeakDelta": {
+          "rss": 0
+        },
+        "combinedPeakDelta": {
+          "rss": 335872
+        },
+        "retainedDelta": {
+          "rss": 335872,
+          "heapUsed": -112200,
+          "arrayBuffers": 1777140
+        },
+        "serverRetainedDelta": {
+          "rss": 0
+        },
+        "combinedRetainedDelta": {
+          "rss": 335872
+        },
+        "adapter": "pglite-prisma-adapter",
+        "scenario": "micro",
+        "setupTime": 1481.7458369999986,
+        "teardownTime": 5.488767999999254,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 2016931840,
+            "heapUsed": 35292264,
+            "arrayBuffers": 53580047
+          },
+          "peak": {
+            "rss": 2017267712,
+            "heapUsed": 35754320,
+            "arrayBuffers": 56430863
+          },
+          "after": {
+            "rss": 2017267712,
+            "heapUsed": 35180064,
+            "arrayBuffers": 55357187
+          },
+          "serverBefore": {
+            "rss": 0
+          },
+          "serverPeak": {
+            "rss": 0
+          },
+          "serverAfter": {
+            "rss": 0
+          },
+          "combinedBefore": {
+            "rss": 2016931840
+          },
+          "combinedPeak": {
+            "rss": 2017267712
+          },
+          "combinedAfter": {
+            "rss": 2017267712
+          }
+        },
+        "operations": [
+          {
+            "name": "single create",
+            "iterations": 50,
+            "min": 0.711447000001499,
+            "p50": 0.7586389999996754,
+            "p95": 1.0146100000019942,
+            "p99": 1.8741430000009132,
+            "max": 1.8741430000009132,
+            "mean": 0.8203745400002663,
+            "stddev": 0.1761991469662072,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "100 createMany",
+            "iterations": 50,
+            "min": 16.75689599999896,
+            "p50": 17.983556999999564,
+            "p95": 21.228791000001365,
+            "p99": 22.166118000001006,
+            "max": 22.166118000001006,
+            "mean": 18.25711459999984,
+            "stddev": 1.0385226914219965,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "findMany 100",
+            "iterations": 50,
+            "min": 2.362475000001723,
+            "p50": 2.5778919999975187,
+            "p95": 3.091247000000294,
+            "p99": 5.462172999999893,
+            "max": 5.462172999999893,
+            "mean": 2.6953341800001365,
+            "stddev": 0.4614173250138281,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "nested create",
+            "iterations": 50,
+            "min": 3.6349690000024566,
+            "p50": 4.018309000002773,
+            "p95": 5.379926999998133,
+            "p99": 6.180327000001853,
+            "max": 6.180327000001853,
+            "mean": 4.232855040000286,
+            "stddev": 0.5823451487390862,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "deep include",
+            "iterations": 50,
+            "min": 3.611116000000038,
+            "p50": 3.9114149999986694,
+            "p95": 4.407899000001635,
+            "p99": 6.4248289999995905,
+            "max": 6.4248289999995905,
+            "mean": 3.9721943799997828,
+            "stddev": 0.45297320633387234,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "interactive tx",
+            "iterations": 50,
+            "min": 2.886267999998381,
+            "p50": 3.0564369999992778,
+            "p95": 3.8050699999985227,
+            "p99": 5.156622999998945,
+            "max": 5.156622999998945,
+            "mean": 3.1765189999995345,
+            "stddev": 0.4025290897638676,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "update + find",
+            "iterations": 50,
+            "min": 1.2996349999993981,
+            "p50": 1.4332499999982247,
+            "p95": 1.9939910000030068,
+            "p99": 2.18639500000063,
+            "max": 2.18639500000063,
+            "mean": 1.511726139999955,
+            "stddev": 0.2251226317889345,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      }
+    ],
+    "operationAttributionSummary": [
+      {
+        "name": "single create",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "100 createMany",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "findMany 100",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "nested create",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "deep include",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "interactive tx",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "update + find",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      }
+    ]
+  },
+  {
+    "adapter": "postgres-pg",
+    "scenario": "micro",
+    "repeats": 3,
+    "errors": [],
+    "setupTime": {
+      "median": 96.57912999999826,
+      "min": 95.8412840000019,
+      "max": 104.762745,
+      "mean": 99.06105300000006,
+      "stddev": 4.0429422394320005
+    },
+    "teardownTime": {
+      "median": 0.5719910000007076,
+      "min": 0.4782279999999446,
+      "max": 0.6046319999986736,
+      "mean": 0.5516169999997752,
+      "stddev": 0.05357746859111681
+    },
+    "baseline": {
+      "clientRss": {
+        "median": 1789313024,
+        "min": 1723047936,
+        "max": 1855942656,
+        "mean": 1789434538.6666667,
+        "stddev": 54254110.2917881
+      },
+      "serverRss": {
+        "median": 20541440,
+        "min": 20541440,
+        "max": 20541440,
+        "mean": 20541440,
+        "stddev": 0
+      },
+      "combinedRss": {
+        "median": 1809854464,
+        "min": 1743589376,
+        "max": 1876484096,
+        "mean": 1809975978.6666667,
+        "stddev": 54254110.2917881
+      }
+    },
+    "peakDelta": {
+      "rss": {
+        "median": 69632,
+        "min": 0,
+        "max": 770048,
+        "mean": 279893.3333333333,
+        "stddev": 347755.51929224964
+      },
+      "heapUsed": {
+        "median": 137000,
+        "min": 97776,
+        "max": 191656,
+        "mean": 142144,
+        "stddev": 38498.56405980185
+      },
+      "arrayBuffers": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0,
+        "stddev": 0
+      }
+    },
+    "serverPeakDelta": {
+      "rss": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0,
+        "stddev": 0
+      }
+    },
+    "combinedPeakDelta": {
+      "rss": {
+        "median": 69632,
+        "min": 0,
+        "max": 770048,
+        "mean": 279893.3333333333,
+        "stddev": 347755.51929224964
+      }
+    },
+    "retainedDelta": {
+      "rss": {
+        "median": 69632,
+        "min": 0,
+        "max": 770048,
+        "mean": 279893.3333333333,
+        "stddev": 347755.51929224964
+      },
+      "heapUsed": {
+        "median": -39528,
+        "min": -49984,
+        "max": 22144,
+        "mean": -22456,
+        "stddev": 31824.53963008211
+      },
+      "arrayBuffers": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0,
+        "stddev": 0
+      }
+    },
+    "serverRetainedDelta": {
+      "rss": {
+        "median": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0,
+        "stddev": 0
+      }
+    },
+    "combinedRetainedDelta": {
+      "rss": {
+        "median": 69632,
+        "min": 0,
+        "max": 770048,
+        "mean": 279893.3333333333,
+        "stddev": 347755.51929224964
+      }
+    },
+    "repeatSlices": {
+      "firstRepeat": {
+        "repeats": 1,
+        "setupTime": {
+          "median": 104.762745,
+          "min": 104.762745,
+          "max": 104.762745,
+          "mean": 104.762745,
+          "stddev": 0
+        },
+        "teardownTime": {
+          "median": 0.6046319999986736,
+          "min": 0.6046319999986736,
+          "max": 0.6046319999986736,
+          "mean": 0.6046319999986736,
+          "stddev": 0
+        },
+        "baseline": {
+          "clientRss": {
+            "median": 1723047936,
+            "min": 1723047936,
+            "max": 1723047936,
+            "mean": 1723047936,
+            "stddev": 0
+          },
+          "serverRss": {
+            "median": 20541440,
+            "min": 20541440,
+            "max": 20541440,
+            "mean": 20541440,
+            "stddev": 0
+          },
+          "combinedRss": {
+            "median": 1743589376,
+            "min": 1743589376,
+            "max": 1743589376,
+            "mean": 1743589376,
+            "stddev": 0
+          }
+        },
+        "peakDelta": {
+          "rss": {
+            "median": 770048,
+            "min": 770048,
+            "max": 770048,
+            "mean": 770048,
+            "stddev": 0
+          },
+          "heapUsed": {
+            "median": 191656,
+            "min": 191656,
+            "max": 191656,
+            "mean": 191656,
+            "stddev": 0
+          },
+          "arrayBuffers": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "serverPeakDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedPeakDelta": {
+          "rss": {
+            "median": 770048,
+            "min": 770048,
+            "max": 770048,
+            "mean": 770048,
+            "stddev": 0
+          }
+        },
+        "retainedDelta": {
+          "rss": {
+            "median": 770048,
+            "min": 770048,
+            "max": 770048,
+            "mean": 770048,
+            "stddev": 0
+          },
+          "heapUsed": {
+            "median": 22144,
+            "min": 22144,
+            "max": 22144,
+            "mean": 22144,
+            "stddev": 0
+          },
+          "arrayBuffers": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "serverRetainedDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedRetainedDelta": {
+          "rss": {
+            "median": 770048,
+            "min": 770048,
+            "max": 770048,
+            "mean": 770048,
+            "stddev": 0
+          }
+        }
+      },
+      "warmedRepeats": {
+        "repeats": 2,
+        "setupTime": {
+          "median": 95.8412840000019,
+          "min": 95.8412840000019,
+          "max": 96.57912999999826,
+          "mean": 96.21020700000008,
+          "stddev": 0.36892299999817624
+        },
+        "teardownTime": {
+          "median": 0.4782279999999446,
+          "min": 0.4782279999999446,
+          "max": 0.5719910000007076,
+          "mean": 0.5251095000003261,
+          "stddev": 0.04688150000038149
+        },
+        "baseline": {
+          "clientRss": {
+            "median": 1789313024,
+            "min": 1789313024,
+            "max": 1855942656,
+            "mean": 1822627840,
+            "stddev": 33314816
+          },
+          "serverRss": {
+            "median": 20541440,
+            "min": 20541440,
+            "max": 20541440,
+            "mean": 20541440,
+            "stddev": 0
+          },
+          "combinedRss": {
+            "median": 1809854464,
+            "min": 1809854464,
+            "max": 1876484096,
+            "mean": 1843169280,
+            "stddev": 33314816
+          }
+        },
+        "peakDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 69632,
+            "mean": 34816,
+            "stddev": 34816
+          },
+          "heapUsed": {
+            "median": 97776,
+            "min": 97776,
+            "max": 137000,
+            "mean": 117388,
+            "stddev": 19612
+          },
+          "arrayBuffers": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "serverPeakDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedPeakDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 69632,
+            "mean": 34816,
+            "stddev": 34816
+          }
+        },
+        "retainedDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 69632,
+            "mean": 34816,
+            "stddev": 34816
+          },
+          "heapUsed": {
+            "median": -49984,
+            "min": -49984,
+            "max": -39528,
+            "mean": -44756,
+            "stddev": 5228
+          },
+          "arrayBuffers": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "serverRetainedDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "mean": 0,
+            "stddev": 0
+          }
+        },
+        "combinedRetainedDelta": {
+          "rss": {
+            "median": 0,
+            "min": 0,
+            "max": 69632,
+            "mean": 34816,
+            "stddev": 34816
+          }
+        }
+      }
+    },
+    "operations": [
+      {
+        "name": "single create",
+        "repeats": 3,
+        "p50": {
+          "median": 0.6176239999986137,
+          "min": 0.6035759999995207,
+          "max": 0.6521759999995993,
+          "mean": 0.6244586666659112,
+          "stddev": 0.020420977798034232
+        },
+        "p95": {
+          "median": 0.8896270000004733,
+          "min": 0.8868389999988722,
+          "max": 0.9213669999990088,
+          "mean": 0.8992776666661181,
+          "stddev": 0.01566093273767349
+        },
+        "p99": {
+          "median": 2.1854659999989963,
+          "min": 1.9633510000003298,
+          "max": 3.656533000001218,
+          "mean": 2.6017833333335147,
+          "stddev": 0.7513128122638957
+        },
+        "min": {
+          "median": 0.5218299999996816,
+          "min": 0.5144819999986794,
+          "max": 0.5420430000012857,
+          "mean": 0.5261183333332156,
+          "stddev": 0.01165316930769022
+        },
+        "max": {
+          "median": 2.1854659999989963,
+          "min": 1.9633510000003298,
+          "max": 3.656533000001218,
+          "mean": 2.6017833333335147,
+          "stddev": 0.7513128122638957
+        },
+        "mean": {
+          "median": 0.6916887399998086,
+          "min": 0.678161059999984,
+          "max": 0.7562260800003423,
+          "mean": 0.7086919600000451,
+          "stddev": 0.03406238350141706
+        },
+        "stddev": {
+          "median": 0.30863863531536306,
+          "min": 0.21886454607740327,
+          "max": 0.46356907956313875,
+          "mean": 0.330357420318635,
+          "stddev": 0.10107375654649965
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "100 createMany",
+        "repeats": 3,
+        "p50": {
+          "median": 15.138460000000123,
+          "min": 15.000098000000435,
+          "max": 16.02338999999847,
+          "mean": 15.387315999999677,
+          "stddev": 0.4533053502639098
+        },
+        "p95": {
+          "median": 18.925242000001163,
+          "min": 17.460385000000315,
+          "max": 21.82898600000044,
+          "mean": 19.40487100000064,
+          "stddev": 1.8154341367894897
+        },
+        "p99": {
+          "median": 20.004791000001205,
+          "min": 19.436538000001747,
+          "max": 41.824469999999565,
+          "mean": 27.088599666667506,
+          "stddev": 10.422416026001649
+        },
+        "min": {
+          "median": 12.222202999999354,
+          "min": 12.211051999998745,
+          "max": 15.01609599999938,
+          "mean": 13.149783666665826,
+          "stddev": 1.3196899586304234
+        },
+        "max": {
+          "median": 20.004791000001205,
+          "min": 19.436538000001747,
+          "max": 41.824469999999565,
+          "mean": 27.088599666667506,
+          "stddev": 10.422416026001649
+        },
+        "mean": {
+          "median": 15.180568099999983,
+          "min": 14.697512560000032,
+          "max": 17.516674299999867,
+          "mean": 15.798251653333296,
+          "stddev": 1.2310071643749205
+        },
+        "stddev": {
+          "median": 1.6966509304868704,
+          "min": 1.3575844154766243,
+          "max": 4.1342341530796105,
+          "mean": 2.396156499681035,
+          "stddev": 1.2367772562411072
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "findMany 100",
+        "repeats": 3,
+        "p50": {
+          "median": 1.150508999999147,
+          "min": 1.1148319999992964,
+          "max": 1.1749609999988024,
+          "mean": 1.1467673333324153,
+          "stddev": 0.024689730825032605
+        },
+        "p95": {
+          "median": 1.3624449999988428,
+          "min": 1.315124000000651,
+          "max": 1.4276710000012827,
+          "mean": 1.3684133333335922,
+          "stddev": 0.04614052849272215
+        },
+        "p99": {
+          "median": 1.4618519999985438,
+          "min": 1.42318399999931,
+          "max": 1.5514679999978398,
+          "mean": 1.4788346666652312,
+          "stddev": 0.0537308377578436
+        },
+        "min": {
+          "median": 1.0042819999998756,
+          "min": 0.9494529999974475,
+          "max": 1.0539539999990666,
+          "mean": 1.0025629999987966,
+          "stddev": 0.042679667064363574
+        },
+        "max": {
+          "median": 1.4618519999985438,
+          "min": 1.42318399999931,
+          "max": 1.5514679999978398,
+          "mean": 1.4788346666652312,
+          "stddev": 0.0537308377578436
+        },
+        "mean": {
+          "median": 1.176067919999805,
+          "min": 1.1094823999998333,
+          "max": 1.1929300999998669,
+          "mean": 1.1594934733331683,
+          "stddev": 0.03602697018024862
+        },
+        "stddev": {
+          "median": 0.09311893550909973,
+          "min": 0.09168073826185741,
+          "max": 0.11259541615692126,
+          "mean": 0.09913169664262612,
+          "stddev": 0.009538375480139943
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "nested create",
+        "repeats": 3,
+        "p50": {
+          "median": 2.35718800000177,
+          "min": 1.7833499999997002,
+          "max": 2.392007000002195,
+          "mean": 2.177515000001222,
+          "stddev": 0.2790789925330664
+        },
+        "p95": {
+          "median": 2.7121750000005704,
+          "min": 2.555415000000721,
+          "max": 4.551039999998466,
+          "mean": 3.2728766666665856,
+          "stddev": 0.9060609083299478
+        },
+        "p99": {
+          "median": 5.492272999999841,
+          "min": 5.404091000000335,
+          "max": 7.227539999999863,
+          "mean": 6.0413013333333465,
+          "stddev": 0.8395695909222551
+        },
+        "min": {
+          "median": 2.0495719999998983,
+          "min": 1.6087160000006406,
+          "max": 2.0813860000016575,
+          "mean": 1.9132246666673989,
+          "stddev": 0.2157115028696169
+        },
+        "max": {
+          "median": 5.492272999999841,
+          "min": 5.404091000000335,
+          "max": 7.227539999999863,
+          "mean": 6.0413013333333465,
+          "stddev": 0.8395695909222551
+        },
+        "mean": {
+          "median": 2.433733799999827,
+          "min": 1.921539520000224,
+          "max": 2.7578814599999166,
+          "mean": 2.3710515933333225,
+          "stddev": 0.3443000188063206
+        },
+        "stddev": {
+          "median": 0.5649066513975795,
+          "min": 0.4567047994144961,
+          "max": 0.9812131325845528,
+          "mean": 0.6676081944655428,
+          "stddev": 0.2261090490635191
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "deep include",
+        "repeats": 3,
+        "p50": {
+          "median": 1.9102740000016638,
+          "min": 1.569539000000077,
+          "max": 2.0012490000008256,
+          "mean": 1.8270206666675222,
+          "stddev": 0.18581661059334076
+        },
+        "p95": {
+          "median": 2.5638529999996535,
+          "min": 2.475954000001366,
+          "max": 2.622279000001072,
+          "mean": 2.5540286666673637,
+          "stddev": 0.060139501994925376
+        },
+        "p99": {
+          "median": 3.854409999999916,
+          "min": 2.6107870000014373,
+          "max": 4.487699999997858,
+          "mean": 3.6509656666664037,
+          "stddev": 0.7796335891357465
+        },
+        "min": {
+          "median": 1.4899460000015097,
+          "min": 1.4697370000012597,
+          "max": 1.8347799999974086,
+          "mean": 1.5981543333333927,
+          "stddev": 0.16752289497935302
+        },
+        "max": {
+          "median": 3.854409999999916,
+          "min": 2.6107870000014373,
+          "max": 4.487699999997858,
+          "mean": 3.6509656666664037,
+          "stddev": 0.7796335891357465
+        },
+        "mean": {
+          "median": 1.9656888199998503,
+          "min": 1.6932962400000178,
+          "max": 2.075884779999833,
+          "mean": 1.9116232799999004,
+          "stddev": 0.1608017613842423
+        },
+        "stddev": {
+          "median": 0.39594463722282636,
+          "min": 0.18975403128293397,
+          "max": 0.4187158846937017,
+          "mean": 0.33480485106648733,
+          "stddev": 0.10298685245459124
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "interactive tx",
+        "repeats": 3,
+        "p50": {
+          "median": 1.8650539999998728,
+          "min": 1.6421719999998459,
+          "max": 2.0624399999978777,
+          "mean": 1.8565553333325322,
+          "stddev": 0.17167890271653136
+        },
+        "p95": {
+          "median": 2.5558879999989585,
+          "min": 2.3311439999997674,
+          "max": 3.780110000001514,
+          "mean": 2.8890473333334135,
+          "stddev": 0.6367217986589115
+        },
+        "p99": {
+          "median": 3.342812999999296,
+          "min": 2.642465999997512,
+          "max": 6.320142000000487,
+          "mean": 4.1018069999990985,
+          "stddev": 1.5944443356597613
+        },
+        "min": {
+          "median": 1.5134669999988546,
+          "min": 1.4768379999986792,
+          "max": 1.8597780000018247,
+          "mean": 1.6166943333331194,
+          "stddev": 0.17253535417623803
+        },
+        "max": {
+          "median": 3.342812999999296,
+          "min": 2.642465999997512,
+          "max": 6.320142000000487,
+          "mean": 4.1018069999990985,
+          "stddev": 1.5944443356597613
+        },
+        "mean": {
+          "median": 2.123660899999668,
+          "min": 1.7398490400000446,
+          "max": 2.1870584200000303,
+          "mean": 2.016856119999914,
+          "stddev": 0.19757615099515377
+        },
+        "stddev": {
+          "median": 0.2497263401292761,
+          "min": 0.24049998413133716,
+          "max": 0.8612339455008102,
+          "mean": 0.45048675658714116,
+          "stddev": 0.29046654576343345
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "update + find",
+        "repeats": 3,
+        "p50": {
+          "median": 0.9821310000006633,
+          "min": 0.926368000000366,
+          "max": 1.1744870000002265,
+          "mean": 1.0276620000004186,
+          "stddev": 0.10628754555752988
+        },
+        "p95": {
+          "median": 1.5301710000021558,
+          "min": 1.1010999999998603,
+          "max": 1.5785670000004757,
+          "mean": 1.403279333334164,
+          "stddev": 0.21458456813842644
+        },
+        "p99": {
+          "median": 3.9271630000002915,
+          "min": 1.5504280000022845,
+          "max": 4.477796999999555,
+          "mean": 3.318462666667377,
+          "stddev": 1.2702386619282628
+        },
+        "min": {
+          "median": 0.8942050000005111,
+          "min": 0.8661629999987781,
+          "max": 1.0440850000013597,
+          "mean": 0.9348176666668829,
+          "stddev": 0.07810719574851406
+        },
+        "max": {
+          "median": 3.9271630000002915,
+          "min": 1.5504280000022845,
+          "max": 4.477796999999555,
+          "mean": 3.318462666667377,
+          "stddev": 1.2702386619282628
+        },
+        "mean": {
+          "median": 1.1074877600000763,
+          "min": 0.9492416800005594,
+          "max": 1.2917183000002843,
+          "mean": 1.1161492466669733,
+          "stddev": 0.13994957383541073
+        },
+        "stddev": {
+          "median": 0.4424525471383987,
+          "min": 0.10122300525833697,
+          "max": 0.47529851530949996,
+          "mean": 0.3396580225687453,
+          "stddev": 0.16913142328996753
+        },
+        "ops": null,
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      }
+    ],
+    "runs": [
+      {
+        "repeat": 1,
+        "peakDelta": {
+          "rss": 770048,
+          "heapUsed": 191656,
+          "arrayBuffers": 0
+        },
+        "serverPeakDelta": {
+          "rss": 0
+        },
+        "combinedPeakDelta": {
+          "rss": 770048
+        },
+        "retainedDelta": {
+          "rss": 770048,
+          "heapUsed": 22144,
+          "arrayBuffers": 0
+        },
+        "serverRetainedDelta": {
+          "rss": 0
+        },
+        "combinedRetainedDelta": {
+          "rss": 770048
+        },
+        "adapter": "postgres-pg",
+        "scenario": "micro",
+        "setupTime": 104.762745,
+        "teardownTime": 0.6046319999986736,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 1723047936,
+            "heapUsed": 28149704,
+            "arrayBuffers": 3180012
+          },
+          "peak": {
+            "rss": 1723817984,
+            "heapUsed": 28341360,
+            "arrayBuffers": 3180012
+          },
+          "after": {
+            "rss": 1723817984,
+            "heapUsed": 28171848,
+            "arrayBuffers": 3180012
+          },
+          "serverBefore": {
+            "rss": 20541440
+          },
+          "serverPeak": {
+            "rss": 20541440
+          },
+          "serverAfter": {
+            "rss": 20541440
+          },
+          "combinedBefore": {
+            "rss": 1743589376
+          },
+          "combinedPeak": {
+            "rss": 1744359424
+          },
+          "combinedAfter": {
+            "rss": 1744359424
+          }
+        },
+        "operations": [
+          {
+            "name": "single create",
+            "iterations": 50,
+            "min": 0.5218299999996816,
+            "p50": 0.6035759999995207,
+            "p95": 0.8896270000004733,
+            "p99": 1.9633510000003298,
+            "max": 1.9633510000003298,
+            "mean": 0.678161059999984,
+            "stddev": 0.21886454607740327,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "100 createMany",
+            "iterations": 50,
+            "min": 12.222202999999354,
+            "p50": 15.138460000000123,
+            "p95": 17.460385000000315,
+            "p99": 20.004791000001205,
+            "max": 20.004791000001205,
+            "mean": 15.180568099999983,
+            "stddev": 1.3575844154766243,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "findMany 100",
+            "iterations": 50,
+            "min": 1.0042819999998756,
+            "p50": 1.1749609999988024,
+            "p95": 1.3624449999988428,
+            "p99": 1.4618519999985438,
+            "max": 1.4618519999985438,
+            "mean": 1.176067919999805,
+            "stddev": 0.09168073826185741,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "nested create",
+            "iterations": 50,
+            "min": 1.6087160000006406,
+            "p50": 1.7833499999997002,
+            "p95": 2.555415000000721,
+            "p99": 5.492272999999841,
+            "max": 5.492272999999841,
+            "mean": 1.921539520000224,
+            "stddev": 0.5649066513975795,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "deep include",
+            "iterations": 50,
+            "min": 1.4697370000012597,
+            "p50": 1.569539000000077,
+            "p95": 2.622279000001072,
+            "p99": 3.854409999999916,
+            "max": 3.854409999999916,
+            "mean": 1.6932962400000178,
+            "stddev": 0.39594463722282636,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "interactive tx",
+            "iterations": 50,
+            "min": 1.5134669999988546,
+            "p50": 1.8650539999998728,
+            "p95": 3.780110000001514,
+            "p99": 6.320142000000487,
+            "max": 6.320142000000487,
+            "mean": 2.1870584200000303,
+            "stddev": 0.8612339455008102,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "update + find",
+            "iterations": 50,
+            "min": 0.8942050000005111,
+            "p50": 0.9821310000006633,
+            "p95": 1.5785670000004757,
+            "p99": 3.9271630000002915,
+            "max": 3.9271630000002915,
+            "mean": 1.1074877600000763,
+            "stddev": 0.4424525471383987,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      },
+      {
+        "repeat": 2,
+        "peakDelta": {
+          "rss": 69632,
+          "heapUsed": 137000,
+          "arrayBuffers": 0
+        },
+        "serverPeakDelta": {
+          "rss": 0
+        },
+        "combinedPeakDelta": {
+          "rss": 69632
+        },
+        "retainedDelta": {
+          "rss": 69632,
+          "heapUsed": -49984,
+          "arrayBuffers": 0
+        },
+        "serverRetainedDelta": {
+          "rss": 0
+        },
+        "combinedRetainedDelta": {
+          "rss": 69632
+        },
+        "adapter": "postgres-pg",
+        "scenario": "micro",
+        "setupTime": 95.8412840000019,
+        "teardownTime": 0.4782279999999446,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 1789313024,
+            "heapUsed": 28365488,
+            "arrayBuffers": 3180012
+          },
+          "peak": {
+            "rss": 1789382656,
+            "heapUsed": 28502488,
+            "arrayBuffers": 3180012
+          },
+          "after": {
+            "rss": 1789382656,
+            "heapUsed": 28315504,
+            "arrayBuffers": 3180012
+          },
+          "serverBefore": {
+            "rss": 20541440
+          },
+          "serverPeak": {
+            "rss": 20541440
+          },
+          "serverAfter": {
+            "rss": 20541440
+          },
+          "combinedBefore": {
+            "rss": 1809854464
+          },
+          "combinedPeak": {
+            "rss": 1809924096
+          },
+          "combinedAfter": {
+            "rss": 1809924096
+          }
+        },
+        "operations": [
+          {
+            "name": "single create",
+            "iterations": 50,
+            "min": 0.5420430000012857,
+            "p50": 0.6521759999995993,
+            "p95": 0.9213669999990088,
+            "p99": 3.656533000001218,
+            "max": 3.656533000001218,
+            "mean": 0.7562260800003423,
+            "stddev": 0.46356907956313875,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "100 createMany",
+            "iterations": 50,
+            "min": 12.211051999998745,
+            "p50": 15.000098000000435,
+            "p95": 18.925242000001163,
+            "p99": 19.436538000001747,
+            "max": 19.436538000001747,
+            "mean": 14.697512560000032,
+            "stddev": 1.6966509304868704,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "findMany 100",
+            "iterations": 50,
+            "min": 0.9494529999974475,
+            "p50": 1.1148319999992964,
+            "p95": 1.315124000000651,
+            "p99": 1.42318399999931,
+            "max": 1.42318399999931,
+            "mean": 1.1094823999998333,
+            "stddev": 0.09311893550909973,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "nested create",
+            "iterations": 50,
+            "min": 2.0813860000016575,
+            "p50": 2.35718800000177,
+            "p95": 2.7121750000005704,
+            "p99": 5.404091000000335,
+            "max": 5.404091000000335,
+            "mean": 2.433733799999827,
+            "stddev": 0.4567047994144961,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "deep include",
+            "iterations": 50,
+            "min": 1.4899460000015097,
+            "p50": 1.9102740000016638,
+            "p95": 2.475954000001366,
+            "p99": 4.487699999997858,
+            "max": 4.487699999997858,
+            "mean": 1.9656888199998503,
+            "stddev": 0.4187158846937017,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "interactive tx",
+            "iterations": 50,
+            "min": 1.4768379999986792,
+            "p50": 1.6421719999998459,
+            "p95": 2.3311439999997674,
+            "p99": 2.642465999997512,
+            "max": 2.642465999997512,
+            "mean": 1.7398490400000446,
+            "stddev": 0.24049998413133716,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "update + find",
+            "iterations": 50,
+            "min": 0.8661629999987781,
+            "p50": 0.926368000000366,
+            "p95": 1.1010999999998603,
+            "p99": 1.5504280000022845,
+            "max": 1.5504280000022845,
+            "mean": 0.9492416800005594,
+            "stddev": 0.10122300525833697,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      },
+      {
+        "repeat": 3,
+        "peakDelta": {
+          "rss": 0,
+          "heapUsed": 97776,
+          "arrayBuffers": 0
+        },
+        "serverPeakDelta": {
+          "rss": 0
+        },
+        "combinedPeakDelta": {
+          "rss": 0
+        },
+        "retainedDelta": {
+          "rss": 0,
+          "heapUsed": -39528,
+          "arrayBuffers": 0
+        },
+        "serverRetainedDelta": {
+          "rss": 0
+        },
+        "combinedRetainedDelta": {
+          "rss": 0
+        },
+        "adapter": "postgres-pg",
+        "scenario": "micro",
+        "setupTime": 96.57912999999826,
+        "teardownTime": 0.5719910000007076,
+        "error": null,
+        "memory": {
+          "before": {
+            "rss": 1855942656,
+            "heapUsed": 29086888,
+            "arrayBuffers": 3180012
+          },
+          "peak": {
+            "rss": 1855942656,
+            "heapUsed": 29184664,
+            "arrayBuffers": 3180012
+          },
+          "after": {
+            "rss": 1855942656,
+            "heapUsed": 29047360,
+            "arrayBuffers": 3180012
+          },
+          "serverBefore": {
+            "rss": 20541440
+          },
+          "serverPeak": {
+            "rss": 20541440
+          },
+          "serverAfter": {
+            "rss": 20541440
+          },
+          "combinedBefore": {
+            "rss": 1876484096
+          },
+          "combinedPeak": {
+            "rss": 1876484096
+          },
+          "combinedAfter": {
+            "rss": 1876484096
+          }
+        },
+        "operations": [
+          {
+            "name": "single create",
+            "iterations": 50,
+            "min": 0.5144819999986794,
+            "p50": 0.6176239999986137,
+            "p95": 0.8868389999988722,
+            "p99": 2.1854659999989963,
+            "max": 2.1854659999989963,
+            "mean": 0.6916887399998086,
+            "stddev": 0.30863863531536306,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "100 createMany",
+            "iterations": 50,
+            "min": 15.01609599999938,
+            "p50": 16.02338999999847,
+            "p95": 21.82898600000044,
+            "p99": 41.824469999999565,
+            "max": 41.824469999999565,
+            "mean": 17.516674299999867,
+            "stddev": 4.1342341530796105,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "findMany 100",
+            "iterations": 50,
+            "min": 1.0539539999990666,
+            "p50": 1.150508999999147,
+            "p95": 1.4276710000012827,
+            "p99": 1.5514679999978398,
+            "max": 1.5514679999978398,
+            "mean": 1.1929300999998669,
+            "stddev": 0.11259541615692126,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "nested create",
+            "iterations": 50,
+            "min": 2.0495719999998983,
+            "p50": 2.392007000002195,
+            "p95": 4.551039999998466,
+            "p99": 7.227539999999863,
+            "max": 7.227539999999863,
+            "mean": 2.7578814599999166,
+            "stddev": 0.9812131325845528,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "deep include",
+            "iterations": 50,
+            "min": 1.8347799999974086,
+            "p50": 2.0012490000008256,
+            "p95": 2.5638529999996535,
+            "p99": 2.6107870000014373,
+            "max": 2.6107870000014373,
+            "mean": 2.075884779999833,
+            "stddev": 0.18975403128293397,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "interactive tx",
+            "iterations": 50,
+            "min": 1.8597780000018247,
+            "p50": 2.0624399999978777,
+            "p95": 2.5558879999989585,
+            "p99": 3.342812999999296,
+            "max": 3.342812999999296,
+            "mean": 2.123660899999668,
+            "stddev": 0.2497263401292761,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          },
+          {
+            "name": "update + find",
+            "iterations": 50,
+            "min": 1.0440850000013597,
+            "p50": 1.1744870000002265,
+            "p95": 1.5301710000021558,
+            "p99": 4.477796999999555,
+            "max": 4.477796999999555,
+            "mean": 1.2917183000002843,
+            "stddev": 0.47529851530949996,
+            "ops": null,
+            "memory": null,
+            "iterationRetainedDelta": null,
+            "attribution": null
+          }
+        ]
+      }
+    ],
+    "operationAttributionSummary": [
+      {
+        "name": "single create",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "100 createMany",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "findMany 100",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "nested create",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "deep include",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "interactive tx",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      },
+      {
+        "name": "update + find",
+        "iterationRetainedDelta": null,
+        "stackAttribution": null
+      }
+    ]
+  }
+]
