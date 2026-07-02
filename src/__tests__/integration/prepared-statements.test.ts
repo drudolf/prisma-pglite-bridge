@@ -1,8 +1,8 @@
 // Integration coverage for prepared-statement caching, running against a real
 // PGlite and the real generated PrismaClient.
 //
-// The bridge defaults to caching Prisma queries as named prepared statements
-// (`ppb_<n>`) when the pool holds a single client. resetDb keeps those
+// With the opt-in `preparedStatements: true`, the bridge caches Prisma
+// queries as named prepared statements (`ppb_<n>`). resetDb keeps those
 // statements alive — tables are truncated, never dropped, so cached statements
 // replan transparently — while still clearing the rest of the session state.
 import { PrismaClient } from '@prisma/client';
@@ -30,8 +30,8 @@ const hasBridgeStatement = (names: string[]): boolean =>
   names.some((name) => name.startsWith('ppb_'));
 
 describe('prepared-statement caching', () => {
-  it('caches Prisma queries as ppb_-named statements by default', async () => {
-    const { bridge, prisma } = await setupSuite();
+  it('caches Prisma queries as ppb_-named statements when opted in', async () => {
+    const { bridge, prisma } = await setupSuite({ preparedStatements: true });
     try {
       await prisma.tenant.findMany();
       await prisma.tenant.findMany();
@@ -43,8 +43,8 @@ describe('prepared-statement caching', () => {
     }
   });
 
-  it('caches nothing when preparedStatements is false', async () => {
-    const { bridge, prisma } = await setupSuite({ preparedStatements: false });
+  it('caches nothing by default', async () => {
+    const { bridge, prisma } = await setupSuite();
     try {
       await prisma.tenant.findMany();
       await prisma.tenant.findMany();
@@ -57,7 +57,7 @@ describe('prepared-statement caching', () => {
   });
 
   it('keeps cached statements working across resetDb', async () => {
-    const { bridge, prisma } = await setupSuite();
+    const { bridge, prisma } = await setupSuite({ preparedStatements: true });
     try {
       await prisma.tenant.create({
         data: { id: 'tenant-seeded', name: 'Seeded Tenant', slug: 'seeded' },
@@ -106,14 +106,14 @@ describe('prepared-statement caching', () => {
     const { PGlite } = await import('@electric-sql/pglite');
     const pglite = new PGlite();
     try {
-      const first = new PGliteBridge({ pglite });
+      const first = new PGliteBridge({ pglite, preparedStatements: true });
       await pushMigrations(pglite, { configRoot: process.cwd() });
       const prismaA = new PrismaClient({ adapter: first.adapter });
       await prismaA.tenant.findMany();
       await prismaA.$disconnect();
       await first.close();
 
-      const second = new PGliteBridge({ pglite });
+      const second = new PGliteBridge({ pglite, preparedStatements: true });
       const prismaB = new PrismaClient({ adapter: second.adapter });
       // Same query shape → same generated name → would collide without
       // the connect-time DEALLOCATE.

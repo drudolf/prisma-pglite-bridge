@@ -122,14 +122,15 @@ export interface PGliteBridgeOptions {
   /**
    * Cache Prisma queries as named prepared statements, so PGlite parses
    * and plans each query shape once per session instead of on every
-   * execution. Statements survive {@link PGliteBridge.resetDb} — tables
+   * execution (~7% lower read p50, ~18% lower p99 in the reference
+   * benchmark). Statements survive {@link PGliteBridge.resetDb} — tables
    * are truncated, never dropped, so retained statements revalidate
    * transparently and the cache stays warm across per-test resets.
    *
-   * Default: enabled when `max` is 1 (the default). PGlite is a single
-   * session shared by every pool client, so at `max > 1` named statements
-   * prepared through different clients would collide; the default turns
-   * the cache off there. Set explicitly to override either way.
+   * Default: `false` — opt in deliberately. Requires `max: 1` semantics
+   * to be safe: PGlite is a single session shared by every pool client,
+   * so at `max > 1` named statements prepared through different clients
+   * would collide.
    */
   preparedStatements?: boolean;
 }
@@ -181,7 +182,7 @@ export class PGliteBridge {
     });
     this.#snapshot = new SnapshotManager(this.pglite);
 
-    const preparedStatements = options.preparedStatements ?? (options.max ?? 1) === 1;
+    const preparedStatements = options.preparedStatements ?? false;
     // adapter-pg types the generator as `=> string`, but it forwards the
     // result straight into pg's `QueryConfig.name`, where `undefined` is
     // the documented "unnamed statement" path — which is exactly the
