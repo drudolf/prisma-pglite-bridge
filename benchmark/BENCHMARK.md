@@ -191,13 +191,15 @@ The `postgres-pg` adapter requires connection info — see
 | `path-split`           | Separates raw PGlite, adapter, Prisma, and maintenance paths            |         yes         |
 | `findmany-focused`     | `findMany({ take: 100 })` in isolation — tail-latency probe             |    recommended      |
 | `repeated-large-reads` | Repeated Prisma reads over one 1MB JSON row (`$queryRaw`, `findUnique`) |                     |
+| `bytes-sweep`          | Bytea decoder across payload sizes, `Bytes` and `Bytes[]` columns       |                     |
+| `text-array-sweep`     | TEXT[] parser across array shapes (tag-like through payload-like)       |                     |
 
 Pick one with `--scenario <name>`, or `--scenario all` for the full set.
-`findmany-focused`, `repeated-large-reads`, and `path-split` are
-explicit-only — none are included in `all`; target them with
-`--scenario findmany-focused`, `--scenario repeated-large-reads`, or
-`--scenario path-split` when hunting read-path or path-attribution
-regressions.
+`findmany-focused`, `repeated-large-reads`, `path-split`,
+`bytes-sweep`, and `text-array-sweep` are explicit-only — none are
+included in `all`; target them directly (e.g.
+`--scenario findmany-focused`) when hunting read-path,
+path-attribution, or decoder regressions.
 
 ## CLI flags
 
@@ -293,6 +295,11 @@ you want stage-level attribution.
    RSS is tracked.
 
 ## Comparing results
+
+To collect results from another machine (e.g. a different CPU
+architecture), `scripts/bench-remote.sh <ssh-host>` runs the suite on a
+remote checkout over SSH and prints clean result JSON to stdout — see
+the header comment for setup assumptions.
 
 The simplest workflow:
 
