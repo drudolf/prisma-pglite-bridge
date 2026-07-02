@@ -88,14 +88,37 @@ describe('snapshot manager', () => {
     await pglite.exec('DROP TABLE users');
   });
 
-  it('skips truncation work when no user tables exist', async () => {
+  it('skips truncation work and resets session state without deallocating statements', async () => {
     const pglite = createMockPGlite();
 
     const snapshot = new SnapshotManager(pglite);
 
     await snapshot.resetDb();
 
-    expect(vi.mocked(pglite.exec).mock.calls).toEqual([['DISCARD ALL']]);
+    const executed = vi
+      .mocked(pglite.exec)
+      .mock.calls.map((call) => String(call[0]))
+      .join('\n');
+    expect(executed).not.toContain('TRUNCATE');
+    // Granular equivalent of DISCARD ALL minus DEALLOCATE ALL: session vars
+    // reset, temp tables and plans discarded — prepared statements survive.
+    expect(executed).toContain('RESET ALL');
+    expect(executed).toContain('DISCARD TEMP');
+    expect(executed).toContain('DISCARD PLANS');
+    expect(executed).not.toContain('DEALLOCATE');
+    expect(executed).not.toContain('DISCARD ALL');
     expect(vi.mocked(pglite.query).mock.calls).toHaveLength(1);
+  });
+
+  it('keeps named prepared statements usable across resetDb', async () => {
+    await pglite.exec('PREPARE snapshot_manager_probe AS SELECT 42 AS answer');
+
+    const snapshot = new SnapshotManager(pglite);
+    await snapshot.resetDb();
+
+    const { rows } = await pglite.query<{ answer: number }>('EXECUTE snapshot_manager_probe');
+    expect(rows).toEqual([{ answer: 42 }]);
+
+    await pglite.exec('DEALLOCATE snapshot_manager_probe');
   });
 });

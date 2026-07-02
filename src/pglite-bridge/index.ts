@@ -48,6 +48,7 @@ import { PgBridgePool } from '../pool';
 import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
 import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SnapshotManager } from './snapshot-manager.ts';
+import { createStatementNameGenerator } from './statement-names.ts';
 
 /** @internal Exported for testing. */
 export const emitBridgeLeakWarning = (): void => {
@@ -117,6 +118,20 @@ export interface PGliteBridgeOptions {
    * matching the previous unbounded `await pglite.waitReady` behavior.
    */
   timeout?: number;
+
+  /**
+   * Cache Prisma queries as named prepared statements, so PGlite parses
+   * and plans each query shape once per session instead of on every
+   * execution. Statements survive {@link PGliteBridge.resetDb} — tables
+   * are truncated, never dropped, so retained statements revalidate
+   * transparently and the cache stays warm across per-test resets.
+   *
+   * Default: enabled when `max` is 1 (the default). PGlite is a single
+   * session shared by every pool client, so at `max > 1` named statements
+   * prepared through different clients would collide; the default turns
+   * the cache off there. Set explicitly to override either way.
+   */
+  preparedStatements?: boolean;
 }
 
 export class PGliteBridge {
@@ -166,7 +181,18 @@ export class PGliteBridge {
     });
     this.#snapshot = new SnapshotManager(this.pglite);
 
-    this.adapter = new PrismaPg(this.#pool);
+    const preparedStatements = options.preparedStatements ?? (options.max ?? 1) === 1;
+    // adapter-pg types the generator as `=> string`, but it forwards the
+    // result straight into pg's `QueryConfig.name`, where `undefined` is
+    // the documented "unnamed statement" path — which is exactly the
+    // bounded generator's over-limit fallback.
+    const statementNameGenerator = createStatementNameGenerator() as (query: {
+      sql: string;
+    }) => string;
+    this.adapter = new PrismaPg(
+      this.#pool,
+      preparedStatements ? { statementNameGenerator } : undefined,
+    );
 
     leakRegistry.register(this.adapter, undefined, this.#leakToken);
   }
