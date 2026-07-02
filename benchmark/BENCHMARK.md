@@ -40,8 +40,15 @@ Raw JSON for every table below is committed under
   inspection.
 - **Statistics:** percentiles computed per repeat, median across
   repeats. No outlier trimming. Latency: n=1000, warmup=100, r=5.
-  Micro: n=50, warmup=5, r=3. Memory: one process per adapter
-  (fresh baseline), r=3.
+  Micro: n=50, warmup=5, r=3. Memory: r=3, with each repeat in a
+  freshly spawned child process (a torn-down PGlite's WASM memory is
+  not returned to the OS promptly — on some platforms never within
+  the process lifetime — so in-process repeats contaminate each
+  other's baselines); the in-workload peak is sampled every 25ms;
+  baseline and retained snapshots wait for RSS quiescence (up to
+  20s) because PGlite's setup transient drains back to the OS
+  asynchronously; retained is measured pre-teardown on the live
+  instance.
 - PGlite ≥ 0.5.3 matters: it ships the raw-stream parse skip
   ([electric-sql/pglite#1030]) this bridge's protocol path is built
   around. On older engines the bridge compensates at runtime and
@@ -108,27 +115,44 @@ per-query loopback TCP and wins everything (up to 9x on
 
 ### Memory and cold start
 
-Post-setup baseline RSS and peak growth during the leak-detect
-workload (1k mixed ops), one process per adapter, Intel machine:
+Quiesced post-setup baseline RSS, sampled in-workload peak, and
+pre-teardown retained growth during the leak-detect workload (1k
+mixed ops); one child process per adapter × repeat:
+
+**Apple M3 Max:**
 
 | Adapter | baseline RSS | peak delta | retained delta | setup time |
 | ----------------------- | ------ | ------ | ------ | ------- |
-| `prisma-pglite-bridge` | 1784MB | +71MB | +71MB | 1565ms |
-| `pglite-prisma-adapter` | 1868MB | +75MB | +75MB | 1497ms |
-| `postgres-pg` client | **354MB** | **+33MB** | **+33MB** | **93ms** |
+| `prisma-pglite-bridge` | 753MB | **+30MB** | **+12MB** | 720ms |
+| `pglite-prisma-adapter` | 729MB | +96MB | +74MB | 747ms |
+| `postgres-pg` client | **264MB** | +97MB | +63MB | **84ms** |
+
+**Intel Core i9-9980HK:**
+
+| Adapter | baseline RSS | peak delta | retained delta | setup time |
+| ----------------------- | ------ | ------ | ------ | ------- |
+| `prisma-pglite-bridge` | 1589MB | +177MB | +176MB | 2031ms |
+| `pglite-prisma-adapter` | 1733MB | +118MB | +117MB | 2038ms |
+| `postgres-pg` client | **261MB** | **+108MB** | **+54MB** | **103ms** |
 
 Read this honestly: PGlite keeps the entire database (WASM engine +
 data) inside your process — the baseline scales with your dataset,
-and this scenario's seeded dataset costs ~1.4GB of RSS that a
-Postgres client never carries client-side. Postgres server memory is
-sampled on the postmaster only (+20MB baseline); per-connection
-backend memory is **not** captured, so the Postgres server column
-undercounts. Setup time is the WASM cold-start honesty item:
-~0.5s (M3 Max) to ~1.5s (Intel) before the first query, vs ~0.1s
-for a Postgres connection. Apple Silicon memory numbers are not
-published: the scenario produces unstable readings there (negative
-RSS deltas under 16KB pages and aggressive page reclaim) — raw JSON
-is in `results/` regardless; fixing the methodology is an open item.
+and this scenario's seeded dataset costs RSS a Postgres client never
+carries client-side. Absolute RSS is not comparable across machines
+(allocator and page-accounting differences; note the ~2x baseline
+gap between the two) — compare adapters within a machine. Workload
+peaks flip by architecture: the bridge allocates ~3x less than the
+direct adapter on the M3 Max but ~1.5x more on Intel; both numbers
+are real, we don't currently know which allocator behavior drives
+the divergence. Postgres server memory is sampled on the postmaster
+only (~+20MB baseline); per-connection backend memory is **not**
+captured, so the Postgres server column undercounts. On Apple
+Silicon, RSS quiescence is best-effort (20s cap) and one bridge
+repeat still showed mild residual decay — treat single-digit-MB
+deltas there as within a ~±15MB noise floor (per-repeat ranges are
+in the raw JSON). Setup time is the WASM cold-start honesty item:
+~0.7s (M3 Max) to ~2s (Intel) before the first query for this
+scenario's seed, vs ~0.1s for a Postgres connection.
 
 ### What this means
 

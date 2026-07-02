@@ -12,7 +12,7 @@
  *   pnpm bench --json                                    # structured JSON to stdout
  *   pnpm bench --scenario all                            # all scenarios
  */
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import type {
   AdapterContext,
@@ -181,6 +181,68 @@ const snap = (): MemSnapshot => {
   return { rss: m.rss, heapUsed: m.heapUsed, arrayBuffers: m.arrayBuffers };
 };
 
+const peekMem = (): MemSnapshot => {
+  const m = process.memoryUsage();
+  return { rss: m.rss, heapUsed: m.heapUsed, arrayBuffers: m.arrayBuffers };
+};
+
+const maxMem = (a: MemSnapshot, b: MemSnapshot): MemSnapshot => ({
+  rss: Math.max(a.rss, b.rss),
+  heapUsed: Math.max(a.heapUsed, b.heapUsed),
+  arrayBuffers: Math.max(a.arrayBuffers, b.arrayBuffers),
+});
+
+// Timers firing during measured operations would add jitter to the latency
+// scenarios, so true-peak sampling stays limited to the memory scenario.
+// Elsewhere memPeak remains the post-workload post-GC snapshot.
+const PEAK_SAMPLED_SCENARIOS = new Set(['memory']);
+
+// PGlite's setup transient (WASM init, schema push, seed) can drain back to
+// the OS asynchronously for seconds after setup completes — on some
+// platforms right through the measured workload. Capture memory baselines
+// only once RSS has stabilized, so that decay cannot masquerade as negative
+// workload deltas.
+const waitForRssQuiescence = async (
+  { intervalMs, epsilonBytes, stableSamples, timeoutMs } = {
+    intervalMs: 500,
+    epsilonBytes: 4 * 1024 * 1024,
+    stableSamples: 3,
+    timeoutMs: 20_000,
+  },
+) => {
+  let last = peekMem().rss;
+  let stable = 0;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, intervalMs);
+    });
+    gc();
+    const current = peekMem().rss;
+    if (Math.abs(current - last) < epsilonBytes) {
+      stable++;
+      if (stable >= stableSamples) return;
+    } else {
+      stable = 0;
+    }
+    last = current;
+  }
+};
+
+const startPeakSampler = (intervalMs = 25) => {
+  let max = peekMem();
+  const timer = setInterval(() => {
+    max = maxMem(max, peekMem());
+  }, intervalMs);
+  timer.unref();
+  return {
+    stop: (): MemSnapshot => {
+      clearInterval(timer);
+      return maxMem(max, peekMem());
+    },
+  };
+};
+
 const snapServer = async (ctx: AdapterContext | null | undefined): Promise<ServerSnapshot> => {
   const sampler = ctx?.serverProcessSampler;
   if (!sampler) return { rss: 0 };
@@ -294,24 +356,42 @@ const runAdapterScenario = async (
       }
     }
 
+    const quiesce = PEAK_SAMPLED_SCENARIOS.has(scenarioName);
+    if (quiesce) await waitForRssQuiescence();
     await settleMemory();
     const memBefore = snap();
     const serverBefore = await snapServer(ctx);
 
-    // Real run
-    const scenarioResults = await scenario(ctx.prisma, iterations);
+    // Real run — sample the in-workload high-water mark where enabled, so
+    // peakDelta is a true peak (≥ 0 by construction) rather than the
+    // post-GC residual it used to be.
+    const sampler = PEAK_SAMPLED_SCENARIOS.has(scenarioName) ? startPeakSampler() : null;
+    let scenarioResults: ScenarioResult[];
+    let sampledPeak: MemSnapshot | null = null;
+    try {
+      scenarioResults = await scenario(ctx.prisma, iterations);
+    } finally {
+      sampledPeak = sampler ? sampler.stop() : null;
+    }
 
     await settleMemory();
-    const memPeak = snap();
+    const postWorkload = snap();
+    const memPeak = sampledPeak
+      ? maxMem(maxMem(sampledPeak, postWorkload), memBefore)
+      : postWorkload;
     const serverPeak = await snapServer(ctx);
+
+    // Retained-by-workload: measured pre-teardown on a quiesced, live
+    // instance. Teardown page-return timing varies wildly by platform and
+    // would otherwise dominate the metric.
+    if (quiesce) await waitForRssQuiescence();
+    await settleMemory();
+    const memAfter = snap();
 
     // Teardown (timed)
     const teardownStart = performance.now();
     await harness.teardown(ctx);
     const teardownTime = performance.now() - teardownStart;
-
-    await settleMemory();
-    const memAfter = snap();
     const serverAfter = await snapServer(ctx);
 
     return {
@@ -346,6 +426,60 @@ const runAdapterScenario = async (
       error: (err as Error).message,
     };
   }
+};
+
+// ─── Process-isolated repeats (memory scenario) ───
+//
+// A torn-down PGlite instance's WASM memory is not returned to the OS
+// synchronously (on some platforms not at all within the process
+// lifetime), so consecutive in-process repeats contaminate each other's
+// baselines: repeat N's memBefore includes repeat N-1's still-resident
+// instance, and its decay mid-run can push deltas negative. Each memory
+// repeat therefore runs in a fresh child process.
+
+const BENCH_CHILD_ENV = 'BENCH_CHILD';
+const RAW_RUNS_SENTINEL = 'BENCH_RAW_RUNS::';
+
+const runMemoryRepeatIsolated = (adapterName: string): RunResult => {
+  const rootDir = join(import.meta.dirname, '..');
+  const tsxBin = join(rootDir, 'node_modules', '.bin', 'tsx');
+  const selfPath = join(import.meta.dirname, 'run.ts');
+  const child = spawnSync(
+    tsxBin,
+    [
+      selfPath,
+      '--scenario',
+      'memory',
+      '--adapter',
+      adapterName,
+      '-n',
+      String(iterations),
+      '-w',
+      String(warmup),
+      '-r',
+      '1',
+    ],
+    {
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      env: { ...process.env, [BENCH_CHILD_ENV]: '1' },
+    },
+  );
+  if (child.status !== 0) {
+    throw new Error(
+      `isolated memory repeat failed for ${adapterName}: ${(child.stderr ?? '').slice(-500)}`,
+    );
+  }
+  const line = child.stdout.split('\n').find((l) => l.startsWith(RAW_RUNS_SENTINEL));
+  if (!line) {
+    throw new Error(`isolated memory repeat for ${adapterName} emitted no raw runs`);
+  }
+  const runs = JSON.parse(line.slice(RAW_RUNS_SENTINEL.length)) as RunResult[];
+  const run = runs[0];
+  if (!run) {
+    throw new Error(`isolated memory repeat for ${adapterName} returned an empty run list`);
+  }
+  return run;
 };
 
 interface AggregatedOperation {
@@ -890,7 +1024,31 @@ const main = async () => {
             `▸ ${harness.name} × ${scenarioName} [run ${repeatIndex}/${repeat}]...`,
           );
         }
-        const result = await runAdapterScenario(harness, scenarioName, scenario, schemaSql);
+        let result: RunResult;
+        if (scenarioName === 'memory' && !process.env[BENCH_CHILD_ENV]) {
+          try {
+            result = runMemoryRepeatIsolated(harness.name);
+          } catch (err) {
+            const m = snap();
+            result = {
+              repeatIndex,
+              adapter: harness.name,
+              scenario: scenarioName,
+              results: [],
+              setupTime: 0,
+              teardownTime: 0,
+              memBefore: m,
+              memPeak: m,
+              memAfter: m,
+              serverBefore: { rss: 0 },
+              serverPeak: { rss: 0 },
+              serverAfter: { rss: 0 },
+              error: (err as Error).message,
+            };
+          }
+        } else {
+          result = await runAdapterScenario(harness, scenarioName, scenario, schemaSql);
+        }
         result.repeatIndex = repeatIndex;
         allResults.push(result);
         if (!jsonOutput) {
@@ -898,6 +1056,11 @@ const main = async () => {
         }
       }
     }
+  }
+
+  if (process.env[BENCH_CHILD_ENV]) {
+    console.log(RAW_RUNS_SENTINEL + JSON.stringify(allResults));
+    return;
   }
 
   if (jsonOutput) {
