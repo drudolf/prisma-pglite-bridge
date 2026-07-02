@@ -48,7 +48,11 @@ Raw JSON for every table below is committed under
   baseline and retained snapshots wait for RSS quiescence (up to
   20s) because PGlite's setup transient drains back to the OS
   asynchronously; retained is measured pre-teardown on the live
-  instance.
+  instance. Server-side RSS covers the whole postgres process tree
+  (postmaster's children resolved at each sample; tree sampled every
+  250ms during the workload). Summing per-process RSS double-counts
+  `shared_buffers` pages across processes that touch them, so server
+  numbers are an upper bound of unique physical memory.
 - PGlite ≥ 0.5.3 matters: it ships the raw-stream parse skip
   ([electric-sql/pglite#1030]) this bridge's protocol path is built
   around. On older engines the bridge compensates at runtime and
@@ -122,37 +126,41 @@ mixed ops); one child process per adapter × repeat:
 **Apple M3 Max:**
 
 | Adapter | baseline RSS | peak delta | retained delta | setup time |
-| ----------------------- | ------ | ------ | ------ | ------- |
-| `prisma-pglite-bridge` | 753MB | **+30MB** | **+12MB** | 720ms |
-| `pglite-prisma-adapter` | 729MB | +96MB | +74MB | 747ms |
-| `postgres-pg` client | **264MB** | +97MB | +63MB | **84ms** |
+| ------------------------- | ------ | ------ | ------ | ------- |
+| `prisma-pglite-bridge` | 678MB | +109MB | +108MB | 865ms |
+| `pglite-prisma-adapter` | 784MB | +78MB | +23MB | 867ms |
+| `postgres-pg` client | **268MB** | +76MB | +45MB | **89ms** |
+| `postgres-pg` server tree | 110MB | +12MB | — | — |
 
 **Intel Core i9-9980HK:**
 
 | Adapter | baseline RSS | peak delta | retained delta | setup time |
-| ----------------------- | ------ | ------ | ------ | ------- |
-| `prisma-pglite-bridge` | 1589MB | +177MB | +176MB | 2031ms |
-| `pglite-prisma-adapter` | 1733MB | +118MB | +117MB | 2038ms |
-| `postgres-pg` client | **261MB** | **+108MB** | **+54MB** | **103ms** |
+| ------------------------- | ------ | ------ | ------ | ------- |
+| `prisma-pglite-bridge` | 1611MB | +158MB | +157MB | 2013ms |
+| `pglite-prisma-adapter` | 1751MB | +195MB | +194MB | 2048ms |
+| `postgres-pg` client | **287MB** | +103MB | +53MB | **109ms** |
+| `postgres-pg` server tree | 111MB | +39MB | — | — |
 
 Read this honestly: PGlite keeps the entire database (WASM engine +
 data) inside your process — the baseline scales with your dataset,
 and this scenario's seeded dataset costs RSS a Postgres client never
-carries client-side. Absolute RSS is not comparable across machines
-(allocator and page-accounting differences; note the ~2x baseline
-gap between the two) — compare adapters within a machine. Workload
-peaks flip by architecture: the bridge allocates ~3x less than the
-direct adapter on the M3 Max but ~1.5x more on Intel; both numbers
-are real, we don't currently know which allocator behavior drives
-the divergence. Postgres server memory is sampled on the postmaster
-only (~+20MB baseline); per-connection backend memory is **not**
-captured, so the Postgres server column undercounts. On Apple
-Silicon, RSS quiescence is best-effort (20s cap) and one bridge
-repeat still showed mild residual decay — treat single-digit-MB
-deltas there as within a ~±15MB noise floor (per-repeat ranges are
-in the raw JSON). Setup time is the WASM cold-start honesty item:
-~0.7s (M3 Max) to ~2s (Intel) before the first query for this
-scenario's seed, vs ~0.1s for a Postgres connection.
+carries client-side. Postgres offloads it to a server process tree
+(~110MB baseline here) whose numbers are sums of per-process RSS and
+therefore double-count `shared_buffers` pages — treat them as an
+upper bound of unique physical memory. Absolute RSS is not
+comparable across machines (allocator and page-accounting
+differences; note the ~2x baseline gap between the two) — compare
+adapters within a machine. The in-process **peak deltas are noisy**:
+across repeated runs they swing 2–3x with GC timing (per-repeat
+ranges are in the raw JSON), so read them as "tens to ~200MB of
+transient growth", not as a stable ranking — an earlier revision of
+this table claimed an architecture-dependent bridge-vs-adapter
+divergence that did not replicate. Baselines, the server tree, and
+setup times are the reproducible signals. On Apple Silicon, RSS
+quiescence is best-effort (20s cap); treat single-digit-MB deltas as
+within a ~±15MB noise floor. Setup time is the WASM cold-start
+honesty item: ~0.9s (M3 Max) to ~2s (Intel) before the first query
+for this scenario's seed, vs ~0.1s for a Postgres connection.
 
 ### What this means
 
@@ -234,8 +242,10 @@ Create a `.env.test` in the repo root for the `postgres-pg` adapter:
 BENCH_POSTGRES_URL=postgresql://user:pass@localhost:5432/bench
 
 # Optional — enables server-side RSS sampling so combined client+server
-# memory is reported. Comma-separated PIDs of postgres backend workers.
-BENCH_POSTGRES_SERVER_PIDS=12345,12346
+# memory is reported. List the postmaster PID; its children (client
+# backends, checkpointer, background writer, …) are discovered at
+# sample time.
+BENCH_POSTGRES_SERVER_PIDS=12345
 ```
 
 `DATABASE_URL` is accepted as a fallback for the connection string.

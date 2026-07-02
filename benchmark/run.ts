@@ -243,13 +243,62 @@ const startPeakSampler = (intervalMs = 25) => {
   };
 };
 
+// Coarser than the client sampler: each server sample shells out to
+// pgrep + ps (a few blocking ms), which is acceptable inside the memory
+// scenario but would be far too heavy at 25ms.
+const startServerPeakSampler = (ctx: AdapterContext, intervalMs = 250) => {
+  let max: ServerSnapshot = { rss: 0 };
+  let inFlight = false;
+  const timer = setInterval(() => {
+    if (inFlight) return;
+    inFlight = true;
+    void snapServer(ctx)
+      .then((snapshot) => {
+        if (snapshot.rss > max.rss) max = snapshot;
+      })
+      .finally(() => {
+        inFlight = false;
+      });
+  }, intervalMs);
+  timer.unref();
+  return {
+    stop: async (): Promise<ServerSnapshot> => {
+      clearInterval(timer);
+      const final = await snapServer(ctx);
+      return final.rss > max.rss ? final : max;
+    },
+  };
+};
+
+// The configured server PIDs are seeds (typically the postmaster); the
+// processes that do query work — client backends, checkpointer, background
+// writer — are its children and come and go with connections, so they must
+// be discovered at sample time, not configuration time.
+const expandWithChildren = (pids: number[]): number[] => {
+  if (pids.length === 0) return pids;
+  try {
+    const output = execSync(`pgrep -P ${pids.join(',')}`, {
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    const children = output
+      .split('\n')
+      .map((line) => Number(line.trim()))
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+    return [...new Set([...pids, ...children])];
+  } catch {
+    // pgrep exits non-zero when there are no children
+    return pids;
+  }
+};
+
 const snapServer = async (ctx: AdapterContext | null | undefined): Promise<ServerSnapshot> => {
   const sampler = ctx?.serverProcessSampler;
   if (!sampler) return { rss: 0 };
 
-  const pids = [
+  const pids = expandWithChildren([
     ...new Set((await sampler.listPids()).filter((pid) => Number.isInteger(pid) && pid > 0)),
-  ];
+  ]);
   if (pids.length === 0) return { rss: 0 };
 
   try {
@@ -366,6 +415,10 @@ const runAdapterScenario = async (
     // peakDelta is a true peak (≥ 0 by construction) rather than the
     // post-GC residual it used to be.
     const sampler = PEAK_SAMPLED_SCENARIOS.has(scenarioName) ? startPeakSampler() : null;
+    const serverSampler =
+      PEAK_SAMPLED_SCENARIOS.has(scenarioName) && ctx.serverProcessSampler
+        ? startServerPeakSampler(ctx)
+        : null;
     let scenarioResults: ScenarioResult[];
     let sampledPeak: MemSnapshot | null = null;
     try {
@@ -373,13 +426,16 @@ const runAdapterScenario = async (
     } finally {
       sampledPeak = sampler ? sampler.stop() : null;
     }
+    const sampledServerPeak = serverSampler ? await serverSampler.stop() : null;
 
     await settleMemory();
     const postWorkload = snap();
     const memPeak = sampledPeak
       ? maxMem(maxMem(sampledPeak, postWorkload), memBefore)
       : postWorkload;
-    const serverPeak = await snapServer(ctx);
+    const serverPeak = sampledServerPeak
+      ? { rss: Math.max(sampledServerPeak.rss, serverBefore.rss) }
+      : await snapServer(ctx);
 
     // Retained-by-workload: measured pre-teardown on a quiesced, live
     // instance. Teardown page-return timing varies wildly by platform and
