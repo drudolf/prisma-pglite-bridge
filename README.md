@@ -31,7 +31,9 @@ bot-managed, list them explicitly:
 pnpm add -D prisma-pglite-bridge @electric-sql/pglite @prisma/adapter-pg pg
 ```
 
-TypeScript users also need `@types/pg`.
+TypeScript works out of the box — `@prisma/adapter-pg` ships `pg`'s
+type declarations. Add `@types/pg` only if your own code imports
+`pg` directly.
 
 ## Quickstart
 
