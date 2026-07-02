@@ -33,6 +33,23 @@
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
+    },
+    "./vitest": {
+      "import": {
+        "types": "./dist/vitest/index.d.mts",
+        "default": "./dist/vitest/index.mjs"
+      },
+      "require": {
+        "types": "./dist/vitest/index.d.cts",
+        "default": "./dist/vitest/index.cjs"
+      }
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "vitest": [
+        "./dist/vitest/index.d.cts"
+      ]
     }
   },
   "files": [
@@ -67,10 +84,14 @@
     "@electric-sql/pglite": "^0.4.0 || ^0.5.0",
     "@prisma/adapter-pg": "^7.0.0",
     "@prisma/config": "^7.0.0",
-    "pg": "^8.0.0"
+    "pg": "^8.0.0",
+    "vitest": "^3.0.0 || ^4.0.0"
   },
   "peerDependenciesMeta": {
     "@prisma/config": {
+      "optional": true
+    },
+    "vitest": {
       "optional": true
     }
   },
