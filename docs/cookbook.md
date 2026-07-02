@@ -5,6 +5,7 @@ For the underlying API, see the [API reference](./api.md).
 
 ## Contents
 
+- [Vitest one-call setup](#vitest-one-call-setup)
 - [Multi-file tests with a shared bridge](#multi-file-tests-with-a-shared-bridge)
 - [Per-file bridge (no production singleton)](#per-file-bridge-no-production-singleton)
 - [Sharing seed logic between `prisma db seed` and tests](#sharing-seed-logic-between-prisma-db-seed-and-tests)
@@ -14,6 +15,67 @@ For the underlying API, see the [API reference](./api.md).
 - [Persistent dev database (optional)](#persistent-dev-database-optional)
 - [Long-lived dev server (Studio, `psql`, `prisma migrate dev`)](#long-lived-dev-server-studio-psql-prisma-migrate-dev)
 - [Long-running script with clean shutdown](#long-running-script-with-clean-shutdown)
+
+## Vitest one-call setup
+
+For Vitest, `setupPGliteBridge` from the `prisma-pglite-bridge/vitest`
+entry point collapses the whole flow — bridge, migrations, seed,
+snapshot, and lifecycle hooks — into one call:
+
+```typescript
+// tests/db.test.ts (or a setupFiles entry — hooks then apply per worker)
+import { PrismaClient } from '@prisma/client';
+import { setupPGliteBridge } from 'prisma-pglite-bridge/vitest';
+
+const { prisma } = await setupPGliteBridge({
+  client: (adapter) => new PrismaClient({ adapter }),
+  migrations: true, // auto-discovers prisma/migrations via prisma.config.ts
+  seed: async (prisma) => {
+    await prisma.tenant.create({ data: { name: 'Acme', slug: 'acme' } });
+  },
+});
+
+test('starts from the seeded snapshot', async () => {
+  expect(await prisma.tenant.count()).toBe(1);
+});
+```
+
+Every test starts from the seeded snapshot (`beforeEach` reset) and the
+WASM instance is closed when the file finishes (`afterAll`). Options:
+`schema` applies an inline Prisma schema instead of migrations,
+`snapshot: false` makes resets truncate to empty, and
+`registerHooks: false` hands the lifecycle back to you — see the
+[API reference](./api.md).
+
+### Isolation model
+
+**The test file is the database boundary.** Each `setupPGliteBridge`
+call creates its own bridge and its own in-memory PGlite, and the
+registered hooks attach to the calling file's suite — so with
+Vitest's default `isolate: true`, every test file gets a private
+database and files cannot interfere with each other. Within a file,
+tests share that one instance and are isolated by the snapshot
+reset between tests.
+
+The trade-off dial:
+
+- **Call it in each test file (shown above)** — maximum isolation;
+  each file pays the cold start (WASM init + migrations + seed,
+  roughly 0.5–2s depending on hardware).
+- **Call it in a `setupFiles` entry with `isolate: false`** — the
+  setup module is evaluated once per worker, so files in a worker
+  share one warm instance and skip the per-file cold start; the
+  per-test snapshot reset still applies. This is the one-call
+  equivalent of the [shared-bridge
+  pattern](#multi-file-tests-with-a-shared-bridge) below.
+
+**Don't use `test.concurrent` with a shared context**: concurrent
+tests would interleave on one single-session PGlite, and `resetDb`
+deliberately throws while pool clients are checked out.
+
+The sections below use the explicit building blocks, which the
+helper wraps; reach for them with other test runners or when you
+need custom wiring like `vi.mock`.
 
 ## Multi-file tests with a shared bridge
 
