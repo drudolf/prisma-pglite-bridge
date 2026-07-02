@@ -72,7 +72,25 @@ export const postgresPg: AdapterHarness = {
 
     await resetSchema(pool, schemaSql);
 
-    const adapterFactory = new PrismaPg(pool);
+    // BENCH_POSTGRES_PREPARED=1 gives native Postgres the same
+    // prepared-statement caching the bridge enables by default, for a
+    // like-for-like comparison row.
+    const names = new Map<string, string>();
+    const adapterFactory = new PrismaPg(
+      pool,
+      getBenchEnv('BENCH_POSTGRES_PREPARED') === '1'
+        ? {
+            statementNameGenerator: (query: { sql: string }) => {
+              let name = names.get(query.sql);
+              if (name === undefined) {
+                name = `bench_${names.size}`;
+                names.set(query.sql, name);
+              }
+              return name;
+            },
+          }
+        : undefined,
+    );
     const driverAdapter = await adapterFactory.connect();
     stackProbe.instrumentDriverAdapter(driverAdapter);
     const prisma = new PrismaClient({ adapter: adapterFactory });

@@ -149,6 +149,18 @@ export class PgBridgePool extends pg.Pool {
     this.bridgeId = bridgeId;
     this.pglite = resolvedPglite;
     this.#ownsPglite = !pglite;
+
+    // A fresh connection must see an empty prepared-statement namespace,
+    // as it would on a real server. PGlite is one shared session, so
+    // statements prepared through an earlier (since destroyed) client
+    // would otherwise collide with a new client re-preparing the same
+    // names (42P05 "prepared statement already exists"). pg serializes
+    // queries per client, so this runs before the client's first query.
+    this.on('connect', (client) => {
+      void client.query('DEALLOCATE ALL').catch(() => {
+        // Best-effort: a broken session surfaces errors on real queries.
+      });
+    });
   }
 
   /**

@@ -102,6 +102,23 @@ describe('PgBridgePool — syncToFs', () => {
   });
 });
 
+describe('PgBridgePool — connect-time statement cleanup', () => {
+  it('swallows DEALLOCATE failures on connect (best-effort cleanup)', async () => {
+    const pool = new PgBridgePool({ pglite });
+    try {
+      const query = vi.fn().mockRejectedValue(new Error('session gone'));
+      // Emit the pool's own 'connect' event with a client whose cleanup
+      // query rejects — the listener must swallow it (a broken session
+      // surfaces on real queries instead).
+      pool.emit('connect', { query } as never);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(query).toHaveBeenCalledWith('DEALLOCATE ALL');
+    } finally {
+      await pool.end();
+    }
+  });
+});
+
 describe('PgBridgePool — pglite lifecycle', () => {
   it('end() closes the internally-created PGlite (pool owns it)', async () => {
     const pool = new PgBridgePool();

@@ -138,7 +138,20 @@ export class SnapshotManager {
       });
     }
 
-    await this.#pglite.exec('DISCARD ALL');
+    // Everything DISCARD ALL does except DEALLOCATE ALL: named prepared
+    // statements survive resets. User tables are only truncated, never
+    // dropped, so retained statements revalidate transparently — this keeps
+    // the bridge's prepared-statement cache warm across resetDb().
+    await this.#pglite.exec(
+      `CLOSE ALL;
+       SET SESSION AUTHORIZATION DEFAULT;
+       RESET ALL;
+       UNLISTEN *;
+       SELECT pg_advisory_unlock_all();
+       DISCARD PLANS;
+       DISCARD SEQUENCES;
+       DISCARD TEMP`,
+    );
   }
 
   async #getTables(): Promise<string> {

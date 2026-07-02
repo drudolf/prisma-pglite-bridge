@@ -245,7 +245,8 @@ describe('PGliteBridge — mocked pg.Pool', () => {
   }> => {
     vi.resetModules();
     const PoolCtor = vi.fn().mockImplementation(function MockPool() {
-      return { end: poolEnd };
+      // PgBridgePool registers a 'connect' listener in its constructor.
+      return { end: poolEnd, on: vi.fn() };
     });
     const actualPg = (await vi.importActual<typeof import('pg')>('pg')).default;
     vi.doMock('pg', () => ({
@@ -261,6 +262,13 @@ describe('PGliteBridge — mocked pg.Pool', () => {
       prismaPg,
     };
   };
+
+  type PrismaPgTestOptions =
+    | { statementNameGenerator?: (query: { sql: string }) => string | undefined }
+    | undefined;
+
+  const prismaPgOptions = (prismaPg: ReturnType<typeof vi.fn>): PrismaPgTestOptions =>
+    prismaPg.mock.calls[0]?.[1] as PrismaPgTestOptions;
 
   afterEach(() => {
     vi.doUnmock('pg');
@@ -319,6 +327,58 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     expect(poolConfig[optionsKey!]?.syncToFs).toBe(false);
     expect(prismaPg).toHaveBeenCalled();
     expect(created.adapter).toEqual({ mocked: true });
+
+    await created.close();
+  });
+
+  it('passes a ppb_ statementNameGenerator to PrismaPg by default (max unset)', async () => {
+    const mockPglite = createMockPGlite();
+    const { module, prismaPg } = await loadClassWithMocks();
+
+    const created = new module.PGliteBridge({ pglite: mockPglite });
+
+    const generator = prismaPgOptions(prismaPg)?.statementNameGenerator;
+    expect(generator).toBeTypeOf('function');
+    expect(generator?.({ sql: 'SELECT 1' })).toMatch(/^ppb_\d+$/);
+
+    await created.close();
+  });
+
+  it('passes no statementNameGenerator when preparedStatements is false', async () => {
+    const mockPglite = createMockPGlite();
+    const { module, prismaPg } = await loadClassWithMocks();
+
+    const created = new module.PGliteBridge({ pglite: mockPglite, preparedStatements: false });
+
+    expect(prismaPg).toHaveBeenCalledTimes(1);
+    expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeUndefined();
+
+    await created.close();
+  });
+
+  it('passes no statementNameGenerator when max > 1 and preparedStatements is unset', async () => {
+    const mockPglite = createMockPGlite();
+    const { module, prismaPg } = await loadClassWithMocks();
+
+    const created = new module.PGliteBridge({ pglite: mockPglite, max: 2 });
+
+    expect(prismaPg).toHaveBeenCalledTimes(1);
+    expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeUndefined();
+
+    await created.close();
+  });
+
+  it('passes a statementNameGenerator when preparedStatements is true despite max > 1', async () => {
+    const mockPglite = createMockPGlite();
+    const { module, prismaPg } = await loadClassWithMocks();
+
+    const created = new module.PGliteBridge({
+      pglite: mockPglite,
+      max: 2,
+      preparedStatements: true,
+    });
+
+    expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeTypeOf('function');
 
     await created.close();
   });
