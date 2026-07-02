@@ -150,13 +150,21 @@ therefore double-count `shared_buffers` pages — treat them as an
 upper bound of unique physical memory. Absolute RSS is not
 comparable across machines (allocator and page-accounting
 differences; note the ~2x baseline gap between the two) — compare
-adapters within a machine. The in-process **peak deltas are noisy**:
-across repeated runs they swing 2–3x with GC timing (per-repeat
-ranges are in the raw JSON), so read them as "tens to ~200MB of
-transient growth", not as a stable ranking — an earlier revision of
-this table claimed an architecture-dependent bridge-vs-adapter
-divergence that did not replicate. Baselines, the server tree, and
-setup times are the reproducible signals. On Apple Silicon, RSS
+adapters within a machine. The in-process **RSS peak deltas are
+noisy**: across repeated runs they swing 2–3x (per-repeat ranges are
+in the raw JSON), so read them as "tens to ~200MB of transient
+growth", not as a stable ranking — an earlier revision of this table
+claimed an architecture-dependent bridge-vs-adapter divergence that
+did not replicate. The noise is OS page accounting, not allocation:
+the JS-level peak deltas are deterministic and identical for both
+PGlite adapters (`peakDelta.heapUsed` +26MB, `arrayBuffers` +4MB in
+every repeat, both machines — see the raw JSON), while RSS depends
+on how much of the setup transient's freed-page pool the OS has
+already reclaimed when the workload reuses it (baseline↔peak
+anti-correlation r≈−0.8 on Apple Silicon) and on ambient memory
+pressure. For adapter comparisons use the heap/arrayBuffers deltas;
+baselines, the server tree, and setup times are the other
+reproducible signals. On Apple Silicon, RSS
 quiescence is best-effort (20s cap); treat single-digit-MB deltas as
 within a ~±15MB noise floor. Setup time is the WASM cold-start
 honesty item: ~0.9s (M3 Max) to ~2s (Intel) before the first query
