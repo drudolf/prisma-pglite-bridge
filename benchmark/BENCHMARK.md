@@ -29,12 +29,12 @@ Raw JSON for every table below is committed under
   *p50 spread* column (min–max of per-repeat p50s) shows run
   stability; treat cross-adapter ratios as the signal and absolute
   numbers as indicative.
-- **Versions:** bridge 1.4.0 + prepared-statement caching (default
-  from the following release), `@electric-sql/pglite` 0.5.3 (both
-  PGlite adapters resolve the same copy), `pglite-prisma-adapter`
-  0.7.2, `@prisma/adapter-pg` 7.8.0, `pg` 8.22.0, Prisma 7.8.0.
-  The bridge rows use its default configuration (named prepared
-  statements on); native Postgres appears twice — default
+- **Versions:** bridge 1.4.0 + prepared-statement caching (opt-in
+  `preparedStatements: true` from the following release),
+  `@electric-sql/pglite` 0.5.3 (both PGlite adapters resolve the
+  same copy), `pglite-prisma-adapter` 0.7.2, `@prisma/adapter-pg`
+  7.8.0, `pg` 8.22.0, Prisma 7.8.0. The bridge rows run with the
+  statement cache enabled; native Postgres appears twice — default
   configuration and with `BENCH_POSTGRES_PREPARED=1` giving it the
   same statement-caching lever.
 - **Real Postgres:** PostgreSQL 18.4 via `embedded-postgres`
@@ -94,7 +94,7 @@ prepared-statement asymmetry: statement caching buys the bridge
 ~0.1–0.4ms per query (WASM parse/plan is expensive) but is also
 worth ~0.1ms to native Postgres — and unlike many production setups
 (transaction-mode poolers break named statements), the bridge can
-always run with it on, which it now does by default.
+always run with it on (opt-in via `preparedStatements: true`).
 
 ### Operation breadth — `micro` (p50, ratio vs bridge)
 

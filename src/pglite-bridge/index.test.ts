@@ -331,11 +331,11 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     await created.close();
   });
 
-  it('passes a ppb_ statementNameGenerator to PrismaPg by default (max unset)', async () => {
+  it('passes a ppb_ statementNameGenerator to PrismaPg when opted in', async () => {
     const mockPglite = createMockPGlite();
     const { module, prismaPg } = await loadClassWithMocks();
 
-    const created = new module.PGliteBridge({ pglite: mockPglite });
+    const created = new module.PGliteBridge({ pglite: mockPglite, preparedStatements: true });
 
     const generator = prismaPgOptions(prismaPg)?.statementNameGenerator;
     expect(generator).toBeTypeOf('function');
@@ -344,11 +344,11 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     await created.close();
   });
 
-  it('passes no statementNameGenerator when preparedStatements is false', async () => {
+  it('passes no statementNameGenerator by default', async () => {
     const mockPglite = createMockPGlite();
     const { module, prismaPg } = await loadClassWithMocks();
 
-    const created = new module.PGliteBridge({ pglite: mockPglite, preparedStatements: false });
+    const created = new module.PGliteBridge({ pglite: mockPglite });
 
     expect(prismaPg).toHaveBeenCalledTimes(1);
     expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeUndefined();
