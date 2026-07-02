@@ -1,5 +1,30 @@
 # prisma-pglite-bridge
 
+## 1.4.0
+
+### Minor Changes
+
+- [`fa5d308`](https://github.com/drudolf/prisma-pglite-bridge/commit/fa5d308a3818bb379bec984199ad296fcd9c41ec) Thanks [@drudolf](https://github.com/drudolf)! - New `prisma-pglite-bridge/vitest` entry point with `setupPGliteBridge` — a
+  one-call Vitest setup that creates a bridge, applies migrations (or an inline
+  schema), runs your seed, snapshots the state, and registers
+  `beforeEach(resetDb)` + `afterAll(close)` hooks:
+
+  ```typescript
+  import { PrismaClient } from "@prisma/client";
+  import { setupPGliteBridge } from "prisma-pglite-bridge/vitest";
+
+  const { prisma } = await setupPGliteBridge({
+    client: (adapter) => new PrismaClient({ adapter }),
+    migrations: true,
+    seed: async (prisma) => {
+      await prisma.tenant.create({ data: { name: "Acme" } });
+    },
+  });
+  ```
+
+  `vitest` becomes an optional peer dependency; only the new entry point
+  imports it.
+
 ## 1.3.0
 
 ### Minor Changes
