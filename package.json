@@ -16,7 +16,12 @@
     "jest",
     "driver-adapter"
   ],
-  "repository": "drudolf/prisma-pglite-bridge",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drudolf/prisma-pglite-bridge.git"
+  },
+  "homepage": "https://github.com/drudolf/prisma-pglite-bridge#readme",
+  "bugs": "https://github.com/drudolf/prisma-pglite-bridge/issues",
   "author": "drudolf",
   "type": "module",
   "license": "MIT",
