@@ -115,3 +115,43 @@ describe('createBridgeTest with scope: test', () => {
     expect(await prisma.tenant.count()).toBe(0);
   });
 });
+
+// scope: 'test' with a seed — exercises the per-file template + per-test load
+// path: the seed runs once (in the template), every test loads a fresh
+// instance already holding the seeded rows, and writes never leak across tests.
+let templateSeedRuns = 0;
+const seededTest = createBridgeTest({
+  client: (adapter) => new PrismaClient({ adapter }),
+  migrations: true,
+  scope: 'test',
+  seed: async (client) => {
+    templateSeedRuns += 1;
+    await client.tenant.create({
+      data: { id: 'tenant-template', name: 'Template Tenant', slug: 'template' },
+    });
+  },
+});
+
+describe('createBridgeTest with scope: test and a seed', () => {
+  seededTest('loads each test from the seeded template', async ({ prisma }) => {
+    expect((await prisma.tenant.findMany()).map((t) => t.slug)).toEqual(['template']);
+    // Mutate this instance; the next test must not observe the extra row.
+    await prisma.tenant.create({ data: { name: 'Local', slug: 'local' } });
+    expect(await prisma.tenant.count()).toBe(2);
+  });
+
+  seededTest('gives the next test a fresh seeded instance', async ({ prisma }) => {
+    // The prior test's extra row died with its instance; the seed survives.
+    expect((await prisma.tenant.findMany()).map((t) => t.slug)).toEqual(['template']);
+    // The seed ran once — for the file's template — not once per test.
+    expect(templateSeedRuns).toBe(1);
+  });
+
+  // `test.concurrent` isn't exercised here: this integration project installs a
+  // global `beforeEach` that resets a shared single-session bridge (see
+  // utils/setup.ts), so running any test concurrently collides on that shared
+  // context — the exact hazard the cookbook warns about, unrelated to the
+  // per-test instances. Concurrent isolation of the load path is covered
+  // directly: independent PGlite instances loaded concurrently from one shared
+  // dump each see only the seed plus their own writes.
+});
