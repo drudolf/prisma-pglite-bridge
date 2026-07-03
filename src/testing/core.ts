@@ -4,6 +4,7 @@
  * test-runner import, so each entry point can layer its own hooks on top
  * without pulling the other runner into its module graph.
  */
+import { PGlite } from '@electric-sql/pglite';
 import type { PrismaPg } from '@prisma/adapter-pg';
 import { PGliteBridge, type PGliteBridgeOptions } from '../pglite-bridge';
 import { type PushSchemaOptions, pushSchema } from '../schema';
@@ -104,4 +105,61 @@ export const createBridgeContext = async <TClient>(
   }
 
   return { prisma, bridge };
+};
+
+/**
+ * Build a bridge, apply the schema source, seed it, then dump the resulting
+ * data directory to an in-memory tarball and tear the bridge down. The dump
+ * is a reusable, immutable template: {@link createBridgeContextFromDump}
+ * loads a fresh, independent PGlite from it in a fraction of the time the WASM
+ * cold start + migrations + seed would cost again.
+ *
+ * Uses `'none'` compression — the dump is consumed in-process, so gzip would
+ * only add CPU on both the dump and every load.
+ */
+export const createBridgeTemplate = async <TClient>(
+  options: SetupPGliteBridgeOptions<TClient>,
+): Promise<Blob | File> => {
+  // A snapshot is pointless for a template — the whole data dir is dumped.
+  const { bridge } = await createBridgeContext({ ...options, snapshot: false });
+  try {
+    return await bridge.pglite.dumpDataDir('none');
+  } finally {
+    await bridge.close();
+  }
+};
+
+/** A bridge context that owns the PGlite instance it loaded from a template. */
+export interface LoadedBridgeContext<TClient> extends PGliteTestContext<TClient> {
+  /** Close both the pool and the loaded PGlite instance. */
+  close: () => Promise<void>;
+}
+
+/**
+ * Load a fresh, independent PGlite from a template dump (see {@link
+ * createBridgeTemplate}) and wrap it in a bridge + client. No migrations or
+ * seed run — the dump already holds them. {@link LoadedBridgeContext.close}
+ * shuts down both the pool and the loaded instance.
+ */
+export const createBridgeContextFromDump = async <TClient>(
+  dump: Blob | File,
+  options: Pick<SetupPGliteBridgeOptions<TClient>, 'client' | 'bridge'>,
+): Promise<LoadedBridgeContext<TClient>> => {
+  const pglite = new PGlite({ loadDataDir: dump });
+  const bridge = new PGliteBridge({ ...options.bridge, pglite });
+  const prisma = options.client(bridge.adapter);
+  return {
+    prisma,
+    bridge,
+    close: async () => {
+      // The bridge treats the injected pglite as caller-owned, so close it
+      // here too — and in a `finally` so a bridge.close() failure can't orphan
+      // the loaded WASM instance (which matters most under test.concurrent).
+      try {
+        await bridge.close();
+      } finally {
+        await pglite.close();
+      }
+    },
+  };
 };

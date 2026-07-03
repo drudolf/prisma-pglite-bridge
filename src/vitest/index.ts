@@ -33,6 +33,8 @@ import type { PGliteBridge } from '../pglite-bridge';
 import {
   assertExactlyOneSchemaSource,
   createBridgeContext,
+  createBridgeContextFromDump,
+  createBridgeTemplate,
   type PGliteTestContext,
   type SetupPGliteBridgeOptions,
 } from '../testing/core.ts';
@@ -68,12 +70,17 @@ export interface CreateBridgeTestOptions<TClient>
    * Bridge lifetime. `'file'` (default) creates one bridge per test
    * file; `'worker'` shares one bridge across all files a worker runs —
    * the WASM cold start, migrations, and seed are paid once per worker
-   * instead of once per file; `'test'` creates a fresh bridge per test —
-   * the costliest option (full cold start per test) and the only one
-   * safe for `test.concurrent`. Requires vitest >= 3.2. Note vitest's
-   * `vmThreads`/`vmForks` pools initialize worker-scoped fixtures per
-   * file, so `'worker'` amortizes only on the default `threads`/`forks`
-   * pools.
+   * instead of once per file; `'test'` gives every test its own fresh
+   * bridge — the only option safe for `test.concurrent`. To keep that
+   * affordable, `'test'` builds one template per file (cold start +
+   * migrations + seed, paid once) and loads a fresh, independent PGlite
+   * from it per test rather than repeating the cold start — roughly an
+   * order of magnitude cheaper, and the seed runs once per file. Each
+   * live instance still holds its own in-memory data dir, so many
+   * concurrent tests trade memory for isolation. Requires vitest >= 3.2.
+   * Note vitest's `vmThreads`/`vmForks` pools initialize worker-scoped
+   * fixtures per file, so `'worker'` amortizes only on the default
+   * `threads`/`forks` pools.
    */
   scope?: 'test' | 'file' | 'worker';
 }
@@ -88,6 +95,92 @@ export interface BridgeTestFixtures<TClient> {
    */
   prisma: TClient;
 }
+
+/**
+ * `'file'` / `'worker'` scope: one shared bridge, restored to the seeded
+ * snapshot before each test that takes `prisma`.
+ */
+const createSharedBridgeTest = <TClient>(
+  options: CreateBridgeTestOptions<TClient>,
+  scope: 'file' | 'worker',
+): TestAPI<BridgeTestFixtures<TClient>> => {
+  // The bridge fixture hands the client to the prisma fixture out of band;
+  // vitest owns both lifetimes, the map just avoids a second fixture.
+  const clients = new WeakMap<PGliteBridge, TClient>();
+
+  return baseTest.extend<BridgeTestFixtures<TClient>>({
+    bridge: [
+      // biome-ignore lint/correctness/noEmptyPattern: vitest parses the destructure to compute fixture dependencies — `{}` declares "none".
+      async ({}, use) => {
+        const context = await createBridgeContext(options);
+        clients.set(context.bridge, context.prisma);
+        try {
+          await use(context.bridge);
+        } finally {
+          await context.bridge.close();
+        }
+      },
+      { scope },
+    ],
+    prisma: async (
+      { bridge }: { bridge: PGliteBridge },
+      use: (value: TClient) => Promise<void>,
+    ) => {
+      // The bridge is shared across the scope, so restore the seeded snapshot
+      // before each test that takes `prisma`. A test taking only `bridge` may
+      // have mutated state, so the reset is needed even for the first test.
+      await bridge.resetDb();
+      // The bridge fixture always populates the map before `use` resolves.
+      await use(clients.get(bridge) as TClient);
+    },
+  });
+};
+
+/**
+ * `'test'` scope: build one template per file, then load a fresh, independent
+ * PGlite from it per test. A freshly loaded instance already sits at the
+ * seeded state, so the prisma fixture runs no reset — and every test is fully
+ * isolated, which is what makes `test.concurrent` safe here.
+ */
+const createTestScopedBridgeTest = <TClient>(
+  options: CreateBridgeTestOptions<TClient>,
+): TestAPI<BridgeTestFixtures<TClient>> => {
+  const clients = new WeakMap<PGliteBridge, TClient>();
+
+  // `template` is an internal per-file fixture (the dumped template); the
+  // returned type hides it so only `bridge`/`prisma` are the public surface.
+  return baseTest.extend<BridgeTestFixtures<TClient> & { template: Blob | File }>({
+    template: [
+      // biome-ignore lint/correctness/noEmptyPattern: vitest parses the destructure to compute fixture dependencies — `{}` declares "none".
+      async ({}, use) => {
+        await use(await createBridgeTemplate(options));
+      },
+      { scope: 'file' },
+    ],
+    bridge: [
+      async (
+        { template }: { template: Blob | File },
+        use: (value: PGliteBridge) => Promise<void>,
+      ) => {
+        const context = await createBridgeContextFromDump(template, options);
+        clients.set(context.bridge, context.prisma);
+        try {
+          await use(context.bridge);
+        } finally {
+          await context.close();
+        }
+      },
+      { scope: 'test' },
+    ],
+    prisma: async (
+      { bridge }: { bridge: PGliteBridge },
+      use: (value: TClient) => Promise<void>,
+    ) => {
+      // Freshly loaded from the template — already at seeded state, no reset.
+      await use(clients.get(bridge) as TClient);
+    },
+  }) as unknown as TestAPI<BridgeTestFixtures<TClient>>;
+};
 
 /**
  * Vitest test-context (fixture) variant of {@link setupPGliteBridge}:
@@ -109,48 +202,18 @@ export interface BridgeTestFixtures<TClient> {
  * });
  * ```
  *
- * Setup (bridge, schema, seed, snapshot) runs once per {@link
- * CreateBridgeTestOptions.scope}; the bridge is closed by vitest when the
- * scope ends. Every test taking `prisma` starts from the seeded snapshot.
- * Option validation happens synchronously at `createBridgeTest()` time.
+ * Setup runs once per {@link CreateBridgeTestOptions.scope}: `'file'` /
+ * `'worker'` reset one shared bridge between tests, while `'test'` builds a
+ * per-file template and loads a fresh instance from it for each test. Every
+ * test taking `prisma` starts from the seeded state; teardown is sequenced by
+ * vitest. Option validation happens synchronously at `createBridgeTest()` time.
  */
 export const createBridgeTest = <TClient>(
   options: CreateBridgeTestOptions<TClient>,
 ): TestAPI<BridgeTestFixtures<TClient>> => {
   assertExactlyOneSchemaSource('createBridgeTest', options);
-
-  // The bridge fixture hands the client to the prisma fixture out of band;
-  // vitest owns both lifetimes, the map just avoids a second fixture.
-  const clients = new WeakMap<PGliteBridge, TClient>();
-
-  return baseTest.extend<BridgeTestFixtures<TClient>>({
-    bridge: [
-      // biome-ignore lint/correctness/noEmptyPattern: vitest parses the destructure to compute fixture dependencies — `{}` declares "none".
-      async ({}, use) => {
-        const context = await createBridgeContext(options);
-        clients.set(context.bridge, context.prisma);
-        try {
-          await use(context.bridge);
-        } finally {
-          await context.bridge.close();
-        }
-      },
-      { scope: options.scope ?? 'file' },
-    ],
-    prisma: async (
-      { bridge }: { bridge: PGliteBridge },
-      use: (value: TClient) => Promise<void>,
-    ) => {
-      // A test-scoped bridge is freshly created and already sits at the
-      // seeded snapshot state — resetting it would only burn a
-      // truncate-and-restore cycle. File/worker scopes must reset even for
-      // their first test: an earlier test taking only `bridge` may have
-      // mutated state, so freshness is only provable at `'test'` scope.
-      if ((options.scope ?? 'file') !== 'test') {
-        await bridge.resetDb();
-      }
-      // The bridge fixture always populates the map before `use` resolves.
-      await use(clients.get(bridge) as TClient);
-    },
-  });
+  const scope = options.scope ?? 'file';
+  return scope === 'test'
+    ? createTestScopedBridgeTest(options)
+    : createSharedBridgeTest(options, scope);
 };

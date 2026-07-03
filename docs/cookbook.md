@@ -101,10 +101,15 @@ The trade-off dial:
   global fixture set. (Uses vitest worker-scoped fixtures; on the
   `vmThreads`/`vmForks` pools these initialize per file, so the
   amortization applies to the default `threads`/`forks` pools.)
-- **`createBridgeTest({ scope: 'test', ... })`** — a fresh bridge per
-  test: the full cold start on every test, in exchange for total
-  isolation. This is the one configuration where `test.concurrent`
-  is safe — each concurrent test owns its own PGlite session.
+- **`createBridgeTest({ scope: 'test', ... })`** — a fresh,
+  independent PGlite per test, the only configuration where
+  `test.concurrent` is safe (each test owns its own session). Rather
+  than repeat the full cold start every time, it builds one template
+  per file (cold start + migrations + seed, paid once) and loads a
+  fresh instance from it per test — roughly an order of magnitude
+  cheaper, with the seed running once. Each live instance keeps its
+  own in-memory data directory, so many concurrent tests trade memory
+  for isolation.
 - **`setupPGliteBridge` in a `setupFiles` entry with
   `isolate: false`** — the pre-fixture equivalent of worker scope;
   still works, but `scope: 'worker'` achieves the same without
