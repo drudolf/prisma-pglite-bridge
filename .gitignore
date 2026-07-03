@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env.test
+.tribunal.json
 *.tsbuildinfo
 .claude/
 CLAUDE.md
