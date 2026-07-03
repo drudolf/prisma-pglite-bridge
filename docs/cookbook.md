@@ -6,6 +6,7 @@ For the underlying API, see the [API reference](./api.md).
 ## Contents
 
 - [Vitest one-call setup](#vitest-one-call-setup)
+- [Test-context fixtures (`createBridgeTest`)](#test-context-fixtures-createbridgetest)
 - [Multi-file tests with a shared bridge](#multi-file-tests-with-a-shared-bridge)
 - [Per-file bridge (no production singleton)](#per-file-bridge-no-production-singleton)
 - [Sharing seed logic between `prisma db seed` and tests](#sharing-seed-logic-between-prisma-db-seed-and-tests)
@@ -47,31 +48,73 @@ WASM instance is closed when the file finishes (`afterAll`). Options:
 `registerHooks: false` hands the lifecycle back to you — see the
 [API reference](./api.md).
 
+### Test-context fixtures (`createBridgeTest`)
+
+The fixture variant wraps the same flow in vitest's
+[test context](https://vitest.dev/guide/test-context.html) — tests
+declare what they need, typed, and vitest sequences setup and
+teardown:
+
+```typescript
+import { PrismaClient } from '@prisma/client';
+import { createBridgeTest } from 'prisma-pglite-bridge/vitest';
+
+const test = createBridgeTest({
+  client: (adapter) => new PrismaClient({ adapter }),
+  migrations: true,
+  seed: async (prisma) => {
+    await prisma.tenant.create({ data: { name: 'Acme', slug: 'acme' } });
+  },
+});
+
+test('starts from the seeded snapshot', async ({ prisma }) => {
+  expect(await prisma.tenant.count()).toBe(1);
+});
+```
+
+Every test taking `prisma` starts from the seeded snapshot (the
+fixture resets before handing it over); tests taking only `bridge`
+skip the reset; tests taking neither skip the database entirely.
+Compose your own fixtures on top with `test.extend`. Requires
+vitest ≥ 3.2 (fixture scopes).
+
 ### Isolation model
 
 **The test file is the database boundary.** Each `setupPGliteBridge`
-call creates its own bridge and its own in-memory PGlite, and the
-registered hooks attach to the calling file's suite — so with
-Vitest's default `isolate: true`, every test file gets a private
-database and files cannot interfere with each other. Within a file,
-tests share that one instance and are isolated by the snapshot
-reset between tests.
+or `createBridgeTest` call creates its own bridge and its own
+in-memory PGlite — so with Vitest's default `isolate: true`, every
+test file gets a private database and files cannot interfere with
+each other. Within a file, tests share that one instance and are
+isolated by the snapshot reset between tests.
 
 The trade-off dial:
 
-- **Call it in each test file (shown above)** — maximum isolation;
+- **One bridge per file (both APIs' default)** — maximum isolation;
   each file pays the cold start (WASM init + migrations + seed,
   roughly 0.5–2s depending on hardware).
-- **Call it in a `setupFiles` entry with `isolate: false`** — the
-  setup module is evaluated once per worker, so files in a worker
-  share one warm instance and skip the per-file cold start; the
-  per-test snapshot reset still applies. This is the one-call
-  equivalent of the [shared-bridge
+- **`createBridgeTest({ scope: 'worker', ... })`** — one warm bridge
+  shared across all files a worker runs, with default isolation left
+  ON: the cold start, migrations, and seed are paid once per worker,
+  and the per-test snapshot reset still applies. All files in the
+  worker share one seeded snapshot, so this fits projects with one
+  global fixture set. (Uses vitest worker-scoped fixtures; on the
+  `vmThreads`/`vmForks` pools these initialize per file, so the
+  amortization applies to the default `threads`/`forks` pools.)
+- **`createBridgeTest({ scope: 'test', ... })`** — a fresh bridge per
+  test: the full cold start on every test, in exchange for total
+  isolation. This is the one configuration where `test.concurrent`
+  is safe — each concurrent test owns its own PGlite session.
+- **`setupPGliteBridge` in a `setupFiles` entry with
+  `isolate: false`** — the pre-fixture equivalent of worker scope;
+  still works, but `scope: 'worker'` achieves the same without
+  giving up isolation. This mirrors the [shared-bridge
   pattern](#multi-file-tests-with-a-shared-bridge) below.
 
 **Don't use `test.concurrent` with a shared context**: concurrent
 tests would interleave on one single-session PGlite, and `resetDb`
-deliberately throws while pool clients are checked out.
+deliberately throws while pool clients are checked out. The
+exception is `createBridgeTest({ scope: 'test' })`, which gives
+every test its own instance.
 
 The sections below use the explicit building blocks, which the
 helper wraps; reach for them with other test runners or when you
