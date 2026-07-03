@@ -7,6 +7,7 @@ For the underlying API, see the [API reference](./api.md).
 
 - [Vitest one-call setup](#vitest-one-call-setup)
 - [Test-context fixtures (`createBridgeTest`)](#test-context-fixtures-createbridgetest)
+- [Jest one-call setup](#jest-one-call-setup)
 - [Multi-file tests with a shared bridge](#multi-file-tests-with-a-shared-bridge)
 - [Per-file bridge (no production singleton)](#per-file-bridge-no-production-singleton)
 - [Sharing seed logic between `prisma db seed` and tests](#sharing-seed-logic-between-prisma-db-seed-and-tests)
@@ -119,6 +120,42 @@ every test its own instance.
 The sections below use the explicit building blocks, which the
 helper wraps; reach for them with other test runners or when you
 need custom wiring like `vi.mock`.
+
+## Jest one-call setup
+
+For Jest, the same helper ships from the `prisma-pglite-bridge/jest`
+entry point. It takes the identical options and behaves the same as
+the vitest helper — one call sets up the bridge, migrations, seed,
+and snapshot, and registers `beforeEach(resetDb)` + `afterAll(close)` —
+only wired to Jest's hooks:
+
+```typescript
+// tests/db.test.ts — run under Jest's native ESM mode
+import { PrismaClient } from '@prisma/client';
+import { setupPGliteBridge } from 'prisma-pglite-bridge/jest';
+
+const { prisma } = await setupPGliteBridge({
+  client: (adapter) => new PrismaClient({ adapter }),
+  migrations: true, // auto-discovers prisma/migrations via prisma.config.ts
+  seed: async (prisma) => {
+    await prisma.tenant.create({ data: { name: 'Acme', slug: 'acme' } });
+  },
+});
+
+test('starts from the seeded snapshot', async () => {
+  expect(await prisma.tenant.count()).toBe(1);
+});
+```
+
+The top-level `await` requires Jest's [native ESM
+mode](https://jestjs.io/docs/ecmascript-modules): run Jest with
+`NODE_OPTIONS=--experimental-vm-modules` and an ESM-capable config.
+`@jest/globals` is an optional peer dependency — install it alongside
+`jest` if it is not already present. Jest has no fixture
+(`test.extend`) equivalent, so there is no `createBridgeTest` on this
+entry; to swap a shared production singleton instead, the `jest.mock`
+pattern in [Multi-file tests with a shared
+bridge](#multi-file-tests-with-a-shared-bridge) still applies.
 
 ## Multi-file tests with a shared bridge
 

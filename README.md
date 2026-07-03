@@ -100,10 +100,10 @@ NODE_OPTIONS="--expose-gc" pnpm bench --scenario findmany-focused -n 1000 -w 100
 
 - **[API reference](./docs/api.md)** — exports, options, return
   values, fs-sync policy.
-- **[Cookbook](./docs/cookbook.md)** — one-call Vitest setup
-  (`prisma-pglite-bridge/vitest`), Vitest / Jest setup,
-  per-test isolation, seed sharing, extensions, persistent dev
-  database, clean shutdown.
+- **[Cookbook](./docs/cookbook.md)** — one-call Vitest / Jest
+  setup (`prisma-pglite-bridge/vitest`,
+  `prisma-pglite-bridge/jest`), per-test isolation, seed sharing,
+  extensions, persistent dev database, clean shutdown.
 - **[`PGliteServer`](./docs/server.md)** — TCP / Unix-socket
   front for PGlite. Use for the Prisma CLI shadow database, `psql`,
   and SQL GUIs.

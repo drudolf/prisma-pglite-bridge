@@ -9,10 +9,11 @@ const neverBundle = [
   '@prisma/driver-adapter-utils',
   '@prisma/schema-engine-wasm',
   'vitest',
+  '@jest/globals',
 ];
 
 export default defineConfig({
-  entry: ['src/index.ts', 'src/vitest/index.ts'],
+  entry: ['src/index.ts', 'src/vitest/index.ts', 'src/jest/index.ts'],
   format: ['esm', 'cjs'],
   dts: true,
   sourcemap: true,

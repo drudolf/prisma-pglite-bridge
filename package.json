@@ -48,12 +48,25 @@
         "types": "./dist/vitest/index.d.cts",
         "default": "./dist/vitest/index.cjs"
       }
+    },
+    "./jest": {
+      "import": {
+        "types": "./dist/jest/index.d.mts",
+        "default": "./dist/jest/index.mjs"
+      },
+      "require": {
+        "types": "./dist/jest/index.d.cts",
+        "default": "./dist/jest/index.cjs"
+      }
     }
   },
   "typesVersions": {
     "*": {
       "vitest": [
         "./dist/vitest/index.d.cts"
+      ],
+      "jest": [
+        "./dist/jest/index.d.cts"
       ]
     }
   },
@@ -87,12 +100,16 @@
   },
   "peerDependencies": {
     "@electric-sql/pglite": "^0.4.0 || ^0.5.0",
+    "@jest/globals": "^29.0.0 || ^30.0.0",
     "@prisma/adapter-pg": "^7.0.0",
     "@prisma/config": "^7.0.0",
     "pg": "^8.0.0",
     "vitest": "^3.2.0 || ^4.0.0"
   },
   "peerDependenciesMeta": {
+    "@jest/globals": {
+      "optional": true
+    },
     "@prisma/config": {
       "optional": true
     },
@@ -113,6 +130,7 @@
     "@commitlint/cli": "^21.1.0",
     "@commitlint/config-conventional": "^21.1.0",
     "@electric-sql/pglite": "^0.5.3",
+    "@jest/globals": "^30.4.1",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@prisma/config": "^7.8.0",
