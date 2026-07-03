@@ -25,58 +25,19 @@
  * apply to every file the worker runs.
  *
  * `vitest` is an optional peer dependency — this module is the only entry
- * point that imports it.
+ * point that imports it. The runner-agnostic core lives in `../testing/core`
+ * and is shared with the `prisma-pglite-bridge/jest` entry.
  */
-import type { PrismaPg } from '@prisma/adapter-pg';
 import { afterAll, test as baseTest, beforeEach, type TestAPI } from 'vitest';
-import { PGliteBridge, type PGliteBridgeOptions } from '../pglite-bridge';
-import { type PushSchemaOptions, pushSchema } from '../schema';
-import { type PushMigrationsOptions, pushMigrations } from '../schema/migrations.ts';
+import type { PGliteBridge } from '../pglite-bridge';
+import {
+  assertExactlyOneSchemaSource,
+  createBridgeContext,
+  type PGliteTestContext,
+  type SetupPGliteBridgeOptions,
+} from '../testing/core.ts';
 
-export interface SetupPGliteBridgeOptions<TClient> {
-  /**
-   * Factory for the Prisma client, called with the bridge's driver
-   * adapter. The bridge cannot import your generated `@prisma/client`,
-   * so you construct it: `(adapter) => new PrismaClient({ adapter })`.
-   */
-  client: (adapter: PrismaPg) => TClient;
-  /**
-   * Apply `prisma/migrations` SQL. Pass `true` to auto-discover the
-   * directory via `prisma.config.ts` (same resolution as
-   * `prisma migrate dev`), or explicit {@link PushMigrationsOptions}.
-   * Exactly one of `migrations` / `schema` must be provided.
-   */
-  migrations?: PushMigrationsOptions | true;
-  /**
-   * Apply an inline Prisma schema via the WASM schema engine instead of
-   * migration files. See {@link PushSchemaOptions}.
-   */
-  schema?: PushSchemaOptions;
-  /**
-   * Runs once after the schema is applied, before the snapshot is taken.
-   * Awaited — leave no queries in flight when it resolves.
-   */
-  seed?: (client: TClient) => Promise<void>;
-  /**
-   * Snapshot the (seeded) state so `resetDb` restores it before each
-   * test. Default `true`. When `false`, `resetDb` truncates to empty.
-   */
-  snapshot?: boolean;
-  /**
-   * Register `beforeEach(resetDb)` + `afterAll(close)` automatically.
-   * Default `true`. Set `false` to drive the lifecycle yourself.
-   */
-  registerHooks?: boolean;
-  /** Forwarded to the {@link PGliteBridge} constructor. */
-  bridge?: PGliteBridgeOptions;
-}
-
-export interface PGliteTestContext<TClient> {
-  /** The client returned by the `client` factory. */
-  prisma: TClient;
-  /** The underlying bridge, for manual `resetDb`/`snapshotDb`/`close`. */
-  bridge: PGliteBridge;
-}
+export type { PGliteTestContext, SetupPGliteBridgeOptions } from '../testing/core.ts';
 
 /**
  * Create a seeded, snapshot-backed PGlite test context and (by default)
@@ -86,46 +47,6 @@ export interface PGliteTestContext<TClient> {
  * snapshot), the bridge is closed before the error propagates — no PGlite
  * instance outlives a failed setup.
  */
-const assertExactlyOneSchemaSource = (
-  caller: string,
-  options: { migrations?: PushMigrationsOptions | true; schema?: PushSchemaOptions },
-): void => {
-  if ((options.migrations === undefined) === (options.schema === undefined)) {
-    throw new TypeError(
-      `${caller} requires exactly one of \`migrations\` or \`schema\` to define the database shape`,
-    );
-  }
-};
-
-/** Hook-free core shared by {@link setupPGliteBridge} and {@link createBridgeTest}. */
-const createBridgeContext = async <TClient>(
-  options: SetupPGliteBridgeOptions<TClient>,
-): Promise<PGliteTestContext<TClient>> => {
-  const bridge = new PGliteBridge(options.bridge);
-  let prisma: TClient;
-  try {
-    if (options.migrations !== undefined) {
-      await pushMigrations(bridge.pglite, options.migrations === true ? {} : options.migrations);
-    } else {
-      // The exactly-one validation before this call guarantees `schema` is set.
-      await pushSchema(bridge.adapter, options.schema as PushSchemaOptions);
-    }
-
-    prisma = options.client(bridge.adapter);
-    if (options.seed) {
-      await options.seed(prisma);
-    }
-    if (options.snapshot !== false) {
-      await bridge.snapshotDb();
-    }
-  } catch (err) {
-    await bridge.close();
-    throw err;
-  }
-
-  return { prisma, bridge };
-};
-
 export const setupPGliteBridge = async <TClient>(
   options: SetupPGliteBridgeOptions<TClient>,
 ): Promise<PGliteTestContext<TClient>> => {
