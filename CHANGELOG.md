@@ -1,5 +1,83 @@
 # prisma-pglite-bridge
 
+## 1.6.0
+
+### Minor Changes
+
+- [`b8a2378`](https://github.com/drudolf/prisma-pglite-bridge/commit/b8a2378e373407b774ab2f323c3bfe082fd37fb9) Thanks [@drudolf](https://github.com/drudolf)! - `createBridgeTest({ scope: 'test' })` is now roughly an order of
+  magnitude faster. Instead of paying a full PGlite cold start +
+  migrations + seed on every test, it builds one template per file
+  (cold start + migrations + seed, paid once), dumps it, and loads a
+  fresh, independent PGlite instance from that template for each test.
+
+  The one behavior change: your `seed` callback now runs once per file
+  (against the template) instead of once per test, so any side effects
+  it performs — database writes and otherwise — happen once per file.
+  Every test still starts from the fully seeded state, stays fully
+  isolated, and `test.concurrent` remains safe. Each live instance
+  keeps its own in-memory data directory, so many concurrent tests
+  trade memory for isolation.
+
+- [`274cd2a`](https://github.com/drudolf/prisma-pglite-bridge/commit/274cd2ab042280d831ea6b09adb981e3a424f915) Thanks [@drudolf](https://github.com/drudolf)! - New `prisma-pglite-bridge/jest` entry point — the Jest counterpart to
+  `prisma-pglite-bridge/vitest`'s `setupPGliteBridge`:
+
+  ```typescript
+  import { PrismaClient } from "@prisma/client";
+  import { setupPGliteBridge } from "prisma-pglite-bridge/jest";
+
+  const { prisma } = await setupPGliteBridge({
+    client: (adapter) => new PrismaClient({ adapter }),
+    migrations: true,
+    seed: async (prisma) => {
+      await prisma.tenant.create({ data: { name: "Acme" } });
+    },
+  });
+
+  test("starts from the seeded snapshot", async () => {
+    expect(await prisma.tenant.count()).toBe(1);
+  });
+  ```
+
+  Same options and behavior as the vitest helper — one call sets up the
+  bridge, schema, seed, and snapshot, and by default registers
+  `beforeEach(resetDb)` + `afterAll(close)` — wired to Jest's hooks via
+  `@jest/globals` (a new optional peer dependency). Requires Jest's native
+  ESM mode so the top-level `await` resolves before the suite runs. Jest has
+  no fixture (`test.extend`) equivalent, so there is no `createBridgeTest` on
+  this entry; the hook-based helper is the whole surface.
+
+- [`d94f364`](https://github.com/drudolf/prisma-pglite-bridge/commit/d94f364b0b3774bb0e3252b41b66a9f0ad10731c) Thanks [@drudolf](https://github.com/drudolf)! - New `createBridgeTest` in `prisma-pglite-bridge/vitest` — a
+  test-context (fixture) variant of `setupPGliteBridge` built on
+  `test.extend`:
+
+  ```typescript
+  import { PrismaClient } from "@prisma/client";
+  import { createBridgeTest } from "prisma-pglite-bridge/vitest";
+
+  const test = createBridgeTest({
+    client: (adapter) => new PrismaClient({ adapter }),
+    migrations: true,
+    seed: async (prisma) => {
+      await prisma.tenant.create({ data: { name: "Acme" } });
+    },
+  });
+
+  test("starts from the seeded snapshot", async ({ prisma }) => {
+    expect(await prisma.tenant.count()).toBe(1);
+  });
+  ```
+
+  Tests declare what they need (`{ prisma, bridge }`, fully typed); every
+  test taking `prisma` starts from the seeded snapshot; teardown is
+  sequenced by vitest. The `scope` option spans the whole
+  isolation/speed dial: `'file'` (default) — one bridge per test file;
+  `'worker'` — one warm bridge across all files a worker runs, amortizing
+  the WASM cold start, migrations, and seed per worker with vitest's
+  default isolation left ON (previously this required `isolate: false`);
+  `'test'` — a fresh bridge per test, the only configuration where
+  `test.concurrent` is safe. The optional `vitest` peer floor moves to
+  `^3.2.0` (fixture scopes).
+
 ## 1.5.0
 
 ### Minor Changes
