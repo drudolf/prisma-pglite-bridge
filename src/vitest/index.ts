@@ -74,10 +74,11 @@ export interface CreateBridgeTestOptions<TClient>
    * bridge — the only option safe for `test.concurrent`. To keep that
    * affordable, `'test'` builds one template per file (cold start +
    * migrations + seed, paid once) and loads a fresh, independent PGlite
-   * from it per test rather than repeating the cold start — roughly an
-   * order of magnitude cheaper, and the seed runs once per file. Each
-   * live instance still holds its own in-memory data dir, so many
-   * concurrent tests trade memory for isolation. Requires vitest >= 3.2.
+   * from it per test rather than repeating the cold start — several
+   * times cheaper per test (≈5x in the reference benchmark), and the
+   * seed runs once per file. Each live instance still holds its own
+   * in-memory data dir, so many concurrent tests trade memory for
+   * isolation. Requires vitest >= 3.2.
    * Note vitest's `vmThreads`/`vmForks` pools initialize worker-scoped
    * fixtures per file, so `'worker'` amortizes only on the default
    * `threads`/`forks` pools.

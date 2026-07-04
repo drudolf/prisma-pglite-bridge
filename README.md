@@ -96,6 +96,17 @@ raw JSON snapshots live in the
 NODE_OPTIONS="--expose-gc" pnpm bench --scenario findmany-focused -n 1000 -w 100 -r 5
 ```
 
+Test-setup cost matters as much as query speed for a suite.
+`createBridgeTest`'s `scope` trades isolation against per-test
+overhead: `'file'` / `'worker'` reset one shared snapshot (tens of
+ms/test), while `'test'` hands every test its own independent,
+`test.concurrent`-safe PGlite loaded from a per-file template — ~5x
+cheaper than a full cold start per test and far more predictable
+(sub-second p99 on Apple Silicon and x86, vs a cold-start tail that
+runs to seconds). Numbers and the `pnpm bench:isolation` entry point
+live in [per-test isolation
+cost](./benchmark/BENCHMARK.md#per-test-isolation-cost).
+
 ## Documentation
 
 - **[API reference](./docs/api.md)** — exports, options, return

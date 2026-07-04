@@ -1,0 +1,42 @@
+{
+  "benchmark": "isolation-cost",
+  "iterations": 20,
+  "machine": {
+    "node": "v24.18.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpus": 16
+  },
+  "results": [
+    {
+      "strategy": "cold start",
+      "scope": "test (pre-1.6)",
+      "oneTimeMs": 0,
+      "perTest": {
+        "p50": 633.8801670000003,
+        "p90": 692.156958,
+        "p99": 803.211667
+      }
+    },
+    {
+      "strategy": "snapshot reset",
+      "scope": "file / worker",
+      "oneTimeMs": 640.1011669999989,
+      "perTest": {
+        "p50": 11.852333999999246,
+        "p90": 13.49633300000096,
+        "p99": 23.164083000001483
+      }
+    },
+    {
+      "strategy": "template load",
+      "scope": "test (1.6+)",
+      "oneTimeMs": 679.2895420000023,
+      "perTest": {
+        "p50": 147.35220900000058,
+        "p90": 165.70658299999923,
+        "p99": 226.47650000000067
+      }
+    }
+  ]
+}

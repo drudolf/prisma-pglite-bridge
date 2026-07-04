@@ -4,8 +4,8 @@
 
 ### Minor Changes
 
-- [`b8a2378`](https://github.com/drudolf/prisma-pglite-bridge/commit/b8a2378e373407b774ab2f323c3bfe082fd37fb9) Thanks [@drudolf](https://github.com/drudolf)! - `createBridgeTest({ scope: 'test' })` is now roughly an order of
-  magnitude faster. Instead of paying a full PGlite cold start +
+- [`b8a2378`](https://github.com/drudolf/prisma-pglite-bridge/commit/b8a2378e373407b774ab2f323c3bfe082fd37fb9) Thanks [@drudolf](https://github.com/drudolf)! - `createBridgeTest({ scope: 'test' })` is now several times faster per
+  test (~5x measured, and far more predictable). Instead of paying a full PGlite cold start +
   migrations + seed on every test, it builds one template per file
   (cold start + migrations + seed, paid once), dumps it, and loads a
   fresh, independent PGlite instance from that template for each test.
