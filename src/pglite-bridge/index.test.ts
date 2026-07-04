@@ -264,7 +264,10 @@ describe('PGliteBridge — mocked pg.Pool', () => {
   };
 
   type PrismaPgTestOptions =
-    | { statementNameGenerator?: (query: { sql: string }) => string | undefined }
+    | {
+        schema?: string;
+        statementNameGenerator?: (query: { sql: string }) => string | undefined;
+      }
     | undefined;
 
   const prismaPgOptions = (prismaPg: ReturnType<typeof vi.fn>): PrismaPgTestOptions =>
@@ -379,6 +382,47 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     });
 
     expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeTypeOf('function');
+
+    await created.close();
+  });
+
+  it('forwards schema to PrismaPg when set', async () => {
+    const mockPglite = createMockPGlite();
+    const { module, prismaPg } = await loadClassWithMocks();
+
+    const created = new module.PGliteBridge({ pglite: mockPglite, schema: 'tenant_a' });
+
+    expect(prismaPgOptions(prismaPg)?.schema).toBe('tenant_a');
+    // schema alone must not turn on statement caching.
+    expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeUndefined();
+
+    await created.close();
+  });
+
+  it('passes no schema by default', async () => {
+    const mockPglite = createMockPGlite();
+    const { module, prismaPg } = await loadClassWithMocks();
+
+    const created = new module.PGliteBridge({ pglite: mockPglite });
+
+    expect(prismaPgOptions(prismaPg)?.schema).toBeUndefined();
+
+    await created.close();
+  });
+
+  it('forwards both schema and the statement generator together', async () => {
+    const mockPglite = createMockPGlite();
+    const { module, prismaPg } = await loadClassWithMocks();
+
+    const created = new module.PGliteBridge({
+      pglite: mockPglite,
+      schema: 'tenant_b',
+      preparedStatements: true,
+    });
+
+    const options = prismaPgOptions(prismaPg);
+    expect(options?.schema).toBe('tenant_b');
+    expect(options?.statementNameGenerator).toBeTypeOf('function');
 
     await created.close();
   });

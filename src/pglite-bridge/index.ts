@@ -133,6 +133,14 @@ export interface PGliteBridgeOptions {
    * would collide.
    */
   preparedStatements?: boolean;
+
+  /**
+   * Target a non-`public` PostgreSQL schema. Forwarded to
+   * `@prisma/adapter-pg` as its `schema` option, which sets the
+   * connection `search_path` so Prisma reads and writes in that schema.
+   * Omit to use `public`.
+   */
+  schema?: string;
 }
 
 export class PGliteBridge {
@@ -190,9 +198,19 @@ export class PGliteBridge {
     const statementNameGenerator = createStatementNameGenerator() as (query: {
       sql: string;
     }) => string;
+    // Forward only the adapter-pg options the caller actually set, so the
+    // adapter keeps its own defaults otherwise: `schema` targets a
+    // non-public search_path; the generator enables statement caching.
+    const adapterOptions: NonNullable<ConstructorParameters<typeof PrismaPg>[1]> = {};
+    if (options.schema !== undefined) {
+      adapterOptions.schema = options.schema;
+    }
+    if (preparedStatements) {
+      adapterOptions.statementNameGenerator = statementNameGenerator;
+    }
     this.adapter = new PrismaPg(
       this.#pool,
-      preparedStatements ? { statementNameGenerator } : undefined,
+      Object.keys(adapterOptions).length > 0 ? adapterOptions : undefined,
     );
 
     leakRegistry.register(this.adapter, undefined, this.#leakToken);
