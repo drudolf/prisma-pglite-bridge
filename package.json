@@ -94,6 +94,7 @@
     "check:exports": "attw --pack --profile strict",
     "changeset": "changeset",
     "bench": "tsx benchmark/run.ts",
+    "bench:isolation": "tsx benchmark/isolation-cost.ts",
     "build:schema-engine": "tsx scripts/build-schema-engine.ts",
     "prepublishOnly": "pnpm test:unit && pnpm test:gc && pnpm build && pnpm check:exports",
     "prepare": "husky && prisma generate"

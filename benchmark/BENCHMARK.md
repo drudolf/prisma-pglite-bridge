@@ -11,6 +11,7 @@ pnpm bench                                # all adapters, micro scenario
 pnpm bench --scenario all                 # all scenarios, all adapters
 pnpm bench --adapter bridge -n 20         # more iterations
 pnpm bench --json > results.json          # machine-readable output
+pnpm bench:isolation                      # per-test isolation cost (own entry point)
 ```
 
 The first run generates schema SQL via `prisma migrate diff`, so Prisma's
@@ -197,6 +198,57 @@ snapshot/reset) plus a latency profile that no longer asks you to
 trade speed for it.
 
 [electric-sql/pglite#1030]: https://github.com/electric-sql/pglite/pull/1030
+
+### Per-test isolation cost
+
+Separate from the query benchmarks above, this measures what a test
+suite pays *per test* to get an isolated, seeded database — the cost
+`createBridgeTest`'s `scope` trades between. It has its own entry
+point, since it exercises the bridge's setup lifecycle rather than the
+adapter matrix:
+
+```bash
+pnpm bench:isolation              # 20 iterations, table
+pnpm bench:isolation -n 40 --json
+```
+
+It times the three strategies through the library's own code paths
+with the realistic integration seed, after a warmup that compiles the
+PGlite WASM module once — so these are steady-state per-test figures,
+not first-test cost. `cold start` and `template load` create and tear
+down an instance every test, so their figure is the full lifecycle;
+`snapshot reset` reuses one bridge, so its figure is just the reset.
+One-time costs are paid once per file.
+
+macOS, n=20, post-warmup. Apple M3 Max, Node 24.18.0
+([raw JSON](./results/2026-07-04-m3max-isolation-cost.json)):
+
+| Strategy       | `scope`           | Per-test p50 |     p99 | One-time (per file) |
+| -------------- | ----------------- | -----------: | ------: | ------------------: |
+| cold start     | `test` (pre-1.6)  |        634ms |   803ms |                   — |
+| snapshot reset | `file` / `worker` |         12ms |    23ms |               0.64s |
+| template load  | `test` (1.6+)     |        147ms |   226ms |               0.68s |
+
+Intel Core i9-9980HK, Node 24.14.1
+([raw JSON](./results/2026-07-04-intel-isolation-cost.json)):
+
+| Strategy       | `scope`           | Per-test p50 |     p99 | One-time (per file) |
+| -------------- | ----------------- | -----------: | ------: | ------------------: |
+| cold start     | `test` (pre-1.6)  |        1.88s |   3.43s |                   — |
+| snapshot reset | `file` / `worker` |       42.3ms |  47.9ms |               2.51s |
+| template load  | `test` (1.6+)     |        333ms |   364ms |               1.86s |
+
+`snapshot reset` is the cheapest by far, but every test in the file
+shares one single-session PGlite — fine serially, unsafe under
+`test.concurrent`, and the right default. `template load` (the 1.6
+`scope: 'test'`) gives each test its own independent instance — the
+only `test.concurrent`-safe option — at ~4–6x less than the old
+per-test cold start, and far more predictable: its p99 stays sub-second
+on both machines while cold start's tail runs to ~0.8s on the M3 Max
+and past 3s on Intel. The trade is memory: each live instance keeps its
+own ~40MB in-memory data directory. Cold start is the most
+variance-prone (it does the most work per test), so treat the ratio as
+the signal and the absolute tail as indicative.
 
 ## Adapters
 

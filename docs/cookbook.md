@@ -106,10 +106,12 @@ The trade-off dial:
   `test.concurrent` is safe (each test owns its own session). Rather
   than repeat the full cold start every time, it builds one template
   per file (cold start + migrations + seed, paid once) and loads a
-  fresh instance from it per test — roughly an order of magnitude
-  cheaper, with the seed running once. Each live instance keeps its
-  own in-memory data directory, so many concurrent tests trade memory
-  for isolation.
+  fresh instance from it per test — several times cheaper per test
+  (≈5× in the [isolation-cost
+  benchmark](../benchmark/BENCHMARK.md#per-test-isolation-cost)) and
+  far more predictable, with the seed running once. Each live instance
+  keeps its own in-memory data directory, so many concurrent tests
+  trade memory for isolation.
 - **`setupPGliteBridge` in a `setupFiles` entry with
   `isolate: false`** — the pre-fixture equivalent of worker scope;
   still works, but `scope: 'worker'` achieves the same without
