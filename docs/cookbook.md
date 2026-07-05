@@ -5,25 +5,29 @@ For the underlying API, see the [API reference](./api.md).
 
 ## Contents
 
-- [Vitest one-call setup](#vitest-one-call-setup)
-- [Test-context fixtures (`createBridgeTest`)](#test-context-fixtures-createbridgetest)
-- [Isolation model](#isolation-model)
-- [Jest one-call setup](#jest-one-call-setup)
-- [Multi-file tests with a shared bridge](#multi-file-tests-with-a-shared-bridge)
-- [Per-file bridge (no production singleton)](#per-file-bridge-no-production-singleton)
-- [Sharing seed logic between `prisma db seed` and tests](#sharing-seed-logic-between-prisma-db-seed-and-tests)
-- [Applying a schema directly (no migrations directory)](#applying-a-schema-directly-no-migrations-directory)
-- [Using PostgreSQL extensions](#using-postgresql-extensions)
-- [Pre-generated SQL (fastest)](#pre-generated-sql-fastest)
-- [Persistent dev database (optional)](#persistent-dev-database-optional)
-- [Long-lived dev server (Studio, `psql`, `prisma migrate dev`)](#long-lived-dev-server-studio-psql-prisma-migrate-dev)
-- [Long-running script with clean shutdown](#long-running-script-with-clean-shutdown)
+- [Testing](#testing)
+  - [Vitest: one call or fixtures](#vitest-one-call-or-fixtures)
+  - [Jest: one call](#jest-one-call)
+  - [Choosing an isolation model](#choosing-an-isolation-model)
+  - [Wiring the bridge into your app](#wiring-the-bridge-into-your-app)
+  - [Schema and seed](#schema-and-seed)
+- [Local development and scripts](#local-development-and-scripts)
+  - [Persistent database](#persistent-database)
+  - [Dev server for Studio, psql, and the CLI](#dev-server-for-studio-psql-and-the-cli)
+  - [Long-running script with clean shutdown](#long-running-script-with-clean-shutdown)
 
-## Vitest one-call setup
+## Testing
 
-For Vitest, `setupPGliteBridge` from the `prisma-pglite-bridge/vitest`
-entry point collapses the whole flow — bridge, migrations, seed,
-snapshot, and lifecycle hooks — into one call:
+Reach for the one-call helper from `prisma-pglite-bridge/vitest` (or
+`/jest`) first — it collapses bridge, migrations, seed, snapshot, and
+lifecycle hooks into a single call. The building blocks it wraps
+(`PGliteBridge`, `pushMigrations`, `resetDb`) are used directly in the
+later sections for custom wiring (`vi.mock`) and other runners.
+
+### Vitest: one call or fixtures
+
+`setupPGliteBridge` returns a seeded, snapshot-backed client and
+registers the lifecycle hooks:
 
 ```typescript
 // tests/db.test.ts (or a setupFiles entry — hooks then apply per worker)
@@ -50,12 +54,9 @@ WASM instance is closed when the file finishes (`afterAll`). Options:
 `registerHooks: false` hands the lifecycle back to you — see the
 [API reference](./api.md).
 
-### Test-context fixtures (`createBridgeTest`)
-
-The fixture variant wraps the same flow in vitest's
+**Fixtures (`createBridgeTest`)** wrap the same flow in vitest's
 [test context](https://vitest.dev/guide/test-context.html) — tests
-declare what they need, typed, and vitest sequences setup and
-teardown:
+declare what they need, typed, and vitest sequences setup and teardown:
 
 ```typescript
 import { PrismaClient } from '@prisma/client';
@@ -74,68 +75,18 @@ test('starts from the seeded snapshot', async ({ prisma }) => {
 });
 ```
 
-Every test taking `prisma` starts from the seeded snapshot (the
-fixture resets before handing it over); tests taking only `bridge`
-skip the reset; tests taking neither skip the database entirely.
-Compose your own fixtures on top with `test.extend`. Requires
-vitest ≥ 3.2 (fixture scopes).
+Every test taking `prisma` starts from the seeded snapshot (the fixture
+resets before handing it over); tests taking only `bridge` skip the
+reset; tests taking neither skip the database entirely. Compose your own
+fixtures on top with `test.extend`. Requires vitest ≥ 3.2 (fixture
+scopes).
 
-### Isolation model
+### Jest: one call
 
-**The test file is the database boundary.** Each `setupPGliteBridge`
-or `createBridgeTest` call creates its own bridge and its own
-in-memory PGlite — so with Vitest's default `isolate: true`, every
-test file gets a private database and files cannot interfere with
-each other. Within a file, tests share that one instance and are
-isolated by the snapshot reset between tests.
-
-The trade-off dial:
-
-- **One bridge per file (both APIs' default)** — maximum isolation;
-  each file pays the cold start (WASM init + migrations + seed,
-  roughly 0.5–2s depending on hardware).
-- **`createBridgeTest({ scope: 'worker', ... })`** — one warm bridge
-  shared across all files a worker runs, with default isolation left
-  ON: the cold start, migrations, and seed are paid once per worker,
-  and the per-test snapshot reset still applies. All files in the
-  worker share one seeded snapshot, so this fits projects with one
-  global fixture set. (Uses vitest worker-scoped fixtures; on the
-  `vmThreads`/`vmForks` pools these initialize per file, so the
-  amortization applies to the default `threads`/`forks` pools.)
-- **`createBridgeTest({ scope: 'test', ... })`** — a fresh,
-  independent PGlite per test, the only configuration where
-  `test.concurrent` is safe (each test owns its own session). Rather
-  than repeat the full cold start every time, it builds one template
-  per file (cold start + migrations + seed, paid once) and loads a
-  fresh instance from it per test — several times cheaper per test
-  (≈5× in the [isolation-cost
-  benchmark](../benchmark/BENCHMARK.md#per-test-isolation-cost)) and
-  far more predictable, with the seed running once. Each live instance
-  keeps its own in-memory data directory, so many concurrent tests
-  trade memory for isolation.
-- **`setupPGliteBridge` in a `setupFiles` entry with
-  `isolate: false`** — the pre-fixture equivalent of worker scope;
-  still works, but `scope: 'worker'` achieves the same without
-  giving up isolation. This mirrors the [shared-bridge
-  pattern](#multi-file-tests-with-a-shared-bridge) below.
-
-**Don't use `test.concurrent` with a shared context**: concurrent
-tests would interleave on one single-session PGlite, and `resetDb`
-deliberately throws while pool clients are checked out. The
-exception is `createBridgeTest({ scope: 'test' })`, which gives
-every test its own instance.
-
-The sections below use the explicit building blocks, which the
-helper wraps; reach for them with other test runners or when you
-need custom wiring like `vi.mock`.
-
-## Jest one-call setup
-
-For Jest, the same helper ships from the `prisma-pglite-bridge/jest`
-entry point. It takes the identical options and behaves the same as
-the vitest helper — one call sets up the bridge, migrations, seed,
-and snapshot, and registers `beforeEach(resetDb)` + `afterAll(close)` —
-only wired to Jest's hooks:
+The same helper ships from the `prisma-pglite-bridge/jest` entry point
+with identical options — one call sets up the bridge, migrations, seed,
+and snapshot, and registers `beforeEach(resetDb)` + `afterAll(close)`,
+wired to Jest's hooks:
 
 ```typescript
 // tests/db.test.ts — run under Jest's native ESM mode
@@ -159,24 +110,94 @@ The top-level `await` requires Jest's [native ESM
 mode](https://jestjs.io/docs/ecmascript-modules): run Jest with
 `NODE_OPTIONS=--experimental-vm-modules` and an ESM-capable config.
 `@jest/globals` is an optional peer dependency — install it alongside
-`jest` if it is not already present. Jest has no fixture
-(`test.extend`) equivalent, so there is no `createBridgeTest` on this
-entry; to swap a shared production singleton instead, the `jest.mock`
-pattern in [Multi-file tests with a shared
-bridge](#multi-file-tests-with-a-shared-bridge) still applies.
+`jest` if it is not already present. Jest has no fixture (`test.extend`)
+equivalent, so there is no `createBridgeTest` on this entry; to swap a
+shared production singleton, see [Wiring the bridge into your
+app](#wiring-the-bridge-into-your-app).
 
-## Multi-file tests with a shared bridge
+### Choosing an isolation model
 
-The recommended pattern for a multi-file Vitest suite. The bridge
-is created once and `vi.mock` rewires every test file's
-`PrismaClient` import to it — migrations and seed run a single
-time, all tests share one snapshot, and `resetDb()` runs before
-every test. Skip to the
-[per-file bridge pattern](#per-file-bridge-no-production-singleton)
-if your code receives `PrismaClient` as a parameter and you don't
-have a production singleton to swap.
+**The test file is the database boundary.** Each `setupPGliteBridge` or
+`createBridgeTest` call creates its own bridge and its own in-memory
+PGlite — so with Vitest's default `isolate: true`, every test file gets a
+private database and files cannot interfere with each other. Within a
+file, tests share that one instance and are isolated by the snapshot
+reset between tests.
 
-Most Prisma projects use a singleton module:
+The trade-off dial:
+
+- **One bridge per file (both APIs' default)** — maximum isolation; each
+  file pays the cold start (WASM init + migrations + seed, roughly
+  0.5–2s depending on hardware).
+- **`createBridgeTest({ scope: 'worker', ... })`** — one warm bridge
+  shared across all files a worker runs, with default isolation left ON:
+  the cold start, migrations, and seed are paid once per worker, and the
+  per-test snapshot reset still applies. All files in the worker share
+  one seeded snapshot, so this fits projects with one global fixture set.
+  (Uses vitest worker-scoped fixtures; on the `vmThreads`/`vmForks` pools
+  these initialize per file, so the amortization applies to the default
+  `threads`/`forks` pools.)
+- **`createBridgeTest({ scope: 'test', ... })`** — a fresh, independent
+  PGlite per test, the only configuration where `test.concurrent` is safe
+  (each test owns its own session). Rather than repeat the full cold
+  start every time, it builds one template per file (cold start +
+  migrations + seed, paid once) and loads a fresh instance from it per
+  test — several times cheaper per test (≈5× in the [isolation-cost
+  benchmark](../benchmark/BENCHMARK.md#per-test-isolation-cost)) and far
+  more predictable, with the seed running once. Each live instance keeps
+  its own in-memory data directory, so many concurrent tests trade memory
+  for isolation.
+- **`setupPGliteBridge` in a `setupFiles` entry with `isolate: false`** —
+  the pre-fixture equivalent of worker scope; still works, but
+  `scope: 'worker'` achieves the same without giving up isolation. This
+  mirrors the singleton pattern in [Wiring the bridge into your
+  app](#wiring-the-bridge-into-your-app).
+
+**Don't use `test.concurrent` with a shared context**: concurrent tests
+would interleave on one single-session PGlite, and `resetDb` deliberately
+throws while pool clients are checked out. The exception is
+`createBridgeTest({ scope: 'test' })`, which gives every test its own
+instance.
+
+### Wiring the bridge into your app
+
+How your application code obtains its Prisma client decides how you plug
+the bridge in — and whether you need `vi.mock` at all.
+
+**If your code takes a `PrismaClient` as a parameter** (dependency
+injection), just pass the client the helper returns — no mocking, no
+hoisting concerns. The manual form, when you want one bridge per file
+without the helper:
+
+```typescript
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
+import { PrismaClient } from '@prisma/client';
+import { beforeAll, beforeEach, it, expect } from 'vitest';
+
+let prisma: PrismaClient;
+let resetDb: PGliteBridge['resetDb'];
+
+beforeAll(async () => {
+  const bridge = new PGliteBridge();
+  await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
+  prisma = new PrismaClient({ adapter: bridge.adapter });
+  resetDb = bridge.resetDb;
+});
+
+beforeEach(() => resetDb());
+
+it('creates a user', async () => {
+  const user = await prisma.user.create({ data: { name: 'Test' } });
+  expect(user.id).toBeDefined();
+});
+```
+
+Per file, migrations and seed re-run in every file's `beforeAll`; use the
+shared setup file (below) once that cost matters.
+
+**If your code imports a production singleton** (`import { prisma } from
+'./lib/prisma'`), swap that module in tests so every import gets the
+PGlite-backed client. Most projects have a singleton like:
 
 ```typescript
 // lib/prisma.ts — your production singleton
@@ -189,8 +210,9 @@ const adapter = new PrismaPg(pool);
 export const prisma = new PrismaClient({ adapter });
 ```
 
-In tests, swap the singleton via `vi.mock` so every import gets
-the in-memory PGlite version:
+Build one bridge in a setup file and point the singleton at it —
+migrations and seed run once, all tests share one snapshot, and
+`resetDb()` runs before each:
 
 ```typescript
 // vitest.setup.ts
@@ -226,13 +248,11 @@ export default defineConfig({
 });
 ```
 
-Now every test file that imports `prisma` from `lib/prisma`
-gets the PGlite-backed instance. No Docker, no test database,
-no cleanup scripts.
+Now every test file that imports `prisma` from `lib/prisma` gets the
+PGlite-backed instance. No Docker, no test database, no cleanup scripts.
 
-For Jest, the same pattern works with `jest.mock`. Note that
-`jest.mock` is hoisted to the top of the file — place it at
-the top level, not inside `beforeAll`:
+For Jest, the same pattern works with `jest.mock` (also hoisted — keep it
+at the top level, not inside `beforeAll`):
 
 ```typescript
 // jest.setup.ts
@@ -256,46 +276,80 @@ beforeAll(async () => {
 beforeEach(() => resetDb());
 ```
 
-## Per-file bridge (no production singleton)
+### Schema and seed
 
-Each test file owns its own bridge — appropriate when your code
-accepts `PrismaClient` as a parameter (no production singleton to
-mock). For suites with many test files, this re-runs migrations
-and seed in every file's `beforeAll`; prefer the
-[shared bridge pattern](#multi-file-tests-with-a-shared-bridge)
-once that cost matters.
-
-If your code accepts `PrismaClient` as a parameter:
+The building block behind the helpers is `pushMigrations` against a bare
+bridge — the same call the sections above use:
 
 ```typescript
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
-import { beforeAll, beforeEach, it, expect } from 'vitest';
 
-let prisma: PrismaClient;
-let resetDb: PGliteBridge['resetDb'];
+const bridge = new PGliteBridge();
+await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
+const prisma = new PrismaClient({ adapter: bridge.adapter });
+```
 
-beforeAll(async () => {
-  const bridge = new PGliteBridge();
-  await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
-  prisma = new PrismaClient({ adapter: bridge.adapter });
-  resetDb = bridge.resetDb;
-});
+`migrations: true` in the helpers auto-discovers this directory via
+`prisma.config.ts`. The variations below swap the schema source or seed
+step.
 
-beforeEach(() => resetDb());
+**No migrations directory.** For fixtures or prototypes, apply an inline
+schema with `pushSchema` (the WASM schema engine) instead:
 
-it('creates a user', async () => {
-  const user = await prisma.user.create({
-    data: { name: 'Test' },
-  });
-  expect(user.id).toBeDefined();
+```typescript
+import { readFile } from 'node:fs/promises';
+import { PGliteBridge, pushSchema } from 'prisma-pglite-bridge';
+
+const bridge = new PGliteBridge();
+await pushSchema(bridge.adapter, {
+  schema: await readFile('prisma/schema.prisma', 'utf8'),
 });
 ```
 
-## Sharing seed logic between `prisma db seed` and tests
+**Pre-generated SQL (fastest).** The `sql` option on `pushMigrations`
+runs verbatim with no sandbox or checksum. Compose it from trusted,
+version-controlled source only — never from environment variables,
+network input, or values that cross a trust boundary.
 
-Extract your seed logic into a function that accepts a
-PrismaClient:
+```typescript
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
+
+const bridge = new PGliteBridge();
+await pushMigrations(bridge.pglite, {
+  sql: `
+    CREATE TABLE "User" (id text PRIMARY KEY, name text NOT NULL);
+    CREATE TABLE "Post" (
+      id text PRIMARY KEY,
+      title text NOT NULL,
+      "userId" text REFERENCES "User"(id)
+    );
+  `,
+});
+```
+
+**PostgreSQL extensions.** If your schema uses `uuid-ossp`, `pgcrypto`,
+or others, construct PGlite with the `extensions` option and pass it to
+the bridge (caller-owned):
+
+```typescript
+import { PGlite } from '@electric-sql/pglite';
+import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
+import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
+import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
+
+const pglite = new PGlite({ extensions: { uuid_ossp, pgcrypto } });
+const bridge = new PGliteBridge({ pglite }); // caller owns pglite
+await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
+// remember to call pglite.close() alongside bridge.close() in teardown
+```
+
+Extensions ship inside the `@electric-sql/pglite` package — no extra
+install. See [PGlite extensions](https://pglite.dev/extensions/) for the
+full list.
+
+**Sharing seed logic with `prisma db seed`.** Extract seed logic into a
+function that accepts a `PrismaClient` and reuse it in both places:
 
 ```typescript
 // prisma/seed.ts
@@ -313,7 +367,8 @@ if (import.meta.url === new URL(process.argv[1]!, 'file:').href) {
 }
 ```
 
-Then reuse it in tests:
+Pass this `seed` as the helpers' `seed` option and they seed once, then
+snapshot so `resetDb()` restores it — no re-seed per test. Manually:
 
 ```typescript
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
@@ -332,82 +387,25 @@ beforeAll(async () => {
   resetDb = bridge.resetDb;
 });
 
-// resetDb() restores the snapshot — no re-seed needed.
-beforeEach(() => resetDb());
+beforeEach(() => resetDb()); // restores the snapshot — no re-seed needed
 ```
 
-If you'd rather re-seed every test (for example, when seed data
-varies per spec), drop the `snapshotDb()` call and re-invoke
-`seed(prisma)` inside `beforeEach` after `resetDb()`.
+To re-seed every test (when seed data varies per spec), drop
+`snapshotDb()` and re-invoke `seed(prisma)` inside `beforeEach` after
+`resetDb()`.
 
-## Applying a schema directly (no migrations directory)
+## Local development and scripts
 
-For test fixtures or prototypes without `prisma/migrations`, swap
-`pushMigrations` for `pushSchema`:
+Beyond tests, the bridge (and `PGliteServer`) give you a Postgres for
+local development without Docker.
 
-```typescript
-import { readFile } from 'node:fs/promises';
-import { PGliteBridge, pushSchema } from 'prisma-pglite-bridge';
+### Persistent database
 
-const bridge = new PGliteBridge();
-await pushSchema(bridge.adapter, {
-  schema: await readFile('prisma/schema.prisma', 'utf8'),
-});
-```
-
-## Using PostgreSQL extensions
-
-If your schema uses `uuid-ossp`, `pgcrypto`, or other extensions,
-construct PGlite with the `extensions` option and pass it to the
-bridge — the bridge treats it as caller-owned:
-
-```typescript
-import { PGlite } from '@electric-sql/pglite';
-import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
-import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
-import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
-
-const pglite = new PGlite({ extensions: { uuid_ossp, pgcrypto } });
-const bridge = new PGliteBridge({ pglite }); // caller owns pglite
-await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
-// remember to call pglite.close() alongside bridge.close() in teardown
-```
-
-Extensions are included in the `@electric-sql/pglite` package —
-no extra install needed. See [PGlite extensions](https://pglite.dev/extensions/)
-for the full list.
-
-## Pre-generated SQL (fastest)
-
-The `sql` option on `pushMigrations` runs verbatim with no sandbox
-or checksum. Compose it from trusted, version-controlled source
-only — never from environment variables, network input, or values
-that cross a trust boundary.
-
-```typescript
-import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
-
-const bridge = new PGliteBridge();
-await pushMigrations(bridge.pglite, {
-  sql: `
-    CREATE TABLE "User" (id text PRIMARY KEY, name text NOT NULL);
-    CREATE TABLE "Post" (
-      id text PRIMARY KEY,
-      title text NOT NULL,
-      "userId" text REFERENCES "User"(id)
-    );
-  `,
-});
-```
-
-## Persistent dev database (optional)
-
-By default, PGlite runs entirely in memory — the database
-disappears when the process exits. This is ideal for tests. If you
-want data to survive restarts (local development, prototyping),
-pass a `dataDir` when constructing PGlite and supply it to the
-bridge — the bridge treats a caller-supplied PGlite as caller-owned,
-so you control when it closes:
+By default PGlite runs entirely in memory — the database disappears when
+the process exits, which is ideal for tests. To keep data across restarts
+(local development, prototyping), pass a `dataDir` when constructing
+PGlite and hand it to the bridge; a caller-supplied PGlite is
+caller-owned, so you control when it closes:
 
 ```typescript
 import { existsSync } from 'node:fs';
@@ -425,18 +423,20 @@ if (firstRun) await pushMigrations(bridge.pglite, { migrationsPath: './prisma/mi
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 ```
 
-**Add `data/pglite/` to `.gitignore`.** Delete the data directory
-after schema changes to pick up new migrations. This gives you a
-local PostgreSQL without Docker — useful for offline development
-or environments where installing PostgreSQL is impractical.
+**Add `data/pglite/` to `.gitignore`.** Delete the data directory after
+schema changes to pick up new migrations. This is a local PostgreSQL
+without Docker — handy for offline development or where installing
+PostgreSQL is impractical.
 
-## Long-lived dev server (Studio, `psql`, `prisma migrate dev`)
+### Dev server for Studio, psql, and the CLI
 
-The persistent recipe above runs PGlite in-process — fine for a
-single Node app, but external tools (`prisma studio`, `psql`,
-DBeaver, the `prisma` CLI itself) need a wire-protocol endpoint.
-Combine `PGliteServer` with a persistent `dataDir` to get a
-long-running local Postgres without Docker:
+The in-process bridge is fine for a single Node app, but external tools
+(`prisma studio`, `psql`, DBeaver, the `prisma` CLI itself) need a
+wire-protocol endpoint. `PGliteServer` provides one; combine it with a
+persistent `dataDir` for a long-running local Postgres. See
+[`PGliteServer`](./server.md) for options, the connection URL, and
+security notes. A two-server setup (main + a shadow for `migrate dev`)
+looks like:
 
 ```typescript
 // scripts/db-dev.ts
@@ -471,22 +471,7 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 ```
 
-Wire it up:
-
-```json
-// package.json
-{
-  "scripts": {
-    "db:dev": "tsx scripts/db-dev.ts"
-  }
-}
-```
-
-```sh
-# .env
-DATABASE_URL=postgres://postgres@127.0.0.1:54321/postgres
-SHADOW_DATABASE_URL=postgres://postgres@127.0.0.1:54322/postgres
-```
+Point `prisma.config.ts` at the shadow via `SHADOW_DATABASE_URL`:
 
 ```typescript
 // prisma.config.ts
@@ -500,7 +485,8 @@ export default defineConfig({
 });
 ```
 
-Run `pnpm db:dev` in one terminal, then in another:
+Run the server in one terminal (`tsx scripts/db-dev.ts`, exporting the
+two printed URLs into your environment), then in another:
 
 ```sh
 pnpm prisma migrate dev   # uses the shadow DB
@@ -508,12 +494,11 @@ pnpm prisma studio        # connects to DATABASE_URL
 psql "$DATABASE_URL"      # ad-hoc inspection
 ```
 
-Add `data/` to `.gitignore`. Delete the directory to start fresh
-or to pick up new migrations (`hasMigrations` returns `true` once
-any migration has been applied, so subsequent runs skip
-`pushMigrations`).
+Add `data/` to `.gitignore`. Delete the directory to start fresh or to
+pick up new migrations (`hasMigrations` returns `true` once any migration
+has been applied, so subsequent runs skip `pushMigrations`).
 
-## Long-running script with clean shutdown
+### Long-running script with clean shutdown
 
 ```typescript
 import { PrismaClient } from '@prisma/client';
