@@ -85,7 +85,8 @@ bridge measured with the cache enabled:
 | Machine | bridge (p50 / p99) | direct adapter (p50 / p99) | native Postgres (p50 / p99) |
 | ------- | ------------------ | -------------------------- | --------------------------- |
 | Apple M3 Max | **0.34ms / 0.63ms** | 0.88ms / 1.91ms | 0.51ms / 1.19ms |
-| Intel i9-9980HK | **0.95ms / 1.79ms** | 2.49ms / 4.75ms | 1.10ms / 2.87ms |
+| Apple i9-9980HK | **0.95ms / 1.79ms** | 2.49ms / 4.75ms | 1.10ms / 2.87ms |
+| Linux i7-8700 | **0.71ms / 1.23ms** | 1.70ms / 4.16ms | 0.95ms / 2.78ms |
 
 Trade-offs and losses included: full tables (operation breadth,
 memory, cold start, where native Postgres wins), methodology, and

@@ -26,8 +26,9 @@ Raw JSON for every table below is committed under
 ### Methodology
 
 - **Machines:** Apple M3 Max (16 cores, 128GB, macOS 26.5.1, Node
-  24.18.0) and Intel Core i9-9980HK (8 cores, macOS 26.3.1, Node
-  24.14.1). Normal background load, not a quiesced lab — the
+  24.18.0), Apple i9-9980HK (8 cores, macOS 26.3.1, Node 24.14.1),
+  and Linux i7-8700 (6c/12t, Ubuntu 26.04, Node 24.18.0; read-path
+  only). Normal background load, not a quiesced lab — the
   *p50 spread* column (min–max of per-repeat p50s) shows run
   stability; treat cross-adapter ratios as the signal and absolute
   numbers as indicative.
@@ -73,7 +74,8 @@ cache enabled in the harness — the bridge's documented fast path
 retained from the 2026-07-02 run; native Postgres is hardware-bound and
 stable across bridge releases. Raw JSON:
 [m3max](./results/2026-07-05-m3max-findmany-focused.json),
-[intel](./results/2026-07-05-intel-findmany-focused.json).
+[intel](./results/2026-07-05-intel-findmany-focused.json),
+[hetzner](./results/2026-07-05-hetzner-findmany-focused.json).
 
 **Apple M3 Max:**
 
@@ -84,7 +86,7 @@ stable across bridge releases. Raw JSON:
 | `postgres-pg` (default) | 0.51ms | 0.69ms | 1.19ms | **2.48ms** | 0.49–0.52 |
 | `postgres-pg` (prepared) | 0.52ms | 0.66ms | 1.25ms | 2.86ms | 0.44–0.52 |
 
-**Intel Core i9-9980HK:**
+**Apple i9-9980HK:**
 
 | Adapter | p50 | p95 | p99 | max | p50 spread |
 | ------------------------- | ---------- | ---------- | ---------- | ---------- | ---------- |
@@ -93,13 +95,23 @@ stable across bridge releases. Raw JSON:
 | `postgres-pg` (default) | 1.10ms | 1.42ms | 2.87ms | **4.64ms** | 1.07–1.13 |
 | `postgres-pg` (prepared) | **0.80ms** | **1.18ms** | 2.42ms | 4.80ms | 0.67–0.96 |
 
+**Linux i7-8700:**
+
+| Adapter | p50 | p95 | p99 | max | p50 spread |
+| ------------------------- | ---------- | ---------- | ---------- | ---------- | ---------- |
+| `prisma-pglite-bridge` | **0.71ms** | **0.81ms** | **1.23ms** | 6.83ms | 0.70–0.72 |
+| `pglite-prisma-adapter` | 1.70ms | 3.54ms | 4.16ms | 5.43ms | 1.69–1.73 |
+| `postgres-pg` (default) | 0.95ms | 1.04ms | 2.78ms | **4.93ms** | 0.95–0.96 |
+
 Where the bridge **loses**, so you don't have to squint: on Intel,
 *prepared* native Postgres still wins p50/p95 (the bridge takes p99),
 and native posts the best worst-case (max) in both configs — but the
 bridge now beats *default* native Postgres on every percentile there,
 and holds its ~2.5x margin over the direct adapter. On the M3 Max the
 bridge leads every percentile against every opponent, prepared-native
-included, with non-overlapping p50 spreads; native keeps the tightest
+included, with non-overlapping p50 spreads; the Linux i7-8700 tells the
+same story against default native Postgres (prepared-native wasn't
+measured there). Across all three machines, native keeps the tightest
 max. The prepared-statement asymmetry still holds: statement caching
 buys the bridge ~0.1–0.4ms per query (WASM parse/plan is expensive)
 but is also worth ~0.1ms to native Postgres — and unlike many
@@ -121,7 +133,7 @@ the bridge can always run with it on (opt-in via
 | interactive tx | 0.76ms | 1.16ms (1.5x) | **0.60ms** (0.8x) |
 | update + find | **0.31ms** | 0.52ms (1.7x) | 0.31ms (1.0x) |
 
-**Intel Core i9-9980HK:**
+**Apple i9-9980HK:**
 
 | Operation | bridge | direct adapter | native Postgres |
 | -------------- | ------ | -------------- | --------------- |
@@ -157,7 +169,7 @@ mixed ops); one child process per adapter × repeat:
 | `postgres-pg` client | **268MB** | +76MB | +45MB | **89ms** |
 | `postgres-pg` server tree | 110MB | +12MB | — | — |
 
-**Intel Core i9-9980HK:**
+**Apple i9-9980HK:**
 
 | Adapter | baseline RSS | peak delta | retained delta | setup time |
 | ------------------------- | ------ | ------ | ------ | ------- |
@@ -240,7 +252,7 @@ macOS, n=20, post-warmup. Apple M3 Max, Node 24.18.0
 | snapshot reset | `file` / `worker` |         12ms |    23ms |               0.64s |
 | template load  | `test` (1.6+)     |        147ms |   226ms |               0.68s |
 
-Intel Core i9-9980HK, Node 24.14.1
+Apple i9-9980HK, Node 24.14.1
 ([raw JSON](./results/2026-07-04-intel-isolation-cost.json)):
 
 | Strategy       | `scope`           | Per-test p50 |     p99 | One-time (per file) |
