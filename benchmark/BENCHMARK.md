@@ -171,11 +171,11 @@ operation- and architecture-dependent:
 - **Simple writes and reads** go to the bridge or tie: `single
   create`, `createMany`, `findMany`, `nested create`, and
   `update + find` on all three machines.
-- **Interactive transactions look close, and the n=60 `interactive
-  tx` row is too noisy to call.** A dedicated n=2000 probe
-  (`tx-focused` below) puts the bridge within ~0.07ms of native at the
-  median and *ahead* on Linux — the apparent native win in this row
-  does not survive a larger sample.
+- **Interactive transactions come down to indexing, and the n=60
+  `interactive tx` row is too noisy to call.** A dedicated n=2000 probe
+  (`tx-focused` below) shows the bridge wins the transaction when the
+  sorted column is indexed and native's sequential scan takes it when
+  it is not.
 - **Deep includes** go to native on Intel (1.62 vs 1.79ms) and to the
   bridge on the other two.
 
@@ -253,40 +253,55 @@ competitive.
 ### Interactive transactions — `tx-focused` (2026-07-05)
 
 The `micro` suite runs `interactive tx` at only n=60, so its p99 is one
-unlucky sample and its p50 wanders — an earlier reading of that row
-("native wins transactions") did not survive a bigger sample. This runs
-the same transaction (`count` → conditional `create` → `findFirst`) at
-n=2000 and decomposes it into per-phase timings.
+unlucky sample and its p50 wanders. This runs the same transaction
+(`count` → conditional `create` → `findFirst(orderBy: createdAt desc)`)
+at n=2000. That sorted read's cost depends on whether the sorted column
+is indexed, so **both cases are reported**: the default hits the
+`Batch.createdAt` index; `BENCH_TX_UNINDEXED=1` drops it first and runs
+the identical transaction over a sequential scan.
 
-`tx total`, p50 / p95 / p99 (ms):
+**Indexed (default)** — `tx total`, p50 / p95 / p99 (ms):
 
 | Machine | bridge | direct adapter | native Postgres |
 | ------------------- | ------------------ | ------------------ | ------------------ |
-| Apple M3 Max | 0.60 / 0.85 / 1.09 | 1.02 / 1.31 / 1.87 | **0.53 / 0.70 / 1.17** |
-| Apple i9-9980HK | 1.72 / 2.76 / 3.70 | 2.68 / 3.94 / 4.92 | **1.67 / 2.51 / 3.10** |
-| Linux i7-8700 | **1.39 / 1.64 / 1.76** | 2.18 / 2.46 / 3.64 | 1.51 / 1.77 / 1.99 |
+| Apple M3 Max | **0.34 / 0.56 / 0.93** | 0.79 / 1.10 / 1.83 | 0.43 / 0.61 / 1.50 |
+| Apple i9-9980HK | **1.07 / 1.58 / 2.25** | 2.03 / 2.77 / 3.47 | 1.30 / 1.99 / 2.90 |
+| Linux i7-8700 | **0.99 / 1.27 / 1.93** | 1.80 / 2.07 / 3.32 | 1.16 / 1.32 / 1.50 |
 
-At a stable sample the transaction is a near-tie: the bridge is within
-~0.07ms of native at the median on the Apple machines and *ahead* on
-Linux (1.39 vs 1.51ms), with comparable tails. The per-phase
-decomposition explains why there is nothing to optimize in the bridge's
-transaction path:
+**Unindexed (`BENCH_TX_UNINDEXED=1`)** — `tx total`, p50 / p95 / p99 (ms):
 
-- **`begin + commit` (the transaction machinery) is the bridge's, on
-  every machine** — 0.06 vs 0.11ms (M3 Max), 0.28 vs 0.41ms (Intel),
-  0.22 vs 0.26ms (Linux). The in-process Duplex turns BEGIN/COMMIT
-  round-trips over faster than loopback TCP, so there is no
-  "per-round-trip protocol tax" — the opposite of what the noisy
-  `micro` row suggested.
-- **The only phase the bridge loses is `findFirst`** — an
-  `ORDER BY createdAt DESC LIMIT 1` over an unindexed, growing table
-  (0.38 vs 0.23ms on M3 Max). That is PGlite's WASM executor on a
-  full-scan sort, not anything the bridge adds; an index — or a query
-  that has one — closes it.
+| Machine | bridge | direct adapter | native Postgres |
+| ------------------- | ------------------ | ------------------ | ------------------ |
+| Apple M3 Max | 0.60 / 0.84 / 1.45 | 1.03 / 1.30 / 1.76 | **0.53 / 0.71 / 1.71** |
+| Apple i9-9980HK | **1.57 / 2.22 / 3.04** | 2.37 / 3.15 / 3.89 | 1.61 / 2.40 / 3.85 |
+| Linux i7-8700 | **1.40 / 1.66 / 1.82** | 2.22 / 2.48 / 3.64 | 1.48 / 1.74 / 1.99 |
 
-So the transaction "gap" is a single scan-bound read, not the
-transaction handling, and there is no bridge-side transaction
-optimization to chase.
+The decomposition shows exactly what moves. The bridge **wins the
+`begin + commit` machinery on every machine** — 0.06 vs 0.11ms (M3 Max),
+0.28 vs 0.41ms (Intel), 0.22 vs 0.26ms (Linux): the in-process Duplex
+turns BEGIN/COMMIT round-trips over faster than loopback TCP, so there
+is no "per-round-trip protocol tax." The one phase that swings is the
+sorted `findFirst` (p50, bridge / native):
+
+| Machine | indexed | unindexed |
+| ------------------- | ------------ | ------------ |
+| Apple M3 Max | 0.09 / 0.09 | 0.38 / 0.23 |
+| Apple i9-9980HK | 0.28 / 0.28 | 0.70 / 0.55 |
+| Linux i7-8700 | 0.26 / 0.27 | 0.63 / 0.61 |
+
+Indexed, `findFirst` is a tie — both engines do a top-1 index lookup —
+and the bridge's machinery win carries `tx total` on all three machines.
+Unindexed, PGlite's WASM executor scans and sorts slower than native's
+(native ahead on the phase everywhere), which is enough to hand native
+the transaction on the M3 Max and pull the other two to a near-tie.
+
+So the honest reading: **the bridge wins interactive transactions when
+the sorted column is indexed, and native's faster sequential scan takes
+the sorted read when it is not.** An unindexed `ORDER BY` is a schema
+smell a production app would fix — and the index helps both engines — so
+the indexed case is the realistic one, but native's scan advantage is
+real. It is the same engine characteristic behind the Intel `deep
+include` loss. The bridge's transaction *machinery* is never the cost.
 
 **Durability is not the write differentiator either.** Re-running the
 write-heavy `micro` operations against native Postgres with

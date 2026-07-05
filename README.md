@@ -93,10 +93,11 @@ That lead isn't an artifact of one hot query: across a nine-shape
 read mix (point lookups, filters, sorts, joins, `count`/`groupBy`)
 the bridge stays ahead on every shape and machine. The trade-off is
 honest, though — on x86 prepared-native still edges the read median,
-and native stays level on transaction-heavy work (a dedicated n=2000
-probe shows interactive transactions are essentially a tie, with the
-bridge ahead on Linux). Full tables (operation breadth, multi-shape
-reads, transactions, memory, cold start, where native wins) and
+and interactive transactions come down to indexing (the bridge wins
+them when the sorted column is indexed, native's sequential scan wins
+when it isn't; the suite reports both). Full tables (operation breadth,
+multi-shape reads, transactions, memory, cold start, where native wins)
+and
 methodology live in the
 [benchmark suite](./benchmark/BENCHMARK.md). Reproduce with:
 

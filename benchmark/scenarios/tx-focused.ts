@@ -12,6 +12,11 @@
  * from the statements themselves.
  *
  *   NODE_OPTIONS="--expose-gc" pnpm bench --scenario tx-focused -n 2000 -w 200
+ *
+ * By default the transaction's sorted read hits the Batch.createdAt index.
+ * Set BENCH_TX_UNINDEXED=1 to drop that index first and measure the same
+ * transaction over a sequential scan — the two together show how much of the
+ * bridge-vs-native picture is the missing index vs the engine.
  */
 import type { Scenario, ScenarioResult } from '../adapters/types.ts';
 
@@ -30,6 +35,15 @@ export const txFocused: Scenario = async (prisma, iterations) => {
       priority: i % 5,
     })),
   });
+
+  // BENCH_TX_UNINDEXED=1 drops the Batch.createdAt index so the transaction's
+  // findFirst(orderBy: createdAt desc) falls back to a sequential scan + sort —
+  // the honest "unindexed sort" case, where PGlite's WASM executor pays more
+  // than native Postgres. The default (index present) is the realistic case a
+  // production schema would have.
+  if (process.env.BENCH_TX_UNINDEXED === '1') {
+    await prisma.$executeRawUnsafe('DROP INDEX IF EXISTS "Batch_createdAt_idx"');
+  }
 
   if (typeof globalThis.gc === 'function') globalThis.gc();
 

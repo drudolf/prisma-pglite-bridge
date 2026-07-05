@@ -129,6 +129,8 @@ model Batch {
   jobs       Job[]
   metadata   Json?
   createdAt  DateTime @default(now())
+
+  @@index([createdAt(sort: Desc)])         // findFirst(orderBy: createdAt desc)
 }
 
 model Snapshot {
