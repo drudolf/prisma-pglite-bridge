@@ -1,5 +1,5 @@
 ---
-"prisma-pglite-bridge": minor
+"prisma-pglite-bridge": patch
 ---
 
 New `schema` option on `PGliteBridge` (and, via the `bridge` option, the
