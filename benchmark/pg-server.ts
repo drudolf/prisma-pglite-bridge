@@ -10,6 +10,10 @@
  *   pnpm bench:pg-server                        # terminal 1 — keeps running
  *   pnpm bench --adapter postgres-pg -n 1000    # terminal 2
  *
+ * Set BENCH_POSTGRES_SYNC_OFF=1 to start the server with durability disabled
+ * (fsync/synchronous_commit/full_page_writes off) — the fairer baseline for
+ * write-heavy comparisons against a bridge that has no durability at all.
+ *
  * The per-arch Postgres binary comes from `embedded-postgres`; its postinstall
  * hydrates the dylib symlinks and runs on a plain `pnpm install` because the
  * `@embedded-postgres/*` packages are approved in `allowBuilds`
@@ -47,15 +51,28 @@ const connectionString = env.BENCH_POSTGRES_URL ?? DEFAULT_URL;
 const url = new URL(connectionString);
 const database = url.pathname.replace(/^\//, '') || 'bench';
 
+// A real Postgres pays durability the in-memory bridge and PGlite never do
+// (WAL fsync, full-page writes). BENCH_POSTGRES_SYNC_OFF=1 turns those off so
+// write-heavy scenarios compare engine speed, not the fsync tax — the fairer
+// baseline for a bridge that has no durability at all.
+const syncOff = process.env.BENCH_POSTGRES_SYNC_OFF === '1';
+const postgresFlags = syncOff
+  ? ['-c', 'fsync=off', '-c', 'synchronous_commit=off', '-c', 'full_page_writes=off']
+  : [];
+
 const pg = new EmbeddedPostgres({
   databaseDir: DATA_DIR,
   user: decodeURIComponent(url.username) || 'postgres',
   password: decodeURIComponent(url.password) || 'password',
   port: Number(url.port) || 5433,
   persistent: false,
+  postgresFlags,
 });
 
-console.log(`starting embedded-postgres on ${url.host} (database "${database}")...`);
+console.log(
+  `starting embedded-postgres on ${url.host} (database "${database}")` +
+    `${syncOff ? ' [durability off: fsync/synchronous_commit/full_page_writes]' : ''}...`,
+);
 rmSync(DATA_DIR, { recursive: true, force: true }); // fresh cluster each run
 
 try {
@@ -81,7 +98,9 @@ try {
 const pid = readFileSync(join(DATA_DIR, 'postmaster.pid'), 'utf8').split('\n')[0]?.trim() ?? '';
 writeEnv({ ...env, BENCH_POSTGRES_URL: connectionString, BENCH_POSTGRES_SERVER_PIDS: pid });
 
-console.log(`ready — ${connectionString}  (postmaster pid ${pid})`);
+console.log(
+  `ready — ${connectionString}  (postmaster pid ${pid})${syncOff ? '  [durability off]' : ''}`,
+);
 console.log('run the benchmark in another terminal, then Ctrl-C here to stop.');
 
 const stop = async (): Promise<void> => {

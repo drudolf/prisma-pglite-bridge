@@ -9,6 +9,7 @@
  *   pnpm bench --adapter pglite-prisma-adapter --scenario stress -n 3
  *   pnpm bench --scenario findmany-focused -n 1000 -w 100 # custom warmup
  *   pnpm bench --scenario read-mix -n 500 -w 50           # mixed read shapes
+ *   pnpm bench --scenario tx-focused -n 2000 -w 200       # interactive tx tail
  *   pnpm bench --scenario repeated-large-reads -n 100 -w 10
  *   pnpm bench --json                                    # structured JSON to stdout
  *   pnpm bench --scenario all                            # all scenarios
@@ -139,6 +140,10 @@ const loadScenarios = async (): Promise<[string, Scenario][]> => {
   if (scenarioFilter === 'read-mix') {
     const { readMix } = await import('./scenarios/read-mix.ts');
     all.push(['read-mix', readMix]);
+  }
+  if (scenarioFilter === 'tx-focused') {
+    const { txFocused } = await import('./scenarios/tx-focused.ts');
+    all.push(['tx-focused', txFocused]);
   }
   if (scenarioFilter === 'repeated-large-reads') {
     const { repeatedLargeReads } = await import('./scenarios/repeated-large-reads.ts');

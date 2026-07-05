@@ -92,10 +92,12 @@ measured with the cache enabled:
 That lead isn't an artifact of one hot query: across a nine-shape
 read mix (point lookups, filters, sorts, joins, `count`/`groupBy`)
 the bridge stays ahead on every shape and machine. The trade-off is
-honest, though — native Postgres still wins interactive transactions,
-and on x86 prepared-native edges the read median. Full tables
-(operation breadth, multi-shape reads, memory, cold start, where
-native wins), methodology, and raw JSON snapshots live in the
+honest, though — on x86 prepared-native still edges the read median,
+and native stays level on transaction-heavy work (a dedicated n=2000
+probe shows interactive transactions are essentially a tie, with the
+bridge ahead on Linux). Full tables (operation breadth, multi-shape
+reads, transactions, memory, cold start, where native wins),
+methodology, and raw JSON snapshots live in the
 [benchmark suite](./benchmark/BENCHMARK.md). Reproduce with:
 
 ```sh

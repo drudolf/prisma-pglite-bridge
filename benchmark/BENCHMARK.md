@@ -53,7 +53,7 @@ memory and cold start are from the 2026-07-02 run.
 - **Statistics:** percentiles computed per repeat, median across
   repeats. No outlier trimming. Latency: n=1000, warmup=100, r=5.
   Micro: n=60, warmup=10, r=3. Read-mix: n=400, warmup=40, r=1.
-  Memory: r=3, with each repeat in a
+  Tx-focused: n=2000, warmup=200, r=1. Memory: r=3, with each repeat in a
   freshly spawned child process (a torn-down PGlite's WASM memory is
   not returned to the OS promptly — on some platforms never within
   the process lifetime — so in-process repeats contaminate each
@@ -177,19 +177,18 @@ operation- and architecture-dependent:
 - **Simple writes and reads** go to the bridge or tie: `single
   create`, `createMany`, `findMany`, `nested create`, and
   `update + find` on all three machines.
-- **Interactive transactions are native's.** `interactive tx` goes
-  to native Postgres on both Apple machines (M3 Max 0.57 vs 0.77ms;
-  Intel 1.79 vs 2.15ms) and is a dead heat on Linux. A `$transaction`
-  here is several round-trips — read, conditional write, commit — and
-  the bridge's per-message wire-protocol work is visible where a
-  single query hides it.
+- **Interactive transactions look close, and the n=60 `interactive
+  tx` row is too noisy to call.** A dedicated n=2000 probe
+  (`tx-focused` below) puts the bridge within ~0.07ms of native at the
+  median and *ahead* on Linux — the apparent native win in this row
+  does not survive a larger sample.
 - **Deep includes** go to native on Intel (1.62 vs 1.79ms) and to the
   bridge on the other two.
 
 Micro runs at n=60 are noisier than the read-path probe — ratios near
-1.0x move between runs; the stable signals are the
-bridge-vs-direct-adapter margin and where native clearly wins
-(transactions) or clearly loses (bulk and simple ops on Apple
+1.0x move between runs (the `interactive tx` row especially; see
+`tx-focused`). The stable signals are the bridge-vs-direct-adapter
+margin and where native clearly loses (bulk and simple ops on Apple
 Silicon).
 
 ### Multi-shape reads — `read-mix` (p50, ratio vs bridge)
@@ -256,8 +255,65 @@ over native Postgres (down to a tie on the fastest M3 Max shapes) and
 `groupBy`) and three-level joins. Prisma emits a bounded set of
 parameterized statements, so a diverse read mix stays fully cached and
 the bridge's read-path win holds across it, not just in a hot loop.
-It is writes and transactions (see `micro` above), not read diversity,
-where native Postgres competes.
+It is a few write-heavy and scan-heavy operations (see `micro` and
+`tx-focused`), not read diversity, where native Postgres stays
+competitive.
+
+### Interactive transactions — `tx-focused` (2026-07-05)
+
+The `micro` suite runs `interactive tx` at only n=60, so its p99 is one
+unlucky sample and its p50 wanders — an earlier reading of that row
+("native wins transactions") did not survive a bigger sample. This runs
+the same transaction (`count` → conditional `create` → `findFirst`) at
+n=2000 and decomposes it into per-phase timings. Raw JSON:
+[m3max](./results/2026-07-05-m3max-tx-focused.json),
+[intel](./results/2026-07-05-intel-tx-focused.json),
+[hetzner](./results/2026-07-05-hetzner-tx-focused.json).
+
+`tx total`, p50 / p95 / p99 (ms):
+
+| Machine | bridge | direct adapter | native Postgres |
+| ------------------- | ------------------ | ------------------ | ------------------ |
+| Apple M3 Max | 0.60 / 0.85 / 1.09 | 1.02 / 1.31 / 1.87 | **0.53 / 0.70 / 1.17** |
+| Apple i9-9980HK | 1.72 / 2.76 / 3.70 | 2.68 / 3.94 / 4.92 | **1.67 / 2.51 / 3.10** |
+| Linux i7-8700 | **1.39 / 1.64 / 1.76** | 2.18 / 2.46 / 3.64 | 1.51 / 1.77 / 1.99 |
+
+At a stable sample the transaction is a near-tie: the bridge is within
+~0.07ms of native at the median on the Apple machines and *ahead* on
+Linux (1.39 vs 1.51ms), with comparable tails. The per-phase
+decomposition explains why there is nothing to optimize in the bridge's
+transaction path:
+
+- **`begin + commit` (the transaction machinery) is the bridge's, on
+  every machine** — 0.06 vs 0.11ms (M3 Max), 0.28 vs 0.41ms (Intel),
+  0.22 vs 0.26ms (Linux). The in-process Duplex turns BEGIN/COMMIT
+  round-trips over faster than loopback TCP, so there is no
+  "per-round-trip protocol tax" — the opposite of what the noisy
+  `micro` row suggested.
+- **The only phase the bridge loses is `findFirst`** — an
+  `ORDER BY createdAt DESC LIMIT 1` over an unindexed, growing table
+  (0.38 vs 0.23ms on M3 Max). That is PGlite's WASM executor on a
+  full-scan sort, not anything the bridge adds; an index — or a query
+  that has one — closes it.
+
+So the transaction "gap" is a single scan-bound read, not the
+transaction handling, and there is no bridge-side transaction
+optimization to chase.
+
+**Durability is not the write differentiator either.** Re-running the
+write-heavy `micro` operations against native Postgres with
+`BENCH_POSTGRES_SYNC_OFF=1` (fsync / synchronous_commit /
+full_page_writes off) barely moves them — `100 createMany` p50 goes
+15.21 → 15.10ms (Intel) and 12.70 → 12.90ms (Linux), and does not
+improve on the M3 Max. So the bridge's write numbers aren't flattered
+by skipping fsync the way one might assume; where the bridge is faster
+at bulk writes (M3 Max, 6.6 vs 11.4ms) it is the in-process transport
+beating loopback TCP for a large multi-row INSERT, not a durability
+shortcut. The `postgres-pg` write columns are a fair baseline as run.
+Raw JSON:
+[m3max](./results/2026-07-05-m3max-micro-nosync.json),
+[intel](./results/2026-07-05-intel-micro-nosync.json),
+[hetzner](./results/2026-07-05-hetzner-micro-nosync.json).
 
 ### Memory and cold start (2026-07-02)
 
@@ -404,15 +460,16 @@ The `postgres-pg` adapter requires connection info — see
 | `path-split`           | Separates raw PGlite, adapter, Prisma, and maintenance paths            |         yes         |
 | `findmany-focused`     | `findMany({ take: 100 })` in isolation — tail-latency probe             |    recommended      |
 | `read-mix`             | Nine distinct read shapes rotated through one shared statement cache    |                     |
+| `tx-focused`           | One interactive `$transaction` at high n, decomposed into phases        |    recommended      |
 | `repeated-large-reads` | Repeated Prisma reads over one 1MB JSON row (`$queryRaw`, `findUnique`) |                     |
 | `bytes-sweep`          | Bytea decoder across payload sizes, `Bytes` and `Bytes[]` columns       |                     |
 | `text-array-sweep`     | TEXT[] parser across array shapes (tag-like through payload-like)       |                     |
 
 Pick one with `--scenario <name>`, or `--scenario all` for the full set.
-`findmany-focused`, `read-mix`, `repeated-large-reads`, `path-split`,
-`bytes-sweep`, and `text-array-sweep` are explicit-only — none are
-included in `all`; target them directly (e.g.
-`--scenario findmany-focused`) when hunting read-path,
+`findmany-focused`, `read-mix`, `tx-focused`, `repeated-large-reads`,
+`path-split`, `bytes-sweep`, and `text-array-sweep` are explicit-only —
+none are included in `all`; target them directly (e.g.
+`--scenario findmany-focused`) when hunting read-path, transaction,
 path-attribution, or decoder regressions.
 
 ## CLI flags
@@ -462,7 +519,10 @@ until Ctrl-C. The per-arch Postgres binary comes from `embedded-postgres`
 and is built on a plain `pnpm install` (its `@embedded-postgres/*`
 packages are approved in `allowBuilds`); if it is ever missing,
 `pnpm rebuild embedded-postgres` rebuilds it. Add `BENCH_POSTGRES_PREPARED=1`
-to the bench run to compare against prepared-statement Postgres.
+to the bench run to compare against prepared-statement Postgres, or start the
+server with `BENCH_POSTGRES_SYNC_OFF=1` to disable durability
+(fsync/synchronous_commit/full_page_writes) for a write comparison against a
+bridge that has none.
 
 To point at your own server instead, put its URL in `.env.test`
 (`DATABASE_URL` is accepted as a fallback):
