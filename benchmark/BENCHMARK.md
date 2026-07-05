@@ -20,10 +20,10 @@ CLI must be resolvable (`pnpm install` takes care of that).
 
 ## Reference results
 
-Raw JSON for every table below is committed under
-[`results/`](./results/) — re-run the commands and diff. Latency,
-operation breadth, and multi-shape reads were refreshed 2026-07-05;
-memory and cold start are from the 2026-07-02 run.
+Every table below is reproducible from the commands in this file —
+re-run and diff. Latency, operation breadth, and multi-shape reads
+were refreshed 2026-07-05; memory and cold start are from the
+2026-07-02 run.
 
 ### Methodology
 
@@ -77,10 +77,7 @@ Re-measured 2026-07-05 (bridge 1.6.1, PGlite 0.5.3) with the statement
 cache enabled in the harness — the bridge's documented fast path
 (`preparedStatements: true`). The `postgres-pg` (prepared) rows are
 retained from the 2026-07-02 run; native Postgres is hardware-bound and
-stable across bridge releases. Raw JSON:
-[m3max](./results/2026-07-05-m3max-findmany-focused.json),
-[intel](./results/2026-07-05-intel-findmany-focused.json),
-[hetzner](./results/2026-07-05-hetzner-findmany-focused.json).
+stable across bridge releases.
 
 **Apple M3 Max:**
 
@@ -129,10 +126,7 @@ the bridge can always run with it on (opt-in via
 Re-measured 2026-07-05 (bridge 1.6.2, PGlite 0.5.3) with the statement
 cache enabled in the harness, across all three machines. This is the
 mixed picture — writes, transactions, and reads — that the read-path
-headline can't show. Raw JSON:
-[m3max](./results/2026-07-05-m3max-micro.json),
-[intel](./results/2026-07-05-intel-micro.json),
-[hetzner](./results/2026-07-05-hetzner-micro.json).
+headline can't show.
 
 **Apple M3 Max:**
 
@@ -201,10 +195,7 @@ filter, filtered sort, column projection, one- and three-level
 includes, `count`, `groupBy`, and a relation-filtered find — through
 one *shared* statement cache every iteration, so no single entry is
 specially favored. Measured 2026-07-05 (bridge 1.6.2, n=400,
-warmup=40). Raw JSON:
-[m3max](./results/2026-07-05-m3max-read-mix.json),
-[intel](./results/2026-07-05-intel-read-mix.json),
-[hetzner](./results/2026-07-05-hetzner-read-mix.json).
+warmup=40).
 
 **Apple M3 Max:**
 
@@ -265,10 +256,7 @@ The `micro` suite runs `interactive tx` at only n=60, so its p99 is one
 unlucky sample and its p50 wanders — an earlier reading of that row
 ("native wins transactions") did not survive a bigger sample. This runs
 the same transaction (`count` → conditional `create` → `findFirst`) at
-n=2000 and decomposes it into per-phase timings. Raw JSON:
-[m3max](./results/2026-07-05-m3max-tx-focused.json),
-[intel](./results/2026-07-05-intel-tx-focused.json),
-[hetzner](./results/2026-07-05-hetzner-tx-focused.json).
+n=2000 and decomposes it into per-phase timings.
 
 `tx total`, p50 / p95 / p99 (ms):
 
@@ -310,10 +298,6 @@ by skipping fsync the way one might assume; where the bridge is faster
 at bulk writes (M3 Max, 6.6 vs 11.4ms) it is the in-process transport
 beating loopback TCP for a large multi-row INSERT, not a durability
 shortcut. The `postgres-pg` write columns are a fair baseline as run.
-Raw JSON:
-[m3max](./results/2026-07-05-m3max-micro-nosync.json),
-[intel](./results/2026-07-05-intel-micro-nosync.json),
-[hetzner](./results/2026-07-05-hetzner-micro-nosync.json).
 
 ### Memory and cold start (2026-07-02)
 
@@ -349,14 +333,14 @@ upper bound of unique physical memory. Absolute RSS is not
 comparable across machines (allocator and page-accounting
 differences; note the ~2x baseline gap between the two) — compare
 adapters within a machine. The in-process **RSS peak deltas are
-noisy**: across repeated runs they swing 2–3x (per-repeat ranges are
-in the raw JSON), so read them as "tens to ~200MB of transient
+noisy**: across repeated runs they swing 2–3x, so read them as
+"tens to ~200MB of transient
 growth", not as a stable ranking — an earlier revision of this table
 claimed an architecture-dependent bridge-vs-adapter divergence that
 did not replicate. The noise is OS page accounting, not allocation:
 the JS-level peak deltas are deterministic and identical for both
 PGlite adapters (`peakDelta.heapUsed` +26MB, `arrayBuffers` +4MB in
-every repeat, both machines — see the raw JSON), while RSS depends
+every repeat, both machines), while RSS depends
 on how much of the setup transient's freed-page pool the OS has
 already reclaimed when the workload reuses it (baseline↔peak
 anti-correlation r≈−0.8 on Apple Silicon) and on ambient memory
@@ -405,8 +389,7 @@ down an instance every test, so their figure is the full lifecycle;
 `snapshot reset` reuses one bridge, so its figure is just the reset.
 One-time costs are paid once per file.
 
-macOS, n=20, post-warmup. Apple M3 Max, Node 24.18.0
-([raw JSON](./results/2026-07-04-m3max-isolation-cost.json)):
+macOS, n=20, post-warmup. Apple M3 Max, Node 24.18.0:
 
 | Strategy       | `scope`           | Per-test p50 |     p99 | One-time (per file) |
 | -------------- | ----------------- | -----------: | ------: | ------------------: |
@@ -414,8 +397,7 @@ macOS, n=20, post-warmup. Apple M3 Max, Node 24.18.0
 | snapshot reset | `file` / `worker` |         12ms |    23ms |               0.64s |
 | template load  | `test` (1.6+)     |        147ms |   226ms |               0.68s |
 
-Apple i9-9980HK, Node 24.14.1
-([raw JSON](./results/2026-07-04-intel-isolation-cost.json)):
+Apple i9-9980HK, Node 24.14.1:
 
 | Strategy       | `scope`           | Per-test p50 |     p99 | One-time (per file) |
 | -------------- | ----------------- | -----------: | ------: | ------------------: |
@@ -562,8 +544,8 @@ findMany 100                         3.1ms          2.9ms (0.9x)
 
 ### JSON (`--json`)
 
-Full aggregated results plus every raw run. Suitable for committing as a
-snapshot or diffing between branches. Top-level array of adapter×scenario
+Full aggregated results plus every raw run. Suitable for diffing
+between branches or archiving out of tree. Top-level array of adapter×scenario
 results; each has `operations[]`, `runs[]`, `baseline`, `peakDelta`,
 `retainedDelta`, and per-operation `stackAttribution` if the stack probe
 recorded traces.

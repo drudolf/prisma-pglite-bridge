@@ -96,8 +96,8 @@ honest, though — on x86 prepared-native still edges the read median,
 and native stays level on transaction-heavy work (a dedicated n=2000
 probe shows interactive transactions are essentially a tie, with the
 bridge ahead on Linux). Full tables (operation breadth, multi-shape
-reads, transactions, memory, cold start, where native wins),
-methodology, and raw JSON snapshots live in the
+reads, transactions, memory, cold start, where native wins) and
+methodology live in the
 [benchmark suite](./benchmark/BENCHMARK.md). Reproduce with:
 
 ```sh

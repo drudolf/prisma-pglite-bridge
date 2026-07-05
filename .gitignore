@@ -7,3 +7,4 @@ dist/
 CLAUDE.md
 coverage/
 vendor/
+benchmark/results/
