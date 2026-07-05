@@ -1,5 +1,14 @@
 # prisma-pglite-bridge
 
+## 1.6.2
+
+### Patch Changes
+
+- [`b18e65a`](https://github.com/drudolf/prisma-pglite-bridge/commit/b18e65a97fe0cd36183d2f02a59e35a882feaf23) Thanks [@drudolf](https://github.com/drudolf)! - New `schema` option on `PGliteBridge` (and, via the `bridge` option, the
+  vitest/jest setup helpers). It is forwarded to `@prisma/adapter-pg` as its
+  `schema` option, which sets the connection `search_path` so Prisma reads and
+  writes in a non-`public` PostgreSQL schema. Omit it to keep `public`.
+
 ## 1.6.1
 
 ### Patch Changes
