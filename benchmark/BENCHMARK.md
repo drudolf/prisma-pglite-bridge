@@ -66,36 +66,45 @@ Raw JSON for every table below is committed under
 
 ### Read-path latency — `findmany-focused` (`findMany({ take: 100 })`)
 
+Re-measured 2026-07-05 (bridge 1.6.1, PGlite 0.5.3) with the statement
+cache enabled in the harness — the bridge's documented fast path
+(`preparedStatements: true`). The `postgres-pg` (prepared) rows are
+retained from the 2026-07-02 run; native Postgres is hardware-bound and
+stable across bridge releases. Raw JSON:
+[m3max](./results/2026-07-05-m3max-findmany-focused.json),
+[intel](./results/2026-07-05-intel-findmany-focused.json).
+
 **Apple M3 Max:**
 
 | Adapter | p50 | p95 | p99 | max | p50 spread |
-| ------------------------- | ---------- | ---------- | ---------- | ------ | ---------- |
-| `prisma-pglite-bridge` | **0.48ms** | **0.56ms** | **0.98ms** | 4.06ms | 0.46–0.63 |
-| `pglite-prisma-adapter` | 0.94ms | 1.19ms | 2.26ms | 10.43ms | 0.88–1.03 |
-| `postgres-pg` (default) | 0.87ms | 1.52ms | 2.30ms | 8.58ms | 0.74–1.03 |
-| `postgres-pg` (prepared) | 0.52ms | 0.66ms | 1.25ms | **2.86ms** | 0.44–0.52 |
+| ------------------------- | ---------- | ---------- | ---------- | ---------- | ---------- |
+| `prisma-pglite-bridge` | **0.34ms** | **0.38ms** | **0.63ms** | 3.38ms | 0.34–0.35 |
+| `pglite-prisma-adapter` | 0.88ms | 0.99ms | 1.91ms | 5.67ms | 0.87–0.91 |
+| `postgres-pg` (default) | 0.51ms | 0.69ms | 1.19ms | **2.48ms** | 0.49–0.52 |
+| `postgres-pg` (prepared) | 0.52ms | 0.66ms | 1.25ms | 2.86ms | 0.44–0.52 |
 
 **Intel Core i9-9980HK:**
 
 | Adapter | p50 | p95 | p99 | max | p50 spread |
-| ------------------------- | ---------- | ---------- | ---------- | ------ | ---------- |
-| `prisma-pglite-bridge` | 1.00ms | 1.43ms | **2.06ms** | 8.21ms | 0.95–1.17 |
-| `pglite-prisma-adapter` | 2.00ms | 2.98ms | 4.48ms | 5.92ms | 1.96–2.08 |
-| `postgres-pg` (default) | 0.92ms | 1.36ms | 2.63ms | **4.64ms** | 0.87–1.02 |
+| ------------------------- | ---------- | ---------- | ---------- | ---------- | ---------- |
+| `prisma-pglite-bridge` | 0.95ms | 1.29ms | **1.79ms** | 7.94ms | 0.94–0.97 |
+| `pglite-prisma-adapter` | 2.49ms | 3.12ms | 4.75ms | 7.25ms | 2.43–2.50 |
+| `postgres-pg` (default) | 1.10ms | 1.42ms | 2.87ms | **4.64ms** | 1.07–1.13 |
 | `postgres-pg` (prepared) | **0.80ms** | **1.18ms** | 2.42ms | 4.80ms | 0.67–0.96 |
 
 Where the bridge **loses**, so you don't have to squint: on Intel,
-native Postgres wins p50/p95 in either configuration and posts the
-best worst-case — the bridge's wins there are p99 and the ~2x margin
-over the direct adapter. On the M3 Max the bridge leads every
-percentile against every opponent, with overlapping p50 spreads
-against prepared-native (call it a tie at p50, a clear bridge win at
-p95/p99); prepared-native keeps the tightest max. Note the
-prepared-statement asymmetry: statement caching buys the bridge
-~0.1–0.4ms per query (WASM parse/plan is expensive) but is also
-worth ~0.1ms to native Postgres — and unlike many production setups
-(transaction-mode poolers break named statements), the bridge can
-always run with it on (opt-in via `preparedStatements: true`).
+*prepared* native Postgres still wins p50/p95 (the bridge takes p99),
+and native posts the best worst-case (max) in both configs — but the
+bridge now beats *default* native Postgres on every percentile there,
+and holds its ~2.5x margin over the direct adapter. On the M3 Max the
+bridge leads every percentile against every opponent, prepared-native
+included, with non-overlapping p50 spreads; native keeps the tightest
+max. The prepared-statement asymmetry still holds: statement caching
+buys the bridge ~0.1–0.4ms per query (WASM parse/plan is expensive)
+but is also worth ~0.1ms to native Postgres — and unlike many
+production setups (transaction-mode poolers break named statements),
+the bridge can always run with it on (opt-in via
+`preparedStatements: true`).
 
 ### Operation breadth — `micro` (p50, ratio vs bridge)
 
@@ -191,7 +200,8 @@ For a test suite issuing ~1000 Prisma queries, the bridge saves
 roughly one second per run versus the direct PGlite adapter, and it
 buys zero-infrastructure Postgres at native-Postgres speed — ahead
 of a local native server on every read percentile on Apple Silicon,
-within ~10% on x86. It does not make PGlite a production database,
+and ahead of default-configured native on x86 (prepared native still
+edges it at the median there). It does not make PGlite a production database,
 and none of these numbers describe production Postgres over a real
 network — the value is operational (no Docker, no server, instant
 snapshot/reset) plus a latency profile that no longer asks you to
