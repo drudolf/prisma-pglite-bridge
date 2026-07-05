@@ -75,17 +75,17 @@ Running the Prisma CLI against this bridge (shadow DB for
 
 ## Performance
 
-The wire-protocol path is ~2x faster than going through a direct
+The wire-protocol path is over 2x faster than going through a direct
 PGlite driver adapter — on every latency percentile — and, with the
 opt-in prepared-statement caching (`preparedStatements: true`),
-ahead of a *native local* PostgreSQL server on Apple Silicon and
-within ~10% on x86. Prisma `findMany({ take: 100 })`, 1000
-iterations, PGlite 0.5.3, bridge measured with the cache enabled:
+ahead of a *native local* PostgreSQL server on both Apple Silicon and
+x86. Prisma `findMany({ take: 100 })`, 1000 iterations, PGlite 0.5.3,
+bridge measured with the cache enabled:
 
 | Machine | bridge (p50 / p99) | direct adapter (p50 / p99) | native Postgres (p50 / p99) |
 | ------- | ------------------ | -------------------------- | --------------------------- |
-| Apple M3 Max | **0.48ms / 0.98ms** | 0.94ms / 2.26ms | 0.87ms / 2.30ms |
-| Intel i9-9980HK | 1.00ms / **2.06ms** | 2.00ms / 4.48ms | **0.92ms** / 2.63ms |
+| Apple M3 Max | **0.34ms / 0.63ms** | 0.88ms / 1.91ms | 0.51ms / 1.19ms |
+| Intel i9-9980HK | **0.95ms / 1.79ms** | 2.49ms / 4.75ms | 1.10ms / 2.87ms |
 
 Trade-offs and losses included: full tables (operation breadth,
 memory, cold start, where native Postgres wins), methodology, and
