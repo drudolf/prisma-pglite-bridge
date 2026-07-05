@@ -95,6 +95,7 @@
     "changeset": "changeset",
     "bench": "tsx benchmark/run.ts",
     "bench:isolation": "tsx benchmark/isolation-cost.ts",
+    "bench:pg-server": "tsx benchmark/pg-server.ts",
     "build:schema-engine": "tsx scripts/build-schema-engine.ts",
     "prepublishOnly": "pnpm test:unit && pnpm test:gc && pnpm build && pnpm check:exports",
     "prepare": "husky && prisma generate"
@@ -139,6 +140,7 @@
     "@types/pg": "^8.20.0",
     "@vitest/coverage-v8": "^4.1.9",
     "dotenv": "^17.4.2",
+    "embedded-postgres": "18.4.0-beta.17",
     "husky": "^9.1.7",
     "knip": "^6.23.0",
     "lint-staged": "^17.0.8",

@@ -12,6 +12,7 @@ pnpm bench --scenario all                 # all scenarios, all adapters
 pnpm bench --adapter bridge -n 20         # more iterations
 pnpm bench --json > results.json          # machine-readable output
 pnpm bench:isolation                      # per-test isolation cost (own entry point)
+pnpm bench:pg-server                      # native Postgres baseline (separate terminal)
 ```
 
 The first run generates schema SQL via `prisma migrate diff`, so Prisma's
@@ -321,22 +322,44 @@ The runner warns when you skip it.
 
 ## Environment
 
-Create a `.env.test` in the repo root for the `postgres-pg` adapter:
+The in-process adapters (`bridge`, `pglite-prisma-adapter`) need no
+configuration. The `postgres-pg` adapter benchmarks a real PostgreSQL
+server, which the repo can start for you — no Docker, no manual setup.
 
-```dotenv
-# Required for --adapter postgres-pg
-BENCH_POSTGRES_URL=postgresql://user:pass@localhost:5432/bench
+### Native Postgres baseline
 
-# Optional — enables server-side RSS sampling so combined client+server
-# memory is reported. List the postmaster PID; its children (client
-# backends, checkpointer, background writer, …) are discovered at
-# sample time.
-BENCH_POSTGRES_SERVER_PIDS=12345
+Start an embedded PostgreSQL 18 server in one terminal, run the benchmark
+in another:
+
+```sh
+pnpm bench:pg-server                        # terminal 1 — starts PG, keeps running
+pnpm bench --adapter postgres-pg -n 1000    # terminal 2
 ```
 
-`DATABASE_URL` is accepted as a fallback for the connection string.
-The in-process adapters (`bridge`, `pglite-prisma-adapter`) need no
-configuration.
+`bench:pg-server` writes `BENCH_POSTGRES_URL` and the postmaster PID
+(`BENCH_POSTGRES_SERVER_PIDS`, which enables server-side RSS sampling)
+into `.env.test`, then serves `postgres:password@127.0.0.1:5433/bench`
+until Ctrl-C. The per-arch Postgres binary comes from `embedded-postgres`
+and is built on a plain `pnpm install` (its `@embedded-postgres/*`
+packages are approved in `allowBuilds`); if it is ever missing,
+`pnpm rebuild embedded-postgres` rebuilds it. Add `BENCH_POSTGRES_PREPARED=1`
+to the bench run to compare against prepared-statement Postgres.
+
+To point at your own server instead, put its URL in `.env.test`
+(`DATABASE_URL` is accepted as a fallback):
+
+```dotenv
+BENCH_POSTGRES_URL=postgresql://user:pass@localhost:5432/bench
+BENCH_POSTGRES_SERVER_PIDS=12345   # optional, for server-side RSS sampling
+```
+
+### On a second machine over SSH
+
+`scripts/bench-remote.sh <host> [bench args]` runs the suite on a remote
+checkout and prints clean result JSON. For the native baseline there,
+start `pnpm bench:pg-server` on the remote first — the same `pnpm install`
+builds the Postgres binary for that architecture — then run the remote
+bench.
 
 ## Output
 
