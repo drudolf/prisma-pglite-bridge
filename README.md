@@ -75,12 +75,13 @@ Running the Prisma CLI against this bridge (shadow DB for
 
 ## Performance
 
-The wire-protocol path is over 2x faster than going through a direct
-PGlite driver adapter — on every latency percentile — and, with the
-opt-in prepared-statement caching (`preparedStatements: true`),
-ahead of a *native local* PostgreSQL server on both Apple Silicon and
-x86. Prisma `findMany({ take: 100 })`, 1000 iterations, PGlite 0.5.3,
-bridge measured with the cache enabled:
+On reads, the wire-protocol path is roughly 2x faster than going
+through a direct PGlite driver adapter — on every latency percentile
+and every query shape — and, with the opt-in prepared-statement
+caching (`preparedStatements: true`), ahead of a *native local*
+PostgreSQL server on both Apple Silicon and x86. Prisma
+`findMany({ take: 100 })`, 1000 iterations, PGlite 0.5.3, bridge
+measured with the cache enabled:
 
 | Machine | bridge (p50 / p99) | direct adapter (p50 / p99) | native Postgres (p50 / p99) |
 | ------- | ------------------ | -------------------------- | --------------------------- |
@@ -88,9 +89,13 @@ bridge measured with the cache enabled:
 | Apple i9-9980HK | **0.95ms / 1.79ms** | 2.49ms / 4.75ms | 1.10ms / 2.87ms |
 | Linux i7-8700 | **0.71ms / 1.23ms** | 1.70ms / 4.16ms | 0.95ms / 2.78ms |
 
-Trade-offs and losses included: full tables (operation breadth,
-memory, cold start, where native Postgres wins), methodology, and
-raw JSON snapshots live in the
+That lead isn't an artifact of one hot query: across a nine-shape
+read mix (point lookups, filters, sorts, joins, `count`/`groupBy`)
+the bridge stays ahead on every shape and machine. The trade-off is
+honest, though — native Postgres still wins interactive transactions,
+and on x86 prepared-native edges the read median. Full tables
+(operation breadth, multi-shape reads, memory, cold start, where
+native wins), methodology, and raw JSON snapshots live in the
 [benchmark suite](./benchmark/BENCHMARK.md). Reproduce with:
 
 ```sh

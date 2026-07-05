@@ -18,17 +18,21 @@ pnpm bench:pg-server                      # native Postgres baseline (separate t
 The first run generates schema SQL via `prisma migrate diff`, so Prisma's
 CLI must be resolvable (`pnpm install` takes care of that).
 
-## Reference results (2026-07-02)
+## Reference results
 
 Raw JSON for every table below is committed under
-[`results/`](./results/) — re-run the commands and diff.
+[`results/`](./results/) — re-run the commands and diff. Latency,
+operation breadth, and multi-shape reads were refreshed 2026-07-05;
+memory and cold start are from the 2026-07-02 run.
 
 ### Methodology
 
 - **Machines:** Apple M3 Max (16 cores, 128GB, macOS 26.5.1, Node
   24.18.0), Apple i9-9980HK (8 cores, macOS 26.3.1, Node 24.14.1),
-  and Linux i7-8700 (6c/12t, Ubuntu 26.04, Node 24.18.0; read-path
-  only). Normal background load, not a quiesced lab — the
+  and Linux i7-8700 (6c/12t, Ubuntu 26.04, Node 24.16.0). The
+  read-path, operation-breadth, and multi-shape-read tables cover all
+  three; memory and cold start cover the two Apple machines. Normal
+  background load, not a quiesced lab — the
   *p50 spread* column (min–max of per-repeat p50s) shows run
   stability; treat cross-adapter ratios as the signal and absolute
   numbers as indicative.
@@ -48,7 +52,8 @@ Raw JSON for every table below is committed under
   inspection.
 - **Statistics:** percentiles computed per repeat, median across
   repeats. No outlier trimming. Latency: n=1000, warmup=100, r=5.
-  Micro: n=50, warmup=5, r=3. Memory: r=3, with each repeat in a
+  Micro: n=60, warmup=10, r=3. Read-mix: n=400, warmup=40, r=1.
+  Memory: r=3, with each repeat in a
   freshly spawned child process (a torn-down PGlite's WASM memory is
   not returned to the OS promptly — on some platforms never within
   the process lifetime — so in-process repeats contaminate each
@@ -121,40 +126,140 @@ the bridge can always run with it on (opt-in via
 
 ### Operation breadth — `micro` (p50, ratio vs bridge)
 
+Re-measured 2026-07-05 (bridge 1.6.2, PGlite 0.5.3) with the statement
+cache enabled in the harness, across all three machines. This is the
+mixed picture — writes, transactions, and reads — that the read-path
+headline can't show. Raw JSON:
+[m3max](./results/2026-07-05-m3max-micro.json),
+[intel](./results/2026-07-05-intel-micro.json),
+[hetzner](./results/2026-07-05-hetzner-micro.json).
+
 **Apple M3 Max:**
 
 | Operation | bridge | direct adapter | native Postgres |
 | -------------- | ------ | -------------- | --------------- |
-| single create | **0.14ms** | 0.21ms (1.5x) | 0.30ms (2.1x) |
-| 100 createMany | **7.31ms** | 8.48ms (1.2x) | 10.24ms (1.4x) |
-| findMany 100 | **0.48ms** | 0.95ms (2.0x) | 0.72ms (1.5x) |
-| nested create | **0.63ms** | 1.31ms (2.1x) | 0.97ms (1.5x) |
-| deep include | **0.73ms** | 1.36ms (1.8x) | 0.73ms (1.0x) |
-| interactive tx | 0.76ms | 1.16ms (1.5x) | **0.60ms** (0.8x) |
-| update + find | **0.31ms** | 0.52ms (1.7x) | 0.31ms (1.0x) |
+| single create | **0.11ms** | 0.23ms (2.1x) | 0.25ms (2.3x) |
+| 100 createMany | **6.62ms** | 7.68ms (1.2x) | 11.35ms (1.7x) |
+| findMany 100 | **0.44ms** | 0.91ms (2.1x) | 0.71ms (1.6x) |
+| nested create | **0.48ms** | 1.20ms (2.5x) | 0.79ms (1.7x) |
+| deep include | **0.60ms** | 1.29ms (2.2x) | 0.70ms (1.2x) |
+| interactive tx | 0.77ms | 1.17ms (1.5x) | **0.57ms** (0.7x) |
+| update + find | **0.23ms** | 0.49ms (2.1x) | 0.29ms (1.3x) |
 
 **Apple i9-9980HK:**
 
 | Operation | bridge | direct adapter | native Postgres |
 | -------------- | ------ | -------------- | --------------- |
-| single create | **0.52ms** | 0.74ms (1.4x) | 0.58ms (1.1x) |
-| 100 createMany | 16.86ms | 17.74ms (1.1x) | **15.57ms** (0.9x) |
-| findMany 100 | 1.33ms | 2.76ms (2.1x) | **1.04ms** (0.8x) |
-| nested create | 2.31ms | 3.85ms (1.7x) | **2.16ms** (0.9x) |
-| deep include | 2.07ms | 3.85ms (1.9x) | **1.98ms** (1.0x) |
-| interactive tx | 2.26ms | 3.00ms (1.3x) | **1.98ms** (0.9x) |
-| update + find | 1.16ms | 1.64ms (1.4x) | **1.05ms** (0.9x) |
+| single create | **0.45ms** | 0.73ms (1.6x) | 0.56ms (1.3x) |
+| 100 createMany | 15.38ms | 17.27ms (1.1x) | **15.21ms** (1.0x) |
+| findMany 100 | **1.15ms** | 2.45ms (2.1x) | 1.16ms (1.0x) |
+| nested create | **1.85ms** | 3.79ms (2.1x) | 2.10ms (1.1x) |
+| deep include | 1.79ms | 3.56ms (2.0x) | **1.62ms** (0.9x) |
+| interactive tx | 2.15ms | 3.16ms (1.5x) | **1.79ms** (0.8x) |
+| update + find | **0.90ms** | 1.65ms (1.8x) | 1.10ms (1.2x) |
 
-Against the direct adapter the bridge wins every operation on both
-machines (1.1–2.1x). Against native Postgres (default config) the
-picture is architecture-dependent: on the M3 Max the bridge wins or
-ties everything except `interactive tx`; on Intel, native Postgres
-wins most operations by ~10%. Micro runs at n=50 are noisier than
-the read-path probe — single-operation ratios near 1.0x move between
-runs; the stable signals are the bridge-vs-direct-adapter margin and
-the order-of-magnitude agreement with native Postgres.
+**Linux i7-8700:**
 
-### Memory and cold start
+| Operation | bridge | direct adapter | native Postgres |
+| -------------- | ------ | -------------- | --------------- |
+| single create | **0.34ms** | 0.58ms (1.7x) | 0.39ms (1.1x) |
+| 100 createMany | **11.82ms** | 13.42ms (1.1x) | 12.70ms (1.1x) |
+| findMany 100 | 0.95ms | 1.81ms (1.9x) | **0.95ms** (1.0x) |
+| nested create | **1.46ms** | 2.92ms (2.0x) | 1.85ms (1.3x) |
+| deep include | **1.52ms** | 2.85ms (1.9x) | 1.80ms (1.2x) |
+| interactive tx | **1.63ms** | 2.38ms (1.5x) | 1.69ms (1.0x) |
+| update + find | **0.70ms** | 1.27ms (1.8x) | 0.87ms (1.2x) |
+
+Against the direct adapter the bridge wins every operation on every
+machine (1.1–2.5x). Against native Postgres the result is
+operation- and architecture-dependent:
+
+- **Simple writes and reads** go to the bridge or tie: `single
+  create`, `createMany`, `findMany`, `nested create`, and
+  `update + find` on all three machines.
+- **Interactive transactions are native's.** `interactive tx` goes
+  to native Postgres on both Apple machines (M3 Max 0.57 vs 0.77ms;
+  Intel 1.79 vs 2.15ms) and is a dead heat on Linux. A `$transaction`
+  here is several round-trips — read, conditional write, commit — and
+  the bridge's per-message wire-protocol work is visible where a
+  single query hides it.
+- **Deep includes** go to native on Intel (1.62 vs 1.79ms) and to the
+  bridge on the other two.
+
+Micro runs at n=60 are noisier than the read-path probe — ratios near
+1.0x move between runs; the stable signals are the
+bridge-vs-direct-adapter margin and where native clearly wins
+(transactions) or clearly loses (bulk and simple ops on Apple
+Silicon).
+
+### Multi-shape reads — `read-mix` (p50, ratio vs bridge)
+
+`findmany-focused` above hammers one SQL shape, which maximally warms
+a single prepared-statement cache entry — the bridge's best case
+against native Postgres. Real request paths issue many shapes. This
+scenario rotates nine distinct read shapes — point lookup, indexed
+filter, filtered sort, column projection, one- and three-level
+includes, `count`, `groupBy`, and a relation-filtered find — through
+one *shared* statement cache every iteration, so no single entry is
+specially favored. Measured 2026-07-05 (bridge 1.6.2, n=400,
+warmup=40). Raw JSON:
+[m3max](./results/2026-07-05-m3max-read-mix.json),
+[intel](./results/2026-07-05-intel-read-mix.json),
+[hetzner](./results/2026-07-05-hetzner-read-mix.json).
+
+**Apple M3 Max:**
+
+| Operation | bridge | direct adapter | native Postgres |
+| -------------- | ------ | -------------- | --------------- |
+| point lookup | **0.11ms** | 0.23ms (2.2x) | 0.14ms (1.3x) |
+| indexed where | **0.24ms** | 0.57ms (2.4x) | 0.28ms (1.2x) |
+| filter + sort | **0.23ms** | 0.46ms (2.0x) | 0.23ms (1.0x) |
+| select projection | **0.16ms** | 0.36ms (2.3x) | 0.18ms (1.2x) |
+| include workspace | **0.28ms** | 0.65ms (2.3x) | 0.34ms (1.2x) |
+| deep include | **0.42ms** | 1.05ms (2.5x) | 0.54ms (1.3x) |
+| count | **0.08ms** | 0.20ms (2.6x) | 0.12ms (1.6x) |
+| groupBy status | **0.11ms** | 0.23ms (2.1x) | 0.13ms (1.2x) |
+| nested filter | **0.26ms** | 0.57ms (2.2x) | 0.30ms (1.2x) |
+
+**Apple i9-9980HK:**
+
+| Operation | bridge | direct adapter | native Postgres |
+| -------------- | ------ | -------------- | --------------- |
+| point lookup | **0.43ms** | 0.74ms (1.7x) | 0.62ms (1.4x) |
+| indexed where | **0.68ms** | 1.56ms (2.3x) | 0.98ms (1.4x) |
+| filter + sort | **0.62ms** | 1.22ms (2.0x) | 0.84ms (1.4x) |
+| select projection | **0.48ms** | 1.02ms (2.2x) | 0.72ms (1.5x) |
+| include workspace | **0.93ms** | 1.85ms (2.0x) | 1.33ms (1.4x) |
+| deep include | **1.43ms** | 3.07ms (2.1x) | 2.13ms (1.5x) |
+| count | **0.31ms** | 0.63ms (2.0x) | 0.57ms (1.9x) |
+| groupBy status | **0.35ms** | 0.67ms (1.9x) | 0.56ms (1.6x) |
+| nested filter | **0.66ms** | 1.46ms (2.2x) | 1.09ms (1.6x) |
+
+**Linux i7-8700:**
+
+| Operation | bridge | direct adapter | native Postgres |
+| -------------- | ------ | -------------- | --------------- |
+| point lookup | **0.33ms** | 0.57ms (1.7x) | 0.43ms (1.3x) |
+| indexed where | **0.53ms** | 1.16ms (2.2x) | 0.72ms (1.4x) |
+| filter + sort | **0.48ms** | 0.93ms (1.9x) | 0.63ms (1.3x) |
+| select projection | **0.37ms** | 0.78ms (2.1x) | 0.63ms (1.7x) |
+| include workspace | **0.73ms** | 1.42ms (1.9x) | 0.98ms (1.3x) |
+| deep include | **1.13ms** | 2.37ms (2.1x) | 1.58ms (1.4x) |
+| count | **0.24ms** | 0.49ms (2.1x) | 0.38ms (1.6x) |
+| groupBy status | **0.28ms** | 0.52ms (1.9x) | 0.39ms (1.4x) |
+| nested filter | **0.52ms** | 1.13ms (2.2x) | 0.87ms (1.7x) |
+
+The read advantage is not an artifact of single-shape cache warming:
+the bridge leads *every* shape on *every* machine — typically 1.2–1.9x
+over native Postgres (down to a tie on the fastest M3 Max shapes) and
+~2x over the direct adapter — including aggregates (`count`,
+`groupBy`) and three-level joins. Prisma emits a bounded set of
+parameterized statements, so a diverse read mix stays fully cached and
+the bridge's read-path win holds across it, not just in a hot loop.
+It is writes and transactions (see `micro` above), not read diversity,
+where native Postgres competes.
+
+### Memory and cold start (2026-07-02)
 
 Quiesced post-setup baseline RSS, sampled in-workload peak, and
 pre-teardown retained growth during the leak-detect workload (1k
@@ -210,15 +315,16 @@ for this scenario's seed, vs ~0.1s for a Postgres connection.
 ### What this means
 
 For a test suite issuing ~1000 Prisma queries, the bridge saves
-roughly one second per run versus the direct PGlite adapter, and it
-buys zero-infrastructure Postgres at native-Postgres speed — ahead
-of a local native server on every read percentile on Apple Silicon,
-and ahead of default-configured native on x86 (prepared native still
-edges it at the median there). It does not make PGlite a production database,
-and none of these numbers describe production Postgres over a real
-network — the value is operational (no Docker, no server, instant
-snapshot/reset) plus a latency profile that no longer asks you to
-trade speed for it.
+roughly one second per run versus the direct PGlite adapter — which
+it beats on every operation and every machine — and it buys
+zero-infrastructure Postgres at native-Postgres speed on the paths a
+suite spends most of its time: reads (every shape, every machine) and
+simple writes. Native Postgres still wins interactive transactions,
+and prepared-native edges the read median on x86. It does not make
+PGlite a production database, and none of these numbers describe
+production Postgres over a real network — the value is operational
+(no Docker, no server, instant snapshot/reset) plus a latency profile
+that, outside transactions, no longer asks you to trade speed for it.
 
 [electric-sql/pglite#1030]: https://github.com/electric-sql/pglite/pull/1030
 
@@ -297,12 +403,13 @@ The `postgres-pg` adapter requires connection info — see
 | `stack-breakdown`      | Attributes peak RSS to stages (`pg.send` → `firstRow` → …)              |         yes         |
 | `path-split`           | Separates raw PGlite, adapter, Prisma, and maintenance paths            |         yes         |
 | `findmany-focused`     | `findMany({ take: 100 })` in isolation — tail-latency probe             |    recommended      |
+| `read-mix`             | Nine distinct read shapes rotated through one shared statement cache    |                     |
 | `repeated-large-reads` | Repeated Prisma reads over one 1MB JSON row (`$queryRaw`, `findUnique`) |                     |
 | `bytes-sweep`          | Bytea decoder across payload sizes, `Bytes` and `Bytes[]` columns       |                     |
 | `text-array-sweep`     | TEXT[] parser across array shapes (tag-like through payload-like)       |                     |
 
 Pick one with `--scenario <name>`, or `--scenario all` for the full set.
-`findmany-focused`, `repeated-large-reads`, `path-split`,
+`findmany-focused`, `read-mix`, `repeated-large-reads`, `path-split`,
 `bytes-sweep`, and `text-array-sweep` are explicit-only — none are
 included in `all`; target them directly (e.g.
 `--scenario findmany-focused`) when hunting read-path,
