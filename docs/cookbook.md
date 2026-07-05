@@ -7,6 +7,7 @@ For the underlying API, see the [API reference](./api.md).
 
 - [Vitest one-call setup](#vitest-one-call-setup)
 - [Test-context fixtures (`createBridgeTest`)](#test-context-fixtures-createbridgetest)
+- [Isolation model](#isolation-model)
 - [Jest one-call setup](#jest-one-call-setup)
 - [Multi-file tests with a shared bridge](#multi-file-tests-with-a-shared-bridge)
 - [Per-file bridge (no production singleton)](#per-file-bridge-no-production-singleton)
@@ -201,7 +202,17 @@ const bridge = new PGliteBridge();
 await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
 export const testPrisma = new PrismaClient({ adapter: bridge.adapter });
 
-vi.mock('./lib/prisma', () => ({ prisma: testPrisma }));
+// `vi.mock` is hoisted above these lines, so `{ prisma: testPrisma }`
+// would capture `testPrisma` before it is assigned. A getter defers the
+// read until a test actually uses the client — by which point the setup
+// file has finished. (An async factory that `await import`s a memoized
+// bridge module is an equally robust, fully decoupled variant; that is
+// what this repo's own integration tests use.)
+vi.mock('./lib/prisma', () => ({
+  get prisma() {
+    return testPrisma;
+  },
+}));
 
 beforeEach(() => bridge.resetDb());
 ```
@@ -402,6 +413,7 @@ so you control when it closes:
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
+import { PrismaClient } from '@prisma/client';
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
 const dataDir = './data/pglite';
@@ -504,6 +516,7 @@ any migration has been applied, so subsequent runs skip
 ## Long-running script with clean shutdown
 
 ```typescript
+import { PrismaClient } from '@prisma/client';
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
 const bridge = new PGliteBridge();
@@ -511,7 +524,7 @@ await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 
 try {
-  await seedDatabase(prisma);
+  await seedDatabase(prisma); // your seed function
 } finally {
   await prisma.$disconnect();
   await bridge.close(); // closes pool + internally-created PGlite
