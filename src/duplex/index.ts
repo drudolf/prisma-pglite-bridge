@@ -37,15 +37,24 @@ import { waitPGliteReady } from '../utils/wait-pglite-ready.ts';
 
 import { BackendMessageFramer } from './backend-framer.ts';
 import {
+  COPY_DATA,
+  COPY_DONE,
+  COPY_FAIL,
+  COPY_IN_RESPONSE,
   EQP_MESSAGES,
+  ERROR_RESPONSE,
   FLUSH,
+  MAX_COPY_AGGREGATE_BYTES,
   MAX_MESSAGE_LENGTH,
+  QUERY,
+  READY_FOR_QUERY,
   RFQ_STATUS_FAILED,
   RFQ_STATUS_IDLE,
   RFQ_STATUS_IN_TRANSACTION,
   SYNC,
   TERMINATE,
 } from './constants.ts';
+import { sniffCopyIn } from './copy-in.ts';
 import { FrontendMessageBuffer } from './frontend-buffer.ts';
 
 // PGlite's execProtocolRawSync short-circuits X/Terminate before entering
@@ -73,8 +82,12 @@ type PGliteProtocolCleanupCapable = PGliteInterface & {
  *   RFQ for Flush, so any RFQ is dropped — except after an ErrorResponse,
  *   where the RFQ PGlite emits is forwarded so pg can recover the
  *   connection (stock pg never sends a recovery Sync in rows mode).
+ * - `'copy-in'` — assembled COPY FROM STDIN conversation: passthrough RFQ
+ *   semantics, but the backend's CopyInResponse is dropped (the client
+ *   already received the duplex's synthetic one before its data was
+ *   captured).
  */
-type RfqMode = 'passthrough' | 'suppress' | 'flush-boundary';
+type RfqMode = 'passthrough' | 'suppress' | 'flush-boundary' | 'copy-in';
 
 export interface PGliteDuplexOptions {
   /**
@@ -117,6 +130,14 @@ export interface PGliteDuplexOptions {
    * passes `false` there to skip the redundant cleanup. Default `true`.
    */
   protocolCleanupNeeded?: boolean;
+  /**
+   * Cap on the aggregate bytes a `COPY ... FROM STDIN` capture may buffer
+   * before executing (the whole copy conversation reaches PGlite as one
+   * call; peak transient memory is ~2× this during assembly). Breaching it
+   * discards the remainder and answers the copy with an in-band error —
+   * never a teardown. Default {@link MAX_COPY_AGGREGATE_BYTES}.
+   */
+  copyAggregateCapBytes?: number;
 }
 
 /**
@@ -198,6 +219,15 @@ export class PGliteDuplex extends Duplex {
   private errSeen = false;
   private rfqSeenInCall = false;
   private streamActive = false;
+  /** In-flight `COPY ... FROM STDIN` capture: the held Query message plus
+   *  the client's CopyData stream, assembled into ONE PGlite call on
+   *  CopyDone/CopyFail — the WASM backend treats an exhausted input buffer
+   *  mid-COPY as connection EOF and exits, so the conversation can never
+   *  be split across calls. `discarding` is set on aggregate-cap breach:
+   *  the remainder is swallowed and the terminator answered with a
+   *  synthesized in-band error, PGlite never touched. */
+  private copyCapture?: { chunks: Uint8Array[]; total: number; discarding: boolean };
+  private readonly copyAggregateCapBytes: number;
   /** Resolves once the stream has fully torn down (post-`_final` rollback,
    *  post-`_destroy`). Single-shot, mirroring the `'close'` event. */
   readonly onClose: Promise<void>;
@@ -216,6 +246,7 @@ export class PGliteDuplex extends Duplex {
     this.syncToFs = options.syncToFs ?? true;
     this.rewriteSystemCatalogCharOids = options.rewriteSystemCatalogCharOids ?? true;
     this.protocolCleanupNeeded = options.protocolCleanupNeeded ?? true;
+    this.copyAggregateCapBytes = options.copyAggregateCapBytes ?? MAX_COPY_AGGREGATE_BYTES;
 
     this.duplexId = Symbol('duplex');
     this.onClose = new Promise<void>((resolve) => this.once('close', () => resolve()));
@@ -321,6 +352,7 @@ export class PGliteDuplex extends Duplex {
   override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
     this.tornDown = true;
     this.pipeline.length = 0;
+    this.copyCapture = undefined;
     this.input.clear();
 
     // Fail queued write callbacks promptly — rollback below may await an
@@ -524,6 +556,42 @@ export class PGliteDuplex extends Duplex {
         return;
       }
 
+      if (this.copyCapture !== undefined) {
+        const capture = this.copyCapture;
+        if (msgType === COPY_DATA) {
+          if (!capture.discarding) {
+            capture.total += message.length;
+            if (capture.total > this.copyAggregateCapBytes) {
+              capture.discarding = true;
+              capture.chunks.length = 0;
+            } else {
+              capture.chunks.push(message);
+            }
+          }
+          continue;
+        }
+        if (msgType === COPY_DONE || msgType === COPY_FAIL) {
+          this.copyCapture = undefined;
+          if (capture.discarding) {
+            this.pushSyntheticError(
+              '54000',
+              `COPY FROM STDIN payload exceeded the aggregate cap of ${this.copyAggregateCapBytes} bytes; the copy was not executed`,
+            );
+            this.pushSyntheticReadyForQuery();
+            continue;
+          }
+          capture.chunks.push(message);
+          const batch = this.concatPipeline(capture.chunks);
+          await this.runWithTiming(() => this.streamProtocol(batch, 'copy-in'));
+          continue;
+        }
+        // Real Postgres treats other messages during copy-in as a protocol
+        // violation (08P01); pg's copy state machine never produces them.
+        throw new Error(
+          `Protocol violation: unexpected frontend message 0x${msgType.toString(16)} during COPY FROM STDIN capture`,
+        );
+      }
+
       if (EQP_MESSAGES.has(msgType)) {
         this.pipeline.push(message);
         continue;
@@ -535,9 +603,68 @@ export class PGliteDuplex extends Duplex {
         continue;
       }
 
+      if (msgType === QUERY) {
+        // COPY ... FROM STDIN can never be forwarded: the backend's
+        // synchronous copy-read loop treats an exhausted input buffer as
+        // connection EOF and exit(1)s the WASM instance. Capture the
+        // conversation instead (synthetic CopyInResponse now, the whole
+        // exchange as one call on CopyDone/CopyFail) — and fail closed on
+        // shapes that cannot be captured.
+        const verdict = sniffCopyIn(this.queryText(message));
+        if (verdict === 'capture') {
+          this.copyCapture = { chunks: [message], total: message.length, discarding: false };
+          this.pushSyntheticCopyInResponse();
+          continue;
+        }
+        if (verdict === 'reject-multi') {
+          this.pushSyntheticError(
+            '0A000',
+            'COPY FROM STDIN in a multi-statement simple query is not supported by prisma-pglite-bridge; issue it as a single statement',
+          );
+          this.pushSyntheticReadyForQuery();
+          continue;
+        }
+      }
+
       // SimpleQuery or other standalone message
       await this.runWithTiming(() => this.streamProtocol(message, 'passthrough'));
     }
+  }
+
+  /** SQL text of a simple-protocol Query message ('Q' + int32 length +
+   *  NUL-terminated string). */
+  private queryText(message: Uint8Array): string {
+    return Buffer.from(message.buffer, message.byteOffset + 5, message.length - 6).toString('utf8');
+  }
+
+  /** Synthetic `CopyInResponse` (text format, zero columns): sent before a
+   *  captured copy-in executes, so the client starts streaming. node-pg
+   *  parses the fields tolerantly and pg-copy-streams reads none of them
+   *  (copy-from.js `handleCopyInResponse`, pinned by the compat suite);
+   *  the backend's real CopyInResponse is dropped by the framer. */
+  private pushSyntheticCopyInResponse(): void {
+    this.push(Buffer.from([COPY_IN_RESPONSE, 0, 0, 0, 7, 0, 0, 0]));
+  }
+
+  /** Synthetic in-band ErrorResponse — used where the duplex answers a
+   *  query itself (fail-closed copy rejection, cap breach) without PGlite
+   *  ever seeing it. */
+  private pushSyntheticError(code: string, message: string): void {
+    const fields = Buffer.from(`SERROR\0VERROR\0C${code}\0M${message}\0\0`);
+    const buf = Buffer.alloc(5 + fields.length);
+    buf[0] = ERROR_RESPONSE;
+    buf.writeUInt32BE(4 + fields.length, 1);
+    fields.copy(buf, 5);
+    this.push(buf);
+  }
+
+  /** Synthetic ReadyForQuery carrying the last status the backend actually
+   *  reported — the session's transaction state is unchanged by a
+   *  synthesized error, and pg's state machine needs the true byte. */
+  private pushSyntheticReadyForQuery(): void {
+    this.push(
+      Buffer.from([READY_FOR_QUERY, 0, 0, 0, 5, this.lastSeenRfqStatus ?? RFQ_STATUS_IDLE]),
+    );
   }
 
   /**
@@ -687,7 +814,10 @@ export class PGliteDuplex extends Duplex {
     // machine.
     this.errSeen = false;
     this.rfqSeenInCall = false;
-    this.framer.reset(rfqMode !== 'passthrough');
+    this.framer.reset(
+      rfqMode === 'suppress' || rfqMode === 'flush-boundary',
+      rfqMode === 'copy-in',
+    );
 
     // Re-check readiness inside the runExclusive mutex: the caller could
     // have closed pglite between `runUnderRunExclusive`'s pre-check and

@@ -16,7 +16,7 @@ Status as of 2026-07-10 (bridge 1.7.0-pre, PGlite 0.5.4):
 | `LISTEN`/`NOTIFY` | ✅ | Async `NotificationResponse` delivery to pg's `'notification'` event, payload intact |
 | `node-pg-migrate` | ✅ | Programmatic up/down migrations, including `pg_advisory_lock` coordination |
 | `pg-boss` | ✅ | Job queue end-to-end on the custom-`db` seam: schema install (multi-statement DDL), send, fetch, complete |
-| `pg-copy-streams` | ❌ | COPY FROM STDIN — the duplex has no COPY sub-protocol handling; fails with a protocol-synchronization error (roadmap) |
+| `pg-copy-streams` | ✅ | Bulk load via COPY FROM STDIN (captured and executed atomically) and dump via COPY TO STDOUT; mid-stream errors and client aborts recover cleanly |
 
 Notable: none of the ORMs' native PGlite drivers support cursors or
 streaming at all (MikroORM's official driver documents `em.stream()` as
@@ -34,10 +34,21 @@ including kysely's `.stream()` and everything else built on
 - **Advisory locks work** (`pg_advisory_lock` and friends), but they
   coordinate within the single session — cross-process exclusion
   semantics do not apply to an in-process database.
-- **COPY is not supported yet.** `pg-copy-streams` (and anything else
-  driving `CopyInResponse`/`CopyData`) fails; use multi-row `INSERT`s
-  or [`pushMigrations`](./api.md#pushmigrationspglite-options) for bulk
-  seeding until COPY lands.
+- **COPY FROM STDIN is captured, then executed atomically.** PGlite's
+  WASM backend cannot suspend mid-COPY waiting for more input, so the
+  duplex answers the copy query with a synthetic `CopyInResponse`,
+  buffers the client's data stream (default cap 256 MiB,
+  `PGliteDuplexOptions.copyAggregateCapBytes`), and runs the whole
+  conversation as one call on `CopyDone`/`CopyFail`. Consequences:
+  server-side errors (missing table, malformed rows) surface only
+  after the client finishes sending — unlike real Postgres, which
+  errors before copy mode begins; peak transient memory is roughly 2×
+  the payload; a cap breach degrades to a catchable in-band error,
+  never a teardown. Multi-statement simple queries containing
+  `COPY ... FROM STDIN` are rejected with an in-band error (forwarding
+  one would kill the WASM instance), and extended-protocol COPY is not
+  supported — `pg-copy-streams` and psql-style clients use the simple
+  protocol, which is the supported path.
 
 ## Running and extending
 

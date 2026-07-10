@@ -726,4 +726,68 @@ describe('BackendMessageFramer', () => {
       expect(logicalState(framer)).toEqual(logicalState(fresh));
     });
   });
+
+  // Copy-in support: reset(_, true) arms a one-shot drop of the first
+  // CopyInResponse — the duplex already sent the client a synthetic one
+  // before capturing its data, so the backend's real 'G' would desync
+  // pg's copy state machine.
+  describe('dropFirstCopyInResponse', () => {
+    const COPY_IN = 0x47;
+    const copyInResponse = encodeMessage(COPY_IN, new Uint8Array([0, 0, 0])); // text, 0 cols
+    const commandComplete = encodeMessage(0x43, new Uint8Array([0x43, 0]));
+
+    it('drops exactly the first CopyInResponse on the fast path', () => {
+      const { framer, outputs } = makeHarness();
+      framer.reset(false, true);
+      framer.write(collect([copyInResponse, commandComplete, RFQ_IDLE]));
+      const emitted = collect(outputs);
+      expect(emitted[0]).toBe(0x43); // CommandComplete first — the G is gone
+      expect([...emitted].includes(COPY_IN)).toBe(false);
+      expect(emitted.length).toBe(commandComplete.length + RFQ_IDLE.length);
+    });
+
+    it('drops a chunk-spanning CopyInResponse on the slow path', () => {
+      const { framer, outputs } = makeHarness();
+      framer.reset(false, true);
+      // Byte-at-a-time forces type/header/payload through the state machine.
+      for (const piece of splitEvery(copyInResponse, 1)) {
+        framer.write(piece);
+      }
+      framer.write(collect([commandComplete, RFQ_IDLE]));
+      const emitted = collect(outputs);
+      expect(emitted[0]).toBe(0x43);
+      expect(emitted.length).toBe(commandComplete.length + RFQ_IDLE.length);
+    });
+
+    it('drops a payload-free CopyInResponse frame on the slow path', () => {
+      // Not a shape a real backend produces (G always carries format +
+      // column count), but the state machine must finish the dropped
+      // message even with zero payload bytes remaining.
+      const { framer, outputs } = makeHarness();
+      framer.reset(false, true);
+      const bare = encodeMessage(COPY_IN, new Uint8Array(0));
+      for (const piece of splitEvery(bare, 1)) {
+        framer.write(piece);
+      }
+      framer.write(RFQ_IDLE.slice());
+      expect(collect(outputs).length).toBe(RFQ_IDLE.length);
+    });
+
+    it('is one-shot: a second CopyInResponse in the same stream passes through', () => {
+      const { framer, outputs } = makeHarness();
+      framer.reset(false, true);
+      framer.write(collect([copyInResponse, copyInResponse, RFQ_IDLE]));
+      const emitted = collect(outputs);
+      expect(emitted[0]).toBe(COPY_IN);
+      expect(emitted.length).toBe(copyInResponse.length + RFQ_IDLE.length);
+    });
+
+    it('reset without the flag disarms a leftover drop', () => {
+      const { framer, outputs } = makeHarness();
+      framer.reset(false, true);
+      framer.reset(false);
+      framer.write(copyInResponse.slice());
+      expect(collect(outputs).length).toBe(copyInResponse.length);
+    });
+  });
 });

@@ -1,4 +1,5 @@
 import {
+  COPY_IN_RESPONSE,
   ERROR_RESPONSE,
   MAX_MESSAGE_LENGTH,
   READY_FOR_QUERY,
@@ -47,6 +48,13 @@ export class BackendMessageFramer {
    *  and a multi-chunk payload starts arriving; cleared after rewrite + emit. */
   private rowDescBuffer?: Buffer;
   private rowDescOffset = 0;
+  /** One-shot: drop the first CopyInResponse of this stream. Armed by the
+   *  duplex for a captured COPY FROM STDIN — the client already received a
+   *  synthetic CopyInResponse before its data was captured, so the backend's
+   *  real one would desync pg's copy state machine. */
+  private dropNextCopyInResponse = false;
+  /** Slow-path counterpart: the frame being dropped spans chunks. */
+  private droppingMessage = false;
 
   constructor(options: BackendMessageFramerOptions) {
     this.suppressIntermediateReadyForQuery = options.suppressIntermediateReadyForQuery ?? false;
@@ -63,7 +71,7 @@ export class BackendMessageFramer {
    * per-stream field must be cleared here; the structural completeness test
    * in backend-framer.test.ts guards against new fields being forgotten.
    */
-  reset(suppressIntermediateReadyForQuery: boolean): void {
+  reset(suppressIntermediateReadyForQuery: boolean, dropFirstCopyInResponse = false): void {
     this.suppressIntermediateReadyForQuery = suppressIntermediateReadyForQuery;
     this.messageType = undefined;
     this.headerBytesRead = 0;
@@ -71,6 +79,8 @@ export class BackendMessageFramer {
     this.rfqBytesRead = 0;
     this.rowDescBuffer = undefined;
     this.rowDescOffset = 0;
+    this.dropNextCopyInResponse = dropFirstCopyInResponse;
+    this.droppingMessage = false;
   }
 
   write(chunk: Uint8Array): void {
@@ -113,6 +123,13 @@ export class BackendMessageFramer {
           if (available >= totalLen) {
             if (msgType === ERROR_RESPONSE) {
               this.onErrorResponse?.();
+            }
+            if (msgType === COPY_IN_RESPONSE && this.dropNextCopyInResponse) {
+              flushPassthrough(offset);
+              this.dropStaleHeldReadyForQuery();
+              this.dropNextCopyInResponse = false;
+              offset += totalLen;
+              continue;
             }
             if (msgType === READY_FOR_QUERY && messageLength === 5) {
               flushPassthrough(offset);
@@ -158,6 +175,10 @@ export class BackendMessageFramer {
         this.messageType = chunk[offset] ?? 0;
         this.headerBytesRead = 0;
         this.payloadBytesRemaining = 0;
+        if (this.messageType === COPY_IN_RESPONSE && this.dropNextCopyInResponse) {
+          this.dropNextCopyInResponse = false;
+          this.droppingMessage = true;
+        }
         this.rfqBytesRead = this.messageType === READY_FOR_QUERY ? 1 : 0;
         if (this.rfqBytesRead === 1) {
           this.heldRfq[0] = this.messageType;
@@ -205,6 +226,12 @@ export class BackendMessageFramer {
         }
 
         this.dropHeldReadyForQuery();
+        if (this.droppingMessage) {
+          if (this.payloadBytesRemaining === 0) {
+            this.finishMessage();
+          }
+          continue;
+        }
         if (this.messageType === ROW_DESCRIPTION && this.rewriteSystemCatalogCharOids) {
           // Valid RowDescription always carries at least a 2-byte fieldCount,
           // so payloadBytesRemaining is > 0 here — no zero-payload finalize needed.
@@ -238,7 +265,9 @@ export class BackendMessageFramer {
       const bytesToEmit = Math.min(this.payloadBytesRemaining, chunk.length - offset);
       /* c8 ignore next — bytesToEmit always ≥ 1 when reached */
       if (bytesToEmit > 0) {
-        if (this.rowDescBuffer !== undefined) {
+        if (this.droppingMessage) {
+          // Payload of the dropped CopyInResponse — consume without emitting.
+        } else if (this.rowDescBuffer !== undefined) {
           this.rowDescBuffer.set(chunk.subarray(offset, offset + bytesToEmit), this.rowDescOffset);
           this.rowDescOffset += bytesToEmit;
         } else {
@@ -334,6 +363,7 @@ export class BackendMessageFramer {
     this.messageType = undefined;
     this.headerBytesRead = 0;
     this.payloadBytesRemaining = 0;
+    this.droppingMessage = false;
     if (!this.suppressIntermediateReadyForQuery) {
       this.rfqBytesRead = 0;
     }

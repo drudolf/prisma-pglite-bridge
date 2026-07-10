@@ -1,4 +1,4 @@
-import type { PGlite } from '@electric-sql/pglite';
+import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1609,5 +1609,540 @@ describe('PGliteDuplex malformed frontend message lengths', () => {
     await expect(writeAndAwait(duplex, Buffer.from('sel;;\0'))).resolves.toBeUndefined();
 
     duplex.destroy();
+  });
+});
+
+describe('PGliteDuplex COPY FROM STDIN capture (raw frames)', () => {
+  // Frontend message type bytes for the copy conversation.
+  const QUERY = 0x51; // 'Q'
+  const COPY_DATA = 0x64; // 'd'
+  const COPY_DONE = 0x63; // 'c'
+  const COPY_FAIL = 0x66; // 'f'
+  const SYNC = 0x53; // 'S'
+
+  // Backend message type bytes the capture path synthesizes or forwards.
+  const COPY_IN_RESPONSE = 0x47; // 'G'
+  const COMMAND_COMPLETE = 0x43; // 'C'
+  const ERROR_RESPONSE = 0x45; // 'E'
+  const READY_FOR_QUERY = 0x5a; // 'Z'
+
+  const RFQ_IN_TRANSACTION_MESSAGE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x54]);
+
+  // Real-PGlite tests boot a dedicated instance per test: today the duplex
+  // forwards COPY ... FROM STDIN and the backend dies (WASM exit(1)) — a
+  // shared instance would poison every later test in this file. Sized for
+  // the per-test cold boot under coverage instrumentation while staying
+  // under the 30s global testTimeout so a wedge still fails fast.
+  const COPY_GUARD_MS = 20_000;
+
+  // Unlike the mock-only describes above, this one drives REAL PGlite
+  // instances: the startup needs actual user/database parameters (the bare
+  // 8-byte version-only frame is rejected by a real backend).
+  const startupBytes = (): Buffer => {
+    const params = Buffer.from('user\0postgres\0database\0postgres\0\0');
+    const buf = Buffer.alloc(8 + params.length);
+    buf.writeUInt32BE(8 + params.length, 0);
+    buf.writeUInt32BE(0x00030000, 4);
+    params.copy(buf, 8);
+    return buf;
+  };
+
+  const simpleQuery = (sql: string): Buffer => {
+    const payload = Buffer.from(`${sql}\0`);
+    const len = 4 + payload.length;
+    const buf = Buffer.alloc(1 + len);
+    buf[0] = QUERY;
+    buf.writeUInt32BE(len, 1);
+    payload.copy(buf, 5);
+    return buf;
+  };
+
+  /** Payload-free wire frame: type byte + 4-byte BE length including itself. */
+  const frame = (type: number): Buffer => {
+    const buf = Buffer.alloc(5);
+    buf[0] = type;
+    buf.writeUInt32BE(4, 1);
+    return buf;
+  };
+
+  /** CopyData 'd' frame: raw payload bytes, no terminator. */
+  const copyDataFrame = (payload: string): Buffer => {
+    const body = Buffer.from(payload);
+    const buf = Buffer.alloc(5 + body.length);
+    buf[0] = COPY_DATA;
+    buf.writeUInt32BE(4 + body.length, 1);
+    body.copy(buf, 5);
+    return buf;
+  };
+
+  /** CopyFail 'f' frame: cstring error message. */
+  const copyFailFrame = (message: string): Buffer => {
+    const body = Buffer.from(`${message}\0`);
+    const buf = Buffer.alloc(5 + body.length);
+    buf[0] = COPY_FAIL;
+    buf.writeUInt32BE(4 + body.length, 1);
+    body.copy(buf, 5);
+    return buf;
+  };
+
+  const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+    new Promise((resolve) => {
+      duplex.write(chunk, (err) => resolve(err ?? undefined));
+    });
+
+  const collect = (duplex: PGliteDuplex): Buffer[] => {
+    const received: Buffer[] = [];
+    duplex.on('data', (chunk: Buffer) => received.push(chunk));
+    return received;
+  };
+
+  interface BackendFrame {
+    type: number;
+    payload: Buffer;
+  }
+
+  const parseFrames = (data: Buffer): BackendFrame[] => {
+    const frames: BackendFrame[] = [];
+    let p = 0;
+    while (p + 5 <= data.length) {
+      const type = data[p] ?? 0;
+      const len = data.readUInt32BE(p + 1);
+      frames.push({ type, payload: data.subarray(p + 5, p + 1 + len) });
+      p += 1 + len;
+    }
+    return frames;
+  };
+
+  const framesAfter = (received: Buffer[], skipBytes: number): BackendFrame[] =>
+    parseFrames(Buffer.concat(received).subarray(skipBytes));
+
+  const copyInResponses = (frames: BackendFrame[]): BackendFrame[] =>
+    frames.filter((f) => f.type === COPY_IN_RESPONSE);
+
+  /** Human-readable message ('M') field of an ErrorResponse payload. */
+  const errorMessageField = (payload: Buffer): string => {
+    let p = 0;
+    while (p < payload.length) {
+      const fieldType = payload[p];
+      if (fieldType === undefined || fieldType === 0) break;
+      const end = payload.indexOf(0, p + 1);
+      if (fieldType === 0x4d) {
+        return payload.subarray(p + 1, end).toString('utf8');
+      }
+      p = end + 1;
+    }
+    return '';
+  };
+
+  /** Mock pglite whose execProtocolRawStream emits the scripted frames on
+   *  each successive call (call 0 is the startup message). */
+  const createScriptedCopyPGlite = (responses: Buffer[][]) => {
+    let call = 0;
+    const execProtocolRawStream = vi.fn(
+      async (_message: Uint8Array, options: { onRawData: (chunk: Uint8Array) => void }) => {
+        const frames = responses[call] ?? [];
+        call += 1;
+        for (const f of frames) {
+          options.onRawData(f);
+        }
+      },
+    );
+    return { pglite: createMockPGlite({ execProtocolRawStream }), execProtocolRawStream };
+  };
+
+  const createFreshPGlite = async (): Promise<PGlite> => {
+    const instance = new PGlite();
+    await instance.waitReady;
+    return instance;
+  };
+
+  /** Today a forwarded COPY ... FROM STDIN kills the backend; close() on a
+   *  dead instance may reject or hang, so teardown is best-effort and
+   *  bounded instead of letting a red test burn its whole timeout. */
+  const closeQuietly = async (instance: PGlite): Promise<void> => {
+    if (instance.closed) return;
+    await Promise.race([
+      instance.close().catch(() => {}),
+      new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
+    ]);
+  };
+
+  it('synthesizes one CopyInResponse, runs the copy as one atomic call, and completes idle', {
+    timeout: COPY_GUARD_MS,
+  }, async () => {
+    const instance = await createFreshPGlite();
+    try {
+      await instance.exec('CREATE TABLE copy_frames (n int, label text)');
+      const rawSpy = vi.spyOn(instance, 'execProtocolRawStream');
+      const duplex = new PGliteDuplex(instance);
+      duplex.on('error', () => {});
+      const received = collect(duplex);
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await settle();
+      const startupLen = Buffer.concat(received).length;
+      const callsAfterStartup = rawSpy.mock.calls.length;
+
+      // The synthetic 'G' must be emitted BEFORE any PGlite execution. The
+      // write is deliberately not awaited first: a regressed duplex that
+      // forwards the query kills the backend and would wedge this await.
+      const copyQueryWrite = writeAndAwait(
+        duplex,
+        simpleQuery('COPY copy_frames (n, label) FROM STDIN'),
+      );
+      await settle();
+      await settle();
+
+      const preData = copyInResponses(framesAfter(received, startupLen));
+      expect(preData.length).toBe(1);
+      // Synthetic, not forwarded: PGlite has not been executed yet.
+      expect(rawSpy.mock.calls.length).toBe(callsAfterStartup);
+      // Body: int8 format 0 (text), int16 ncols 0.
+      expect(preData[0]?.payload.length).toBe(3);
+      expect(preData[0]?.payload[0]).toBe(0);
+      expect(preData[0]?.payload.readInt16BE(1)).toBe(0);
+      await expect(copyQueryWrite).resolves.toBeUndefined();
+
+      await expect(writeAndAwait(duplex, copyDataFrame('1\tone\n'))).resolves.toBeUndefined();
+      await expect(writeAndAwait(duplex, copyDataFrame('2\ttwo\n'))).resolves.toBeUndefined();
+      await expect(writeAndAwait(duplex, frame(COPY_DONE))).resolves.toBeUndefined();
+      await settle();
+
+      // One atomic execProtocolRawStream call for the whole conversation:
+      // Query + captured data + terminator.
+      expect(rawSpy.mock.calls.length).toBe(callsAfterStartup + 1);
+      const atomic = Buffer.from(rawSpy.mock.calls[callsAfterStartup]?.[0] as Uint8Array);
+      expect(atomic[0]).toBe(QUERY);
+      expect(atomic.subarray(atomic.length - 5).equals(frame(COPY_DONE))).toBe(true);
+      expect(atomic.includes('1\tone\n')).toBe(true);
+      expect(atomic.includes('2\ttwo\n')).toBe(true);
+
+      const frames = framesAfter(received, startupLen);
+      // Exactly ONE 'G' in total — the backend's duplicate was dropped.
+      expect(copyInResponses(frames).length).toBe(1);
+      const complete = frames.filter((f) => f.type === COMMAND_COMPLETE);
+      expect(complete.length).toBe(1);
+      expect(complete[0]?.payload.toString('utf8')).toBe('COPY 2\0');
+      const rfq = frames.filter((f) => f.type === READY_FOR_QUERY).at(-1);
+      expect(rfq?.payload[0]).toBe(0x49); // 'I'
+
+      const { rows } = await instance.query<{ c: number }>(
+        'SELECT count(*)::int AS c FROM copy_frames',
+      );
+      expect(rows[0]?.c).toBe(2);
+
+      duplex.destroy();
+      // _destroy fires the transaction rollback asynchronously; closing PGlite
+      // while that query is in flight wedges the WASM runtime. onClose is the
+      // designed post-rollback synchronization point.
+      await duplex.onClose;
+    } finally {
+      await closeQuietly(instance);
+    }
+  });
+
+  it('reports in-transaction status on the ReadyForQuery of a COPY inside BEGIN', {
+    timeout: COPY_GUARD_MS,
+  }, async () => {
+    const instance = await createFreshPGlite();
+    try {
+      await instance.exec('CREATE TABLE copy_frames_tx (n int)');
+      const duplex = new PGliteDuplex(instance);
+      duplex.on('error', () => {});
+      const received = collect(duplex);
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await expect(writeAndAwait(duplex, simpleQuery('BEGIN'))).resolves.toBeUndefined();
+      await settle();
+      const preCopyLen = Buffer.concat(received).length;
+
+      const copyQueryWrite = writeAndAwait(
+        duplex,
+        simpleQuery('COPY copy_frames_tx (n) FROM STDIN'),
+      );
+      await settle();
+      await settle();
+      expect(copyInResponses(framesAfter(received, preCopyLen)).length).toBe(1);
+      await expect(copyQueryWrite).resolves.toBeUndefined();
+
+      await expect(writeAndAwait(duplex, copyDataFrame('7\n'))).resolves.toBeUndefined();
+      await expect(writeAndAwait(duplex, frame(COPY_DONE))).resolves.toBeUndefined();
+      await settle();
+
+      const frames = framesAfter(received, preCopyLen);
+      expect(copyInResponses(frames).length).toBe(1);
+      const rfq = frames.filter((f) => f.type === READY_FOR_QUERY).at(-1);
+      expect(rfq?.payload[0]).toBe(0x54); // 'T' — still inside the transaction
+
+      duplex.destroy();
+      // _destroy fires the transaction rollback asynchronously; closing PGlite
+      // while that query is in flight wedges the WASM runtime. onClose is the
+      // designed post-rollback synchronization point.
+      await duplex.onClose;
+    } finally {
+      await closeQuietly(instance);
+    }
+  });
+
+  it('forwards the backend error after CopyFail with only the synthetic CopyInResponse', {
+    timeout: COPY_GUARD_MS,
+  }, async () => {
+    const instance = await createFreshPGlite();
+    try {
+      await instance.exec('CREATE TABLE copy_frames_fail (n int)');
+      const duplex = new PGliteDuplex(instance);
+      duplex.on('error', () => {});
+      const received = collect(duplex);
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await settle();
+      const startupLen = Buffer.concat(received).length;
+
+      const copyQueryWrite = writeAndAwait(
+        duplex,
+        simpleQuery('COPY copy_frames_fail (n) FROM STDIN'),
+      );
+      await settle();
+      await settle();
+      expect(copyInResponses(framesAfter(received, startupLen)).length).toBe(1);
+      await expect(copyQueryWrite).resolves.toBeUndefined();
+
+      await expect(writeAndAwait(duplex, copyDataFrame('1\n'))).resolves.toBeUndefined();
+      await expect(
+        writeAndAwait(duplex, copyFailFrame('client changed its mind')),
+      ).resolves.toBeUndefined();
+      await settle();
+
+      const frames = framesAfter(received, startupLen);
+      expect(copyInResponses(frames).length).toBe(1);
+      const error = frames.find((f) => f.type === ERROR_RESPONSE);
+      expect(error).toBeDefined();
+      expect(errorMessageField(error?.payload ?? Buffer.alloc(0))).toMatch(
+        /client changed its mind/,
+      );
+      const rfq = frames.filter((f) => f.type === READY_FOR_QUERY).at(-1);
+      expect(rfq?.payload[0]).toBe(0x49); // 'I'
+
+      // The failed COPY inserted nothing and the session survived.
+      const { rows } = await instance.query<{ c: number }>(
+        'SELECT count(*)::int AS c FROM copy_frames_fail',
+      );
+      expect(rows[0]?.c).toBe(0);
+
+      duplex.destroy();
+      // _destroy fires the transaction rollback asynchronously; closing PGlite
+      // while that query is in flight wedges the WASM runtime. onClose is the
+      // designed post-rollback synchronization point.
+      await duplex.onClose;
+    } finally {
+      await closeQuietly(instance);
+    }
+  });
+
+  it('rejects a multi-statement COPY with a synthesized error without touching PGlite (idle)', async () => {
+    const { pglite, execProtocolRawStream } = createScriptedCopyPGlite([
+      [RFQ_IDLE_MESSAGE],
+      [RFQ_IDLE_MESSAGE],
+    ]);
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+    const received = collect(duplex);
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await settle();
+    const startupLen = Buffer.concat(received).length;
+
+    await expect(
+      writeAndAwait(duplex, simpleQuery('COPY copy_frames (n) FROM STDIN; SELECT 1')),
+    ).resolves.toBeUndefined();
+    await settle();
+
+    // Fail closed: forwarding would kill the instance, so the query must
+    // never reach PGlite.
+    expect(execProtocolRawStream).toHaveBeenCalledTimes(1);
+
+    const frames = framesAfter(received, startupLen);
+    expect(frames.map((f) => f.type)).toEqual([ERROR_RESPONSE, READY_FOR_QUERY]);
+    expect(errorMessageField(frames[0]?.payload ?? Buffer.alloc(0))).toMatch(/COPY/i);
+    expect(frames[1]?.payload[0]).toBe(0x49); // idle
+
+    // The rejection is catchable, not teardown: a normal query still works.
+    await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
+    expect(execProtocolRawStream).toHaveBeenCalledTimes(2);
+    expect(duplex.destroyed).toBe(false);
+
+    duplex.destroy();
+    // _destroy fires the transaction rollback asynchronously; closing PGlite
+    // while that query is in flight wedges the WASM runtime. onClose is the
+    // designed post-rollback synchronization point.
+    await duplex.onClose;
+  });
+
+  it('rejects a multi-statement COPY with in-transaction status inside a transaction', async () => {
+    const { pglite, execProtocolRawStream } = createScriptedCopyPGlite([
+      [RFQ_IDLE_MESSAGE],
+      [RFQ_IN_TRANSACTION_MESSAGE],
+    ]);
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+    const received = collect(duplex);
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, simpleQuery('BEGIN'))).resolves.toBeUndefined();
+    await settle();
+    const preCopyLen = Buffer.concat(received).length;
+
+    await expect(
+      writeAndAwait(duplex, simpleQuery('COPY copy_frames (n) FROM STDIN; SELECT 1')),
+    ).resolves.toBeUndefined();
+    await settle();
+
+    expect(execProtocolRawStream).toHaveBeenCalledTimes(2); // startup + BEGIN only
+
+    const frames = framesAfter(received, preCopyLen);
+    expect(frames.map((f) => f.type)).toEqual([ERROR_RESPONSE, READY_FOR_QUERY]);
+    // The synthesized ReadyForQuery must mirror the open transaction.
+    expect(frames[1]?.payload[0]).toBe(0x54); // 'T'
+
+    duplex.destroy();
+    // _destroy fires the transaction rollback asynchronously; closing PGlite
+    // while that query is in flight wedges the WASM runtime. onClose is the
+    // designed post-rollback synchronization point.
+    await duplex.onClose;
+  });
+
+  it('synthesizes a catchable cap error on the terminator when the aggregate cap is breached', async () => {
+    const { pglite, execProtocolRawStream } = createScriptedCopyPGlite([
+      [RFQ_IDLE_MESSAGE],
+      [RFQ_IDLE_MESSAGE],
+    ]);
+    const duplex = new PGliteDuplex(pglite, { copyAggregateCapBytes: 64 });
+    duplex.on('error', () => {});
+    const received = collect(duplex);
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await settle();
+    const startupLen = Buffer.concat(received).length;
+
+    await expect(
+      writeAndAwait(duplex, simpleQuery('COPY copy_frames (n, label) FROM STDIN')),
+    ).resolves.toBeUndefined();
+    await settle();
+    expect(copyInResponses(framesAfter(received, startupLen)).length).toBe(1);
+    const preDataLen = Buffer.concat(received).length;
+
+    // 3 × 40 payload bytes = 120 captured bytes — past the 64-byte cap. The
+    // remainder is discarded silently: every write succeeds and nothing is
+    // synthesized until the terminator arrives.
+    const chunk = `${'x'.repeat(39)}\n`;
+    for (let i = 0; i < 3; i++) {
+      await expect(writeAndAwait(duplex, copyDataFrame(chunk))).resolves.toBeUndefined();
+    }
+    expect(Buffer.concat(received).length).toBe(preDataLen);
+
+    await expect(writeAndAwait(duplex, frame(COPY_DONE))).resolves.toBeUndefined();
+    await settle();
+
+    // The backend never saw any part of the copy.
+    expect(execProtocolRawStream).toHaveBeenCalledTimes(1);
+
+    const frames = framesAfter(received, preDataLen);
+    expect(frames.map((f) => f.type)).toEqual([ERROR_RESPONSE, READY_FOR_QUERY]);
+    expect(errorMessageField(frames[0]?.payload ?? Buffer.alloc(0))).toMatch(/cap/i);
+
+    // Catchable error, not teardown: the duplex keeps serving queries.
+    await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
+    expect(execProtocolRawStream).toHaveBeenCalledTimes(2);
+    expect(duplex.destroyed).toBe(false);
+
+    duplex.destroy();
+    // _destroy fires the transaction rollback asynchronously; closing PGlite
+    // while that query is in flight wedges the WASM runtime. onClose is the
+    // designed post-rollback synchronization point.
+    await duplex.onClose;
+  });
+
+  it('tears down on a non-copy frontend message while capturing', async () => {
+    const { pglite, execProtocolRawStream } = createScriptedCopyPGlite([[RFQ_IDLE_MESSAGE]]);
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+    const received = collect(duplex);
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await settle();
+    const startupLen = Buffer.concat(received).length;
+
+    await expect(
+      writeAndAwait(duplex, simpleQuery('COPY copy_frames (n) FROM STDIN')),
+    ).resolves.toBeUndefined();
+    await settle();
+    expect(copyInResponses(framesAfter(received, startupLen)).length).toBe(1);
+
+    // Sync is not part of a copy conversation — a client this confused
+    // cannot be trusted with the session: protocol violation, teardown.
+    const err = await writeAndAwait(duplex, frame(SYNC));
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toMatch(/COPY/i);
+    await settle();
+    expect(duplex.destroyed).toBe(true);
+    expect(execProtocolRawStream).toHaveBeenCalledTimes(1); // never reached PGlite
+  });
+
+  it('forwards a stray copy frame outside any capture (backend ignores it)', {
+    timeout: COPY_GUARD_MS,
+  }, async () => {
+    // Protocol spec: CopyData/CopyDone/CopyFail outside copy mode are
+    // accepted-and-ignored by the backend (verified against PGlite) — the
+    // duplex must pass them through like any standalone message, not
+    // treat them as capture traffic.
+    const instance = await createFreshPGlite();
+    try {
+      const duplex = new PGliteDuplex(instance);
+      duplex.on('error', () => {});
+      const received = collect(duplex);
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await settle();
+      const startupLen = Buffer.concat(received).length;
+
+      await expect(writeAndAwait(duplex, frame(COPY_DONE))).resolves.toBeUndefined();
+      await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
+      await settle();
+
+      const frames = framesAfter(received, startupLen);
+      const rfq = frames.filter((f) => f.type === READY_FOR_QUERY).at(-1);
+      expect(rfq?.payload[0]).toBe(0x49); // session healthy after the stray frame
+
+      duplex.destroy();
+      await duplex.onClose;
+    } finally {
+      await closeQuietly(instance);
+    }
+  });
+
+  it('synthesizes an idle ReadyForQuery when the backend never reported a status', async () => {
+    // A scripted backend whose startup response carries no ReadyForQuery:
+    // the fail-closed rejection still needs a status byte and falls back
+    // to idle.
+    const { pglite } = createScriptedCopyPGlite([[]]);
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+    const received = collect(duplex);
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(
+      writeAndAwait(duplex, simpleQuery('COPY t (n) FROM STDIN; SELECT 1')),
+    ).resolves.toBeUndefined();
+    await settle();
+
+    const frames = parseFrames(Buffer.concat(received));
+    expect(frames.some((f) => f.type === ERROR_RESPONSE)).toBe(true);
+    const rfq = frames.filter((f) => f.type === READY_FOR_QUERY).at(-1);
+    expect(rfq?.payload[0]).toBe(0x49); // 'I' — the fallback
+
+    duplex.destroy();
+    await duplex.onClose;
   });
 });
