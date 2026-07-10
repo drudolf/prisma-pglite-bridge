@@ -130,7 +130,10 @@ psql "postgres://postgres@127.0.0.1:54321/postgres"
 DBeaver / Prisma Studio / TablePlus connect the same way — point
 them at the host and port from the URL (user `postgres`, no
 password). PGlite still runs single-user, so the GUI's queries
-serialize through the same `SessionLock` as the test.
+serialize through the same `SessionLock` as the test. Cursor-based
+result paging (how GUIs fetch large tables) works since 1.7; while
+a cursor is open it holds the session like an open transaction,
+until the fetch completes or the cursor is closed.
 
 ### Unix domain sockets
 

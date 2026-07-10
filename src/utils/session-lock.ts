@@ -66,6 +66,13 @@ export class SessionLock {
    * Released by the existing paths: `updateStatus` with IDLE, `release`,
    * or `cancel`.
    *
+   * The hold has no timeout: a client that idles on an open cursor holds
+   * the session exactly like a client idling in an open transaction, and
+   * blocks other pool clients for as long. Cursor consumers in `max > 1`
+   * pools should read promptly or close; a timeout here would instead
+   * strip legitimately slow cursors of the very hold that protects their
+   * suspended portal.
+   *
    * @returns `true` if `id` now holds the session, `false` if another
    *   bridge already holds it.
    */

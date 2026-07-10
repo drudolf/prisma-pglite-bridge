@@ -332,6 +332,14 @@ supplied one, it is left open. The instance also exposes `pglite`
 and a `bridgeId` field (a unique `symbol`) for filtering events
 from the [diagnostics channels](./stats.md#diagnostics-channels).
 
+Since 1.7 the pool supports pg's full query surface including
+portal suspension: `rows: N` query configs, pg-cursor, and
+pg-query-stream page results through the bridge as they would
+against a server. One shared-session caveat: an open cursor holds
+the PGlite session the way an open transaction does — in a
+`max > 1` pool, other clients queue until the cursor is exhausted,
+closed, or its client is released back to the pool.
+
 Most users should prefer [`PGliteBridge`](#pglitebridge), which
 wraps this class and adds schema/reset/snapshot lifecycle.
 

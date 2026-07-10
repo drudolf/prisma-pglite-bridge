@@ -23,7 +23,8 @@ CLI must be resolvable (`pnpm install` takes care of that).
 Every table below is reproducible from the commands in this file —
 re-run and diff. All latency tables (read path, operation breadth,
 multi-shape reads, transactions) were refreshed 2026-07-06 on all
-three machines; memory and cold start are from the 2026-07-02 run.
+three machines; memory and cold start were re-measured the same day
+on the two Apple machines.
 
 ### Methodology
 
@@ -326,29 +327,33 @@ near-tie on both Apple machines and a modest bridge win on Linux —
 the multi-row INSERT is engine work, not transport or durability.
 The `postgres-pg` write columns are a fair baseline as run.
 
-### Memory and cold start (2026-07-02)
+### Memory and cold start (2026-07-06)
 
 Quiesced post-setup baseline RSS, sampled in-workload peak, and
 pre-teardown retained growth during the leak-detect workload (1k
-mixed ops); one child process per adapter × repeat:
+mixed ops); one child process per adapter × repeat. Re-measured
+2026-07-06 at the 1.7 defaults (prepared statements + fast query
+path): everything reproduced the 2026-07-02 run within the noise
+bands described below — the 1.7 changes moved no memory number
+beyond ambient RSS-accounting variance.
 
 **Apple M3 Max:**
 
 | Adapter | baseline RSS | peak delta | retained delta | setup time |
 | ------------------------- | ------ | ------ | ------ | ------- |
-| `prisma-pglite-bridge` | 678MB | +109MB | +108MB | 865ms |
-| `pglite-prisma-adapter` | 784MB | +78MB | +23MB | 867ms |
-| `postgres-pg` client | **268MB** | +76MB | +45MB | **89ms** |
-| `postgres-pg` server tree | 110MB | +12MB | — | — |
+| `prisma-pglite-bridge` | 684MB | +98MB | +97MB | 736ms |
+| `pglite-prisma-adapter` | 741MB | +29MB | +15MB | 720ms |
+| `postgres-pg` client | **262MB** | +90MB | +40MB | **45ms** |
+| `postgres-pg` server tree | 105MB | +6MB | — | — |
 
 **Apple i9-9980HK:**
 
 | Adapter | baseline RSS | peak delta | retained delta | setup time |
 | ------------------------- | ------ | ------ | ------ | ------- |
-| `prisma-pglite-bridge` | 1611MB | +158MB | +157MB | 2013ms |
-| `pglite-prisma-adapter` | 1751MB | +195MB | +194MB | 2048ms |
-| `postgres-pg` client | **287MB** | +103MB | +53MB | **109ms** |
-| `postgres-pg` server tree | 111MB | +39MB | — | — |
+| `prisma-pglite-bridge` | 1603MB | +96MB | +95MB | 2037ms |
+| `pglite-prisma-adapter` | 1662MB | +121MB | +120MB | 2096ms |
+| `postgres-pg` client | **275MB** | +84MB | +35MB | **111ms** |
+| `postgres-pg` server tree | 111MB | +35MB | — | — |
 
 Read this honestly: PGlite keeps the entire database (WASM engine +
 data) inside your process — the baseline scales with your dataset,
@@ -376,8 +381,8 @@ baselines, the server tree, and setup times are the other
 reproducible signals. On Apple Silicon, RSS
 quiescence is best-effort (20s cap); treat single-digit-MB deltas as
 within a ~±15MB noise floor. Setup time is the WASM cold-start
-honesty item: ~0.9s (M3 Max) to ~2s (Intel) before the first query
-for this scenario's seed, vs ~0.1s for a Postgres connection.
+honesty item: ~0.7s (M3 Max) to ~2s (Intel) before the first query
+for this scenario's seed, vs ≤0.1s for a Postgres connection.
 
 ### What this means
 
