@@ -1,15 +1,23 @@
 // Row-limited queries drive pg's portal-suspension flow: Parse, Bind,
 // Describe, Execute(rows=N), Flush — Sync only follows CommandComplete.
 // pg-cursor and pg-query-stream use the same flow through stock pg
-// (PgBridgeClient passes Submittables straight through). Every test that
-// deadlocks on the current Sync-only pipeline flush carries an explicit
-// 5s timeout so the red run fails fast instead of hanging. Pools are
-// created per test so a deadlocked query cannot poison later tests.
+// (PgBridgeClient passes Submittables straight through). Every test would
+// hang forever if the pipeline regressed to a Sync-only flush, so each
+// carries an explicit DEADLOCK_GUARD_MS timeout to fail fast instead. Pools
+// are created per test so a deadlocked query cannot poison later tests.
 import type pg from 'pg';
 import Cursor from 'pg-cursor';
 import { describe, expect, it } from 'vitest';
 
 import { PgBridgePool } from '../../index.ts';
+
+// A regressed pipeline makes these tests hang, not fail, so each carries an
+// explicit timeout. Sized to clear the worst wall time under v8 coverage
+// instrumentation plus parallel-fork contention — the first test pays
+// PGlite's cold boot (~5s instrumented solo, more under load) — while
+// staying under the 30s global testTimeout so a real deadlock still
+// surfaces well before then.
+const DEADLOCK_GUARD_MS = 20_000;
 
 // pg's Query supports portal row limits via `rows` on the query config;
 // @types/pg does not declare the field, so widen the type locally.
@@ -28,7 +36,7 @@ const withPool = async (max: number, fn: (pool: PgBridgePool) => Promise<void>):
 
 describe('row-limited queries (portal suspension)', () => {
   it('resolves a rows-limited query across multiple portal suspensions', {
-    timeout: 5000,
+    timeout: DEADLOCK_GUARD_MS,
   }, async () => {
     await withPool(1, async (pool) => {
       const { rows } = await pool.query(rowLimited('select i from generate_series(1,7) g(i)', 2));
@@ -37,7 +45,7 @@ describe('row-limited queries (portal suspension)', () => {
   });
 
   it('completes in a single round when the row limit exceeds the result size', {
-    timeout: 5000,
+    timeout: DEADLOCK_GUARD_MS,
   }, async () => {
     await withPool(1, async (pool) => {
       const { rows } = await pool.query(rowLimited('select i from generate_series(1,3) g(i)', 10));
@@ -45,7 +53,9 @@ describe('row-limited queries (portal suspension)', () => {
     });
   });
 
-  it('pages through a pg-cursor until exhaustion and closes it', { timeout: 5000 }, async () => {
+  it('pages through a pg-cursor until exhaustion and closes it', {
+    timeout: DEADLOCK_GUARD_MS,
+  }, async () => {
     await withPool(1, async (pool) => {
       const client = await pool.connect();
       try {
@@ -67,7 +77,7 @@ describe('row-limited queries (portal suspension)', () => {
   });
 
   it('rejects a mid-rows error and keeps the client usable afterwards', {
-    timeout: 5000,
+    timeout: DEADLOCK_GUARD_MS,
   }, async () => {
     await withPool(1, async (pool) => {
       const client = await pool.connect();
@@ -85,7 +95,9 @@ describe('row-limited queries (portal suspension)', () => {
     });
   });
 
-  it('runs a rows-limited query inside an explicit transaction', { timeout: 5000 }, async () => {
+  it('runs a rows-limited query inside an explicit transaction', {
+    timeout: DEADLOCK_GUARD_MS,
+  }, async () => {
     await withPool(1, async (pool) => {
       const client = await pool.connect();
       try {
@@ -105,7 +117,7 @@ describe('row-limited queries (portal suspension)', () => {
   });
 
   it('serializes a second client behind an open cursor in a max:2 pool', {
-    timeout: 5000,
+    timeout: DEADLOCK_GUARD_MS,
   }, async () => {
     await withPool(2, async (pool) => {
       const clientA = await pool.connect();
@@ -149,7 +161,7 @@ describe('row-limited queries (portal suspension)', () => {
   });
 
   it('frees the session for other clients when a released client abandoned its cursor', {
-    timeout: 5000,
+    timeout: DEADLOCK_GUARD_MS,
   }, async () => {
     await withPool(2, async (pool) => {
       // Check out B up front: the abandoned client itself stays wedged
