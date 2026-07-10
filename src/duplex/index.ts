@@ -131,8 +131,9 @@ export class PGliteDuplex extends Duplex {
   private tornDown = false;
   /** Callbacks waiting for drain to process their data */
   private drainQueue: Array<(error?: Error | null) => void> = [];
-  /** Buffered EQP messages awaiting Sync */
-  private pipeline: Uint8Array[] = [];
+  /** Buffered EQP messages awaiting Sync. Cleared in place and reused —
+   *  never reassigned. */
+  private readonly pipeline: Uint8Array[] = [];
   /** Last RFQ status byte observed in a backend response — independent of
    *  SessionLock so rollback works for max=1 pools (no lock) and survives
    *  the in-flight BEGIN race (lock owner is set only on RFQ arrival). */
@@ -150,6 +151,25 @@ export class PGliteDuplex extends Duplex {
   private pendingProtocolCleanupCalls = 0;
   private protocolCleanupUnsupported = false;
   private readonly protocolCleanupNeeded: boolean;
+  /** Long-lived framer and per-call framing state. Safe as instance state
+   *  because `streamProtocol` invocations are strictly sequential per duplex:
+   *  its only callers are `processPreStartup`/`processMessages`, reachable
+   *  only from the single-flight `drain()` loop, which awaits each protocol
+   *  call before consuming more input. (`rollbackIfInTransaction` goes
+   *  through `pglite.query`, never `streamProtocol`.) */
+  private readonly framer: BackendMessageFramer;
+  /** Reused options bag for `execProtocolRawStream`. PGlite destructures it
+   *  immediately but retains the `onRawData` wrapper internally after the
+   *  call returns (its raw-writer slot is never cleared), so the callback
+   *  guards on `streamActive` to drop any out-of-call invocation instead of
+   *  corrupting the next call's stream. */
+  private readonly execOptions: {
+    syncToFs: boolean;
+    onRawData: (chunk: Uint8Array) => void;
+  };
+  private detectErrors = false;
+  private errSeen = false;
+  private streamActive = false;
   /** Resolves once the stream has fully torn down (post-`_final` rollback,
    *  post-`_destroy`). Single-shot, mirroring the `'close'` event. */
   readonly onClose: Promise<void>;
@@ -171,6 +191,33 @@ export class PGliteDuplex extends Duplex {
 
     this.duplexId = Symbol('duplex');
     this.onClose = new Promise<void>((resolve) => this.once('close', () => resolve()));
+
+    this.framer = new BackendMessageFramer({
+      rewriteSystemCatalogCharOids: this.rewriteSystemCatalogCharOids,
+      onChunk: (chunk) => {
+        /* c8 ignore next — race-only: tornDown becomes true mid-stream */
+        if (!this.tornDown && chunk.length > 0) {
+          this.push(chunk);
+        }
+      },
+      onErrorResponse: () => {
+        if (this.detectErrors) this.errSeen = true;
+      },
+      onReadyForQuery: (status) => {
+        this.lastSeenRfqStatus = status;
+        if (this.sessionLock) {
+          this.sessionLock.updateStatus(this.duplexId, status);
+        }
+      },
+    });
+    this.execOptions = {
+      syncToFs: this.syncToFs,
+      onRawData: (chunk: Uint8Array) => {
+        if (!this.streamActive) return;
+        this.pendingProtocolCleanupBytes += chunk.byteLength;
+        this.framer.write(chunk);
+      },
+    };
   }
 
   // ── Socket compatibility (called by pg's Connection) ──
@@ -348,7 +395,7 @@ export class PGliteDuplex extends Duplex {
     const message = this.input.consume(len);
 
     await this.runUntimed(async () => {
-      await this.streamProtocol(message, { detectErrors: false, suppressIntermediateRfq: false });
+      await this.streamProtocol(message, false, false);
     });
 
     this.phase = 'ready';
@@ -431,9 +478,7 @@ export class PGliteDuplex extends Duplex {
       }
 
       // SimpleQuery or other standalone message
-      await this.runWithTiming((detectErrors) =>
-        this.streamProtocol(message, { detectErrors, suppressIntermediateRfq: false }),
-      );
+      await this.runWithTiming((detectErrors) => this.streamProtocol(message, detectErrors, false));
     }
   }
 
@@ -449,7 +494,6 @@ export class PGliteDuplex extends Duplex {
    */
   private async flushPipeline(): Promise<void> {
     const messages = this.pipeline;
-    this.pipeline = [];
     let batch: Uint8Array;
     /* c8 ignore next 3 — flushPipeline only runs after Sync is appended */
     if (messages.length === 1) {
@@ -457,9 +501,12 @@ export class PGliteDuplex extends Duplex {
     } else {
       batch = this.tryContiguousPipelineBatch(messages) ?? this.concatPipeline(messages);
     }
-    await this.runWithTiming((detectErrors) =>
-      this.streamProtocol(batch, { detectErrors, suppressIntermediateRfq: true }),
-    );
+    // `batch` is fully materialized (or a view of the messages' shared
+    // backing buffer — never of the array), and no new EQP message can be
+    // appended mid-flush (the drain loop awaits this call before consuming
+    // more input), so the array can be cleared in place and reused.
+    messages.length = 0;
+    await this.runWithTiming((detectErrors) => this.streamProtocol(batch, detectErrors, true));
   }
 
   private tryContiguousPipelineBatch(messages: Uint8Array[]): Uint8Array | undefined {
@@ -571,29 +618,17 @@ export class PGliteDuplex extends Duplex {
    */
   private async streamProtocol(
     message: Uint8Array,
-    options: { detectErrors: boolean; suppressIntermediateRfq: boolean },
+    detectErrors: boolean,
+    suppressIntermediateRfq: boolean,
   ): Promise<boolean> {
-    const { detectErrors, suppressIntermediateRfq } = options;
-    let errSeen = false;
-    const framer = new BackendMessageFramer({
-      suppressIntermediateReadyForQuery: suppressIntermediateRfq,
-      rewriteSystemCatalogCharOids: this.rewriteSystemCatalogCharOids,
-      onChunk: (chunk) => {
-        /* c8 ignore next — race-only: tornDown becomes true mid-stream */
-        if (!this.tornDown && chunk.length > 0) {
-          this.push(chunk);
-        }
-      },
-      onErrorResponse: () => {
-        if (detectErrors) errSeen = true;
-      },
-      onReadyForQuery: (status) => {
-        this.lastSeenRfqStatus = status;
-        if (this.sessionLock) {
-          this.sessionLock.updateStatus(this.duplexId, status);
-        }
-      },
-    });
+    // Reset at the START of each call, not the end: a failed stream (a throw
+    // from execProtocolRawStream or from framer.write on malformed input)
+    // propagates before flush and may leave the framer mid-message. Resetting
+    // here makes every call independent of prior failures — equivalent to the
+    // fresh-framer-per-call this replaced.
+    this.detectErrors = detectErrors;
+    this.errSeen = false;
+    this.framer.reset(suppressIntermediateRfq);
 
     // Re-check readiness inside the runExclusive mutex: the caller could
     // have closed pglite between `runUnderRunExclusive`'s pre-check and
@@ -606,21 +641,15 @@ export class PGliteDuplex extends Duplex {
     // streaming path, then clear PGlite's internal parsed-message state with an
     // ignored Terminate frame. `throwOnError: false` keeps the cleanup
     // best-effort if PGlite changes how that frame is handled.
-    let rawBytes = 0;
     let streamFailed = false;
+    this.streamActive = true;
     try {
-      await this.pglite.execProtocolRawStream(message, {
-        syncToFs: this.syncToFs,
-        onRawData: (chunk: Uint8Array) => {
-          rawBytes += chunk.byteLength;
-          framer.write(chunk);
-        },
-      });
+      await this.pglite.execProtocolRawStream(message, this.execOptions);
     } catch (err) {
       streamFailed = true;
       throw err;
     } finally {
-      this.pendingProtocolCleanupBytes += rawBytes;
+      this.streamActive = false;
       this.pendingProtocolCleanupCalls++;
       if (
         this.protocolCleanupNeeded &&
@@ -635,8 +664,8 @@ export class PGliteDuplex extends Duplex {
       }
     }
 
-    framer.flush({ dropHeldReadyForQuery: this.tornDown });
-    return !errSeen;
+    this.framer.flush({ dropHeldReadyForQuery: this.tornDown });
+    return !this.errSeen;
   }
 
   private async clearPGliteProtocolMessages(): Promise<void> {

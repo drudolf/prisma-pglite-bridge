@@ -596,4 +596,134 @@ describe('BackendMessageFramer', () => {
       expect(readField(emitted, 0)).toEqual({ name: 'contype', oid: 25, size: -1 });
     });
   });
+
+  // reset() reuse contract — PGliteDuplex will hold ONE framer for its whole
+  // lifetime and call reset(suppress) at the start of each protocol call
+  // instead of constructing a fresh framer per call. reset() must clear all
+  // per-stream state (framing progress, held RFQ, RowDescription accumulator)
+  // and apply the suppression flag for the upcoming stream.
+  describe('reset', () => {
+    const writeSuppressedStream = (framer: BackendMessageFramer): void => {
+      // Mirrors 'drops intermediate RFQs and keeps the final one when
+      // suppression is enabled': split intermediate RFQ, data, final RFQ.
+      framer.write(RFQ_IDLE.subarray(0, 3));
+      framer.write(RFQ_IDLE.subarray(3));
+      framer.write(DATA);
+      framer.write(RFQ_FAILED);
+      framer.flush();
+    };
+
+    // Carries an intermediate RFQ so the suppression flag applied by reset()
+    // is observable in the collected bytes: suppression OFF must emit it,
+    // suppression ON would drop it.
+    const writeUnsuppressedStream = (framer: BackendMessageFramer): void => {
+      framer.write(DATA);
+      framer.write(RFQ_IDLE);
+      framer.write(DATA);
+      framer.write(RFQ_FAILED);
+      framer.flush();
+    };
+
+    it('a framer reused across two streams matches fresh framers configured per stream', () => {
+      const reused = makeHarness(true);
+      writeSuppressedStream(reused.framer);
+      const reusedFirst = collect(reused.outputs.splice(0));
+      reused.framer.reset(false);
+      writeUnsuppressedStream(reused.framer);
+      const reusedSecond = collect(reused.outputs.splice(0));
+
+      const freshSuppressed = makeHarness(true);
+      writeSuppressedStream(freshSuppressed.framer);
+      const freshUnsuppressed = makeHarness(false);
+      writeUnsuppressedStream(freshUnsuppressed.framer);
+
+      expect(reusedFirst).toEqual(collect(freshSuppressed.outputs));
+      expect(reusedSecond).toEqual(collect(freshUnsuppressed.outputs));
+    });
+
+    it('discards mid-message framing state', () => {
+      const { framer, outputs } = makeHarness();
+      // Type byte + 2 length bytes: header incomplete, nothing emitted yet.
+      framer.write(DATA.subarray(0, 3));
+      framer.reset(false);
+      framer.write(DATA);
+      framer.flush();
+      expect(collect(outputs)).toEqual(DATA);
+    });
+
+    it('recovers after write throws on a malformed length header', () => {
+      const { framer, outputs } = makeHarness();
+      // Slow path: the type byte is consumed before the malformed length
+      // arrives, so the throw leaves the framer stuck mid-message.
+      framer.write(new Uint8Array([0x44]));
+      expect(() => framer.write(new Uint8Array([0x00, 0x00, 0x00, 0x03]))).toThrow(
+        /Malformed backend message length: 3/,
+      );
+      framer.reset(false);
+      framer.write(DATA);
+      framer.flush();
+      expect(collect(outputs)).toEqual(DATA);
+    });
+
+    it('drops a held suppressed RFQ from the previous stream', () => {
+      const { framer, outputs } = makeHarness(true);
+      framer.write(DATA);
+      framer.write(RFQ_IDLE);
+      // flush() intentionally NOT called: the final RFQ ('I') is still held.
+      expect(collect(outputs.splice(0))).toEqual(DATA);
+
+      framer.reset(true);
+      framer.write(DATA);
+      framer.write(RFQ_FAILED);
+      // Suppression re-applied by reset(true): the new final RFQ is held too.
+      expect(collect(outputs)).toEqual(DATA);
+      framer.flush();
+
+      const emitted = collect(outputs);
+      // Only the second stream's RFQ appears — status 'E' (0x45), never the
+      // held 'I' (0x49) from the first stream.
+      expect(emitted).toEqual(collect([DATA, RFQ_FAILED]));
+      expect(emitted[emitted.length - 1]).toBe(0x45);
+    });
+
+    it('restores every logical field to the fresh framer state', () => {
+      // TS `private` fields are plain JS own properties at runtime, so a
+      // structural comparison guards reset() against forgetting a field added
+      // in the future. `headerScratch` and `heldRfq` are excluded BY KEY, not
+      // by type: they are preallocated scratch buffers whose CONTENTS are not
+      // logical state (every read is gated by headerBytesRead / rfqBytesRead).
+      // Excluding by type (e.g. skipping every Uint8Array/Buffer) would
+      // wrongly skip a stale `rowDescBuffer`, which MUST be reset to
+      // undefined — this comparison has to catch it if it is not.
+      const scratchBufferKeys = new Set(['headerScratch', 'heldRfq']);
+      const logicalState = (framer: BackendMessageFramer): Record<string, unknown> =>
+        Object.fromEntries(
+          Object.entries(framer).filter(
+            ([key, value]) => typeof value !== 'function' && !scratchBufferKeys.has(key),
+          ),
+        );
+
+      const makeFramer = (): BackendMessageFramer =>
+        new BackendMessageFramer({
+          suppressIntermediateReadyForQuery: false,
+          onChunk: () => {},
+        });
+      const fresh = makeFramer();
+      const framer = makeFramer();
+
+      // Partial RFQ: dirties messageType, headerBytesRead, and rfqBytesRead.
+      framer.write(RFQ_IDLE.subarray(0, 3));
+      framer.reset(false);
+      expect(logicalState(framer)).toEqual(logicalState(fresh));
+
+      // RowDescription split mid-payload: dirties payloadBytesRemaining,
+      // rowDescBuffer, and rowDescOffset.
+      const frame = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
+      const splitAt = Math.floor(frame.length / 2);
+      expect(splitAt).toBeGreaterThan(5); // split must land inside the payload
+      framer.write(frame.subarray(0, splitAt));
+      framer.reset(false);
+      expect(logicalState(framer)).toEqual(logicalState(fresh));
+    });
+  });
 });

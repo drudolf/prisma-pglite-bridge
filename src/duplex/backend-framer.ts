@@ -31,7 +31,7 @@ type BackendMessageFramerOptions = {
  * @internal — exported for testing only
  */
 export class BackendMessageFramer {
-  private readonly suppressIntermediateReadyForQuery: boolean;
+  private suppressIntermediateReadyForQuery: boolean;
   private readonly rewriteSystemCatalogCharOids: boolean;
   private readonly onChunk: (chunk: Uint8Array) => void;
   private readonly onErrorResponse?: () => void;
@@ -53,6 +53,23 @@ export class BackendMessageFramer {
     this.onChunk = options.onChunk;
     this.onErrorResponse = options.onErrorResponse;
     this.onReadyForQuery = options.onReadyForQuery;
+  }
+
+  /**
+   * Prepare the framer for a new protocol stream, discarding any state left
+   * by the previous one — a mid-message abort after a thrown `write`, or a
+   * held suppressed ReadyForQuery that was never flushed. Every mutable
+   * per-stream field must be cleared here; the structural completeness test
+   * in backend-framer.test.ts guards against new fields being forgotten.
+   */
+  reset(suppressIntermediateReadyForQuery: boolean): void {
+    this.suppressIntermediateReadyForQuery = suppressIntermediateReadyForQuery;
+    this.messageType = undefined;
+    this.headerBytesRead = 0;
+    this.payloadBytesRemaining = 0;
+    this.rfqBytesRead = 0;
+    this.rowDescBuffer = undefined;
+    this.rowDescOffset = 0;
   }
 
   write(chunk: Uint8Array): void {

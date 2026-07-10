@@ -792,6 +792,104 @@ describe('PGliteDuplex error paths', () => {
 
     duplex.destroy();
   });
+
+  it('recovers on the next protocol call after a framing error in the previous response', async () => {
+    // Regression guard for the single-reused-framer refactor: a protocol call
+    // whose response bytes throw mid-frame must not poison the next call.
+    // This passes TODAY because streamProtocol builds a fresh
+    // BackendMessageFramer per call; once the duplex reuses one framer,
+    // reset() at the start of each call must preserve this behavior.
+    let calls = 0;
+    const pglite = createMockPGlite({
+      execProtocolRawStream: vi.fn(async (_message, options) => {
+        calls += 1;
+        if (calls === 1) {
+          // Deliver the type byte alone so the framer enters mid-message
+          // state, then a malformed length header (< 4) that makes it throw.
+          options.onRawData(Buffer.from([0x44]));
+          options.onRawData(Buffer.from([0x00, 0x00, 0x00, 0x03]));
+          return;
+        }
+        options.onRawData(RFQ_IDLE_MESSAGE);
+      }),
+    });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    // duplex.write() auto-destroys the stream once a write callback errors,
+    // so drive _write directly (same pattern as the drain-queueing test
+    // above) to observe the duplex's own per-call isolation.
+    const rawWriteAndAwait = (chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => {
+        duplex._write(chunk, 'utf-8', (err) => resolve(err ?? undefined));
+      });
+
+    const firstErr = await rawWriteAndAwait(startupBytes());
+    expect(firstErr?.message).toMatch(/Malformed backend message length: 3/);
+
+    // The first startup message was consumed but the error kept the phase at
+    // pre_startup, so a second startup write is the next protocol call.
+    const secondErr = await rawWriteAndAwait(startupBytes());
+    expect(secondErr).toBeUndefined();
+
+    const emitted: Buffer = duplex.read() ?? Buffer.alloc(0);
+    expect(emitted.equals(RFQ_IDLE_MESSAGE)).toBe(true);
+
+    duplex.destroy();
+  });
+
+  it('drops onRawData invocations that arrive outside an active protocol call', async () => {
+    // PGlite retains the onRawData callback internally after
+    // execProtocolRawStream resolves. Once the duplex passes a single
+    // long-lived callback, bytes delivered outside an active protocol call
+    // must be dropped instead of reaching the framer. Red today: the stale
+    // per-call callback still forwards such bytes to its old framer, which
+    // pushes them into the stream.
+    const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+    const commandComplete = (tag: string): Buffer => {
+      const payload = Buffer.from(`${tag}\0`);
+      const buf = Buffer.alloc(5 + payload.length);
+      buf[0] = 0x43; // 'C'
+      buf.writeUInt32BE(4 + payload.length, 1);
+      payload.copy(buf, 5);
+      return buf;
+    };
+
+    let capturedOnRawData: ((chunk: Uint8Array) => void) | undefined;
+    const pglite = createMockPGlite({
+      execProtocolRawStream: vi.fn(async (_message, options) => {
+        capturedOnRawData = options.onRawData;
+        options.onRawData(RFQ_IDLE_MESSAGE);
+      }),
+    });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+    const received: Buffer[] = [];
+    duplex.on('data', (chunk: Buffer) => received.push(chunk));
+
+    // Get past startup so later writes exercise the regular message path.
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await settle();
+    const afterStartup = Buffer.concat(received);
+    expect(afterStartup.equals(RFQ_IDLE_MESSAGE)).toBe(true);
+    expect(capturedOnRawData).toBeDefined();
+
+    // Stale delivery outside any active call: a well-formed CommandComplete
+    // must NOT surface as 'data' on the duplex.
+    capturedOnRawData?.(commandComplete('SELECT 1'));
+    await settle();
+    await settle();
+    expect(Buffer.concat(received).equals(afterStartup)).toBe(true);
+
+    // The duplex still round-trips a regular protocol call afterwards.
+    await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
+    await settle();
+    const afterQuery = Buffer.concat(received);
+    expect(afterQuery.length).toBe(afterStartup.length + RFQ_IDLE_MESSAGE.length);
+    expect(afterQuery.subarray(afterStartup.length).equals(RFQ_IDLE_MESSAGE)).toBe(true);
+
+    duplex.destroy();
+  });
 });
 
 describe('PGliteDuplex RowDescription rewrite option', () => {
