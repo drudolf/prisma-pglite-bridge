@@ -4,6 +4,12 @@ import { PGliteDuplex } from '../duplex';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import type { SessionLock } from '../utils/session-lock.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
+import {
+  FastQuery,
+  type FastQueryField,
+  type FastQueryResult,
+  type FastQueryTypes,
+} from './fast-query.ts';
 
 export interface PgBridgeClientOptions {
   pglite: PGlite | PGliteInterface;
@@ -14,6 +20,8 @@ export interface PgBridgeClientOptions {
   timeout?: number;
   /** Forwarded to {@link PGliteDuplex}; see PGliteDuplexOptions.protocolCleanupNeeded. */
   protocolCleanupNeeded?: boolean;
+  /** See PgBridgePoolOptions.fastQueryPath. Default `true`. */
+  fastQueryPath?: boolean;
 }
 
 type PgBridgeClientConfig = pg.ClientConfig & {
@@ -22,6 +30,10 @@ type PgBridgeClientConfig = pg.ClientConfig & {
 
 export class PgBridgeClient extends pg.Client {
   private querySubmissionChain?: Promise<void>;
+  /** Result-field metadata per statement name, mirroring the lifetime of
+   *  `connection.parsedStatements`: a recycled client starts both empty. */
+  readonly #fieldsCache = new Map<string, FastQueryField[]>();
+  readonly #fastQueryPath: boolean;
 
   static readonly OptionsKey: unique symbol = Symbol('PgBridgeClientOptions');
 
@@ -38,6 +50,8 @@ export class PgBridgeClient extends pg.Client {
       database: 'postgres',
       stream: () => new PGliteDuplex(bridge.pglite, bridge),
     });
+
+    this.#fastQueryPath = bridge.fastQueryPath ?? true;
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: satisfy pg.Client.query's overload union
@@ -83,16 +97,21 @@ export class PgBridgeClient extends pg.Client {
       };
     }
 
+    // The fast path rides the SAME submission chain as stock object-form
+    // queries — a FastQuery must never jump ahead of a chained pending
+    // stock query, or mixed-path call order would invert.
+    const doSubmit = this.#fastSubmit(args) ?? submit;
+
     const prior = this.querySubmissionChain;
     let p: Promise<unknown>;
     if (prior === undefined) {
       try {
-        p = submit();
+        p = doSubmit();
       } catch (err) {
         return Promise.reject(err);
       }
     } else {
-      p = prior.then(submit);
+      p = prior.then(doSubmit);
     }
     let done: Promise<void>;
     const clearChain = () => {
@@ -103,5 +122,47 @@ export class PgBridgeClient extends pg.Client {
     done = p.then(clearChain, clearChain);
     this.querySubmissionChain = done;
     return p;
+  }
+
+  /**
+   * Build a fast-path submitter when the (already types-wrapped) arguments
+   * match the exact shape `@prisma/adapter-pg` emits for a statement the
+   * name generator cached: named + `rowMode: 'array'` + usable `types`.
+   * Returns `undefined` for every other shape — those run the stock pg
+   * Query path unchanged. The Submittable and callback forms were already
+   * routed before this is consulted.
+   */
+  #fastSubmit(args: unknown[]): (() => Promise<FastQueryResult>) | undefined {
+    if (!this.#fastQueryPath) return undefined;
+    const config = args[0];
+    if (!isObject(config)) return undefined;
+
+    const values = args[1] ?? config.values;
+    const { name, text, types } = config;
+    const eligible =
+      args.length <= 2 &&
+      typeof name === 'string' &&
+      name !== '' &&
+      typeof text === 'string' &&
+      config.rowMode === 'array' &&
+      (values === undefined || Array.isArray(values)) &&
+      isTypesLike(types) &&
+      // Disqualifiers stock pg gives meaning to that FastQuery does not.
+      ![config.binary, config.rows, config.portal, config.queryMode, config.callback].some(Boolean);
+    if (!eligible) return undefined;
+
+    const fastQuery = new FastQuery(
+      {
+        name: name as string,
+        text: text as string,
+        values: values as unknown[] | undefined,
+        types: types as FastQueryTypes,
+      },
+      this.#fieldsCache,
+    );
+    return () => {
+      super.query(fastQuery as unknown as pg.Submittable);
+      return fastQuery.promise;
+    };
   }
 }

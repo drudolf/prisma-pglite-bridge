@@ -1,4 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
+import pg from 'pg';
 import { describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
@@ -278,6 +279,284 @@ describe('PgBridgePool — rollback on forced client release', () => {
       await pool.end();
       await local.close();
     }
+  });
+});
+
+// Red-phase TDD spec for the FastQuery fast path in PgBridgeClient.
+//
+// `fastQueryPath` (default `true`) does not exist on PgBridgePoolOptions
+// yet — the type errors and the failing describe-skip / plain-object
+// assertions below are the expected red until the fast path lands. The
+// fast path activates only for the exact shape @prisma/adapter-pg emits
+// when statement caching names a query: non-empty `name`, string `text`,
+// `rowMode: 'array'`, a `types.getTypeParser` function, values undefined
+// or an Array, and none of binary/rows/portal/queryMode/callback/
+// Submittable. Everything else stays on the stock pg path.
+describe('PgBridgePool — fastQueryPath', () => {
+  // Fast-shape query, adapter-pg style.
+  const fastShapeQuery = () => ({
+    name: 'fastq_shape',
+    text: 'SELECT $1::int AS n',
+    values: [7],
+    rowMode: 'array' as const,
+    types: pg.types,
+  });
+
+  it('skips Describe on the warm execution of a named array-mode query', async () => {
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    const pool = new PgBridgePool({ pglite });
+    try {
+      const client = await pool.connect();
+      try {
+        describeSpy.mockClear();
+        const first = await client.query(fastShapeQuery());
+        const second = await client.query(fastShapeQuery());
+
+        expect(first.rows).toEqual([[7]]);
+        expect(second.rows).toEqual([[7]]);
+        // Cold execution describes once; the warm execution reuses the
+        // cached fields and must not describe again.
+        expect(describeSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('describes on every execution when fastQueryPath is disabled', async () => {
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    const pool = new PgBridgePool({ pglite, fastQueryPath: false });
+    try {
+      const client = await pool.connect();
+      try {
+        describeSpy.mockClear();
+        const first = await client.query(fastShapeQuery());
+        const second = await client.query(fastShapeQuery());
+
+        expect(first.rows).toEqual([[7]]);
+        expect(second.rows).toEqual([[7]]);
+        expect(describeSpy).toHaveBeenCalledTimes(2);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('returns a plain result object on the fast path, not a pg Result', async () => {
+    const pool = new PgBridgePool({ pglite });
+    try {
+      const result = await pool.query(fastShapeQuery());
+
+      expect(result.constructor.name).not.toBe('Result');
+      expect('rowAsArray' in result).toBe(false);
+      // Exactly the FastQueryResult shape — no pg.Result internals.
+      expect(result).toEqual({
+        rows: [[7]],
+        fields: [expect.objectContaining({ name: 'n', dataTypeID: 23 })],
+        rowCount: 1,
+        command: 'SELECT',
+        oid: null,
+      });
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('returns a stock pg Result when fastQueryPath is disabled', async () => {
+    const pool = new PgBridgePool({ pglite, fastQueryPath: false });
+    try {
+      const result = await pool.query(fastShapeQuery());
+
+      expect(result.constructor.name).toBe('Result');
+      expect('rowAsArray' in result).toBe(true);
+      expect(result.rows).toEqual([[7]]);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('routes unnamed queries through the stock path (describe on every execution)', async () => {
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    const pool = new PgBridgePool({ pglite });
+    try {
+      const client = await pool.connect();
+      try {
+        describeSpy.mockClear();
+        // No `name` → stock path even on a default (fast-path-enabled) pool.
+        const unnamed = {
+          text: 'SELECT $1::int AS n',
+          values: [7],
+          rowMode: 'array' as const,
+          types: pg.types,
+        };
+        const first = await client.query(unnamed);
+        const second = await client.query(unnamed);
+
+        expect(describeSpy).toHaveBeenCalledTimes(2);
+        expect(first.constructor.name).toBe('Result');
+        expect(second.constructor.name).toBe('Result');
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('keeps an unawaited stock query and a fast-shape query ordered on one client', async () => {
+    const pool = new PgBridgePool({ pglite });
+    try {
+      const client = await pool.connect();
+      try {
+        // Object-form stock query (no name/rowMode → stock path) followed
+        // WITHOUT awaiting by a fast-shape query: the client's submission
+        // chain must keep mixed-path queries ordered — both resolve.
+        const stockPromise = client.query({ text: 'SELECT 1 AS one' });
+        const fastPromise = client.query(fastShapeQuery());
+
+        const [stockResult, fastResult] = await Promise.all([stockPromise, fastPromise]);
+        expect(stockResult.rows).toEqual([{ one: 1 }]);
+        expect(fastResult.rows).toEqual([[7]]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
+  describe('activation predicate — every rejected leg runs the stock path', () => {
+    const isStockResult = (result: unknown): boolean =>
+      (result as { constructor: { name: string } }).constructor.name === 'Result';
+
+    it('accepts positional values (two-argument form) on the fast path', async () => {
+      const pool = new PgBridgePool({ pglite });
+      try {
+        const client = await pool.connect();
+        try {
+          const { name: _ignored, ...cfg } = fastShapeQuery();
+          const result = await client.query(
+            { ...cfg, name: 'fq_positional', values: undefined },
+            [7],
+          );
+          expect(isStockResult(result)).toBe(false);
+          expect(result.rows).toEqual([[7]]);
+        } finally {
+          client.release();
+        }
+      } finally {
+        await pool.end();
+      }
+    });
+
+    it('rejects a third non-callback argument', async () => {
+      // Must go through client.query directly — pool.query wraps the promise
+      // in a callback, collapsing the argument list before the predicate.
+      const pool = new PgBridgePool({ pglite });
+      try {
+        const client = await pool.connect();
+        try {
+          const result = await (
+            client.query as unknown as (a: unknown, b: unknown, c: unknown) => Promise<unknown>
+          )({ ...fastShapeQuery(), name: 'fq_threearg' }, [7], undefined);
+          expect(isStockResult(result)).toBe(true);
+        } finally {
+          client.release();
+        }
+      } finally {
+        await pool.end();
+      }
+    });
+
+    it('rejects an empty statement name', async () => {
+      const pool = new PgBridgePool({ pglite });
+      try {
+        const result = await pool.query({ ...fastShapeQuery(), name: '' });
+        expect(isStockResult(result)).toBe(true);
+      } finally {
+        await pool.end();
+      }
+    });
+
+    it('rejects a name-only re-execution (no text — a legitimate stock pattern)', async () => {
+      const pool = new PgBridgePool({ pglite });
+      try {
+        const client = await pool.connect();
+        try {
+          // Prepare via the fast path, then re-execute by name alone.
+          const prepared = await client.query({ ...fastShapeQuery(), name: 'fq_reuse' });
+          expect(isStockResult(prepared)).toBe(false);
+
+          const reused = await client.query({
+            name: 'fq_reuse',
+            values: [7],
+            rowMode: 'array' as const,
+            types: pg.types,
+          } as never);
+          expect(isStockResult(reused)).toBe(true);
+          expect((reused as { rows: unknown[] }).rows).toEqual([[7]]);
+        } finally {
+          client.release();
+        }
+      } finally {
+        await pool.end();
+      }
+    });
+
+    it('rejects a missing rowMode', async () => {
+      const pool = new PgBridgePool({ pglite });
+      try {
+        const { rowMode: _ignored, ...cfg } = fastShapeQuery();
+        const result = await pool.query({ ...cfg, name: 'fq_norowmode' } as never);
+        expect(isStockResult(result)).toBe(true);
+      } finally {
+        await pool.end();
+      }
+    });
+
+    it('rejects non-array values (stock pg then reports its own error)', async () => {
+      const pool = new PgBridgePool({ pglite });
+      try {
+        await expect(
+          pool.query({ ...fastShapeQuery(), name: 'fq_badvalues', values: 'nope' } as never),
+        ).rejects.toThrow(/Query values must be an array/);
+      } finally {
+        await pool.end();
+      }
+    });
+
+    it('rejects a missing types object', async () => {
+      const pool = new PgBridgePool({ pglite });
+      try {
+        const { types: _ignored, ...cfg } = fastShapeQuery();
+        const result = await pool.query({ ...cfg, name: 'fq_notypes' } as never);
+        expect(isStockResult(result)).toBe(true);
+      } finally {
+        await pool.end();
+      }
+    });
+
+    it('rejects stock-pg disqualifiers such as an explicit queryMode', async () => {
+      // `rows` (a row limit) would be the other natural disqualifier to
+      // exercise, but stock pg drives row-limited queries with Flush, which
+      // the duplex EQP-buffers until Sync — a pre-existing bridge
+      // limitation independent of the fast path.
+      const pool = new PgBridgePool({ pglite });
+      try {
+        const result = await pool.query({
+          ...fastShapeQuery(),
+          name: 'fq_qmode',
+          queryMode: 'extended',
+        } as never);
+        expect(isStockResult(result)).toBe(true);
+      } finally {
+        await pool.end();
+      }
+    });
   });
 });
 

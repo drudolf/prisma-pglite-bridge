@@ -75,6 +75,21 @@ export interface PgBridgePoolOptions
    * positive value to restore `pg.Pool`'s usual eviction behavior.
    */
   idleTimeoutMillis?: number;
+
+  /**
+   * Route queries matching the adapter-pg shape — named statement,
+   * `rowMode: 'array'`, caller-supplied `types` — through a lean pg
+   * Submittable that caches result-field metadata per statement and skips
+   * the Describe round-trip on repeat executions (~30% lower point-lookup
+   * latency and a much tighter worst case in the reference probe). Result
+   * values are identical; the resolved object is a plain
+   * `{ rows, fields, rowCount, command, oid }` rather than a `pg.Result`
+   * instance. Every other query shape uses the stock pg path. Set `false`
+   * to route everything through stock pg. Neither the bridge nor
+   * adapter-pg uses pg's query-cancellation API, which the fast path does
+   * not implement. Default `true`.
+   */
+  fastQueryPath?: boolean;
 }
 
 // Live pools per PGlite instance. Concurrent pools on one instance are
@@ -140,6 +155,7 @@ export class PgBridgePool extends pg.Pool {
     timeout,
     syncToFs,
     idleTimeoutMillis = 0,
+    fastQueryPath,
   }: PgBridgePoolOptions & { telemetry?: TelemetrySink } = {}) {
     const resolvedPglite = pglite ?? new PGlite();
 
@@ -158,6 +174,7 @@ export class PgBridgePool extends pg.Pool {
         syncToFs: resolveSyncToFs(resolvedPglite, syncToFs),
         timeout,
         protocolCleanupNeeded: pgliteNeedsProtocolCleanup(),
+        fastQueryPath,
       },
     };
 
