@@ -12,11 +12,13 @@ const SYSTEM_SCHEMA_EXCLUSION = `schemaname NOT IN ('pg_catalog', 'information_s
 const USER_TABLES_WHERE = `${SYSTEM_SCHEMA_EXCLUSION}
        AND tablename NOT LIKE '_prisma%'`;
 
-const escapeLiteral = (s: string): string => `'${s.replace(/'/g, "''")}'`;
-
 const SNAPSHOT_SCHEMA_IDENT = quoteIdent(SNAPSHOT_SCHEMA);
 const SNAPSHOT_SCHEMA_NEW_IDENT = quoteIdent(SNAPSHOT_SCHEMA_NEW);
-const SNAPSHOT_SCHEMA_LITERAL = escapeLiteral(SNAPSHOT_SCHEMA);
+// SNAPSHOT_SCHEMA is a fixed internal identifier (no quotes) — safe to embed
+// as a SQL string literal. Dynamic catalog values (schema/table names) are
+// never escaped by hand: they go through bind parameters or the DB's own
+// quote_ident()/quote_literal() at their use site.
+const SNAPSHOT_SCHEMA_LITERAL = `'${SNAPSHOT_SCHEMA}'`;
 
 /**
  * Snapshot helpers backing `PGliteBridge`'s `snapshotDb` / `resetDb` /
@@ -97,8 +99,9 @@ export class SnapshotManager {
         await this.#pglite.exec(
           `CREATE TABLE ${SNAPSHOT_SCHEMA_NEW_IDENT}.${quoteIdent(snapName)} AS SELECT * FROM ${qualified}`,
         );
-        await this.#pglite.exec(
-          `INSERT INTO ${SNAPSHOT_SCHEMA_NEW_IDENT}.__tables VALUES (${escapeLiteral(snapName)}, ${escapeLiteral(schemaname)}, ${escapeLiteral(tablename)})`,
+        await this.#pglite.query(
+          `INSERT INTO ${SNAPSHOT_SCHEMA_NEW_IDENT}.__tables VALUES ($1, $2, $3)`,
+          [snapName, schemaname, tablename],
         );
       }
 

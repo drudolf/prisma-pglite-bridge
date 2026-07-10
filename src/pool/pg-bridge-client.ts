@@ -5,7 +5,12 @@ import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import type { SessionLock } from '../utils/session-lock.ts';
 import { createStatementNameGenerator } from '../utils/statement-names.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
-import { FastQuery, type FastQueryField, type FastQueryResult } from './fast-query.ts';
+import {
+  FastQuery,
+  type FastQueryField,
+  type FastQueryResult,
+  type PgParsedStatements,
+} from './fast-query.ts';
 
 export interface PgBridgeClientOptions {
   pglite: PGlite | PGliteInterface;
@@ -294,7 +299,7 @@ export class PgBridgeClient extends pg.Client {
    *  the caller's job (the dealloc intercept in query() iterates the
    *  liveClients registry). */
   #clearStatementCaches(scope: { all: true } | { name: string }): void {
-    const ps = (this as unknown as { connection?: { parsedStatements?: Record<string, string> } })
+    const ps = (this as unknown as { connection?: { parsedStatements?: PgParsedStatements } })
       .connection?.parsedStatements;
     if ('all' in scope) {
       /* v8 ignore next — ps exists on every pg Connection; guard covers pg internals drift */

@@ -14,9 +14,15 @@ type Parser = (raw: string) => unknown;
 
 export type FastQueryTypes = { getTypeParser: (oid: number, format?: string) => Parser };
 
+/** pg's internal per-connection map of named prepared statements. `pg` uses
+ *  it to skip Parse on repeat named-statement calls; the `pg seam contract`
+ *  test in fast-query.test.ts is the drift tripwire for both this class and
+ *  `PgBridgeClient`'s DEALLOCATE eviction. */
+export type PgParsedStatements = Record<string, string | undefined>;
+
 type FastQueryConnection = {
   stream: { cork?: () => void; uncork?: () => void };
-  parsedStatements: Record<string, string | undefined>;
+  parsedStatements: PgParsedStatements;
   parse: (query: { text: string; name: string; types: number[] }) => void;
   bind: (config: {
     portal: string;
