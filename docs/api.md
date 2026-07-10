@@ -86,6 +86,7 @@ const bridge = new PGliteBridge({
   max: 1,                     // pool connections (default: 1)
   statsLevel: 'off',          // 'off' | 'basic' | 'full' (default: 'off')
   syncToFs: 'auto',           // 'auto' | true | false (default: 'auto')
+  preparedStatements: true,   // cache queries as named statements (default: on at max 1)
 });
 
 // Caller-supplied PGlite (custom dataDir, extensions, …) — caller owns lifecycle:
@@ -95,7 +96,13 @@ const bridge = new PGliteBridge({ pglite });
 // bridge.close() closes the pool only; call pglite.close() yourself when done
 ```
 
-The constructor takes a `PGliteBridgeOptions` (also exported). To
+The constructor takes a `PGliteBridgeOptions` (also exported).
+Prepared-statement caching is on by default at `max: 1` — each Prisma
+query shape is parsed and planned once per session; statements
+survive `resetDb`. Pass `preparedStatements: false` when other
+pools/bridges share this bridge's live PGlite instance, or when you
+run result-type-changing DDL mid-session — see
+[troubleshooting](./troubleshooting.md) for both symptoms. To
 apply schema SQL, pass `bridge.pglite` to
 [`pushMigrations`](#pushmigrationspglite-options) or `bridge.adapter`
 to [`pushSchema`](#pushschemaadapter-options) — see
@@ -309,8 +316,16 @@ const pool2 = new PgBridgePool({ pglite });
 ```
 
 The constructor takes a `PgBridgePoolOptions` (also exported)
-accepting `pglite` (optional), `max`, `bridgeId`, `syncToFs`, and
-`timeout`. Use `pool.end()` to shut the pool down. Ownership
+accepting `pglite` (optional), `max`, `bridgeId`, `syncToFs`,
+`timeout`, `idleTimeoutMillis` (default `0`: in-process clients are
+never evicted, so their prepared-statement state survives idle gaps),
+and `fastQueryPath` (default `true`: named `rowMode: 'array'` queries
+with a caller-supplied `types` — the shape `@prisma/adapter-pg`
+emits — run through a lean submittable that skips the Describe
+round-trip on repeat executions; such queries resolve to a plain
+`{ rows, fields, rowCount, command, oid }` object instead of a
+`pg.Result` instance, and every other shape uses the stock pg path).
+Use `pool.end()` to shut the pool down. Ownership
 follows the same rule as `PGliteBridge` and `PGliteServer`: when
 the pool created its own PGlite, `end()` closes it; when you
 supplied one, it is left open. The instance also exposes `pglite`

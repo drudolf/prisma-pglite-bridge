@@ -22,6 +22,12 @@ export interface PgBridgePoolOptions
    * PGlite instance to back the pool. When omitted the pool creates its own
    * in-memory `PGlite` and owns its lifecycle — `end()` shuts it down. When
    * provided the caller owns the lifecycle — `end()` leaves it open.
+   *
+   * One live pool per instance: a second concurrent pool on the same PGlite
+   * is unsupported and emits `PGliteBridgeSharedInstanceWarning` —
+   * transactions from different pools can interleave, and each new pool's
+   * connect-time cleanup deallocates the others' cached prepared statements
+   * (queries then fail with Postgres error 26000).
    */
   pglite?: PGlite | PGliteInterface;
 

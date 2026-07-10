@@ -1,22 +1,23 @@
+/** Statement shapes that produce a reusable plan. DDL, `SET`, and
+ *  transaction control run unnamed — `pushSchema` issues DDL through the
+ *  adapter, and naming those one-shot texts would waste cache slots and
+ *  session memory on statements that never execute twice. */
+const CACHEABLE_SQL = /^\s*(?:select|insert|update|delete|with|merge|values)\b/i;
+
 /**
  * Statement-name generator for `@prisma/adapter-pg`'s
  * `statementNameGenerator` option: a stable `ppb_<n>` name per distinct
  * SQL text, so the engine parses and plans each query shape once per
- * session and only binds/executes thereafter.
- *
- * Only statements that produce a reusable plan are named — DDL, `SET`,
- * and transaction control run unnamed. `pushSchema` issues DDL through
- * the adapter, and naming those one-shot texts would waste cache slots
- * and session memory on statements that never execute twice.
+ * session and only binds/executes thereafter. Only statements matching
+ * {@link CACHEABLE_SQL} are named.
  *
  * Bounded and frozen, not LRU — the first `limit` distinct texts keep
  * their names for the generator's lifetime; texts beyond that run
- * unnamed so the cache cannot grow without bound under pathological
- * workloads (e.g. dynamically generated SQL). Shape-heavy schemas that
- * exceed the limit should raise it.
+ * unnamed (correct, just uncached) so the cache cannot grow without
+ * bound under pathological workloads (e.g. dynamically generated SQL).
+ * `PGliteBridge` uses the default limit; it is not exposed as a public
+ * knob.
  */
-const CACHEABLE_SQL = /^\s*(?:select|insert|update|delete|with|merge|values)\b/i;
-
 export const createStatementNameGenerator = (
   limit = 500,
 ): ((query: { sql: string }) => string | undefined) => {

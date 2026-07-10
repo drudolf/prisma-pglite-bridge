@@ -167,6 +167,8 @@ export class PGliteDuplex extends Duplex {
     syncToFs: boolean;
     onRawData: (chunk: Uint8Array) => void;
   };
+  /** Per-call stream state (with `errSeen` and `streamActive` below) — safe
+   *  as instance fields for the same sequential-calls reason as `framer`. */
   private detectErrors = false;
   private errSeen = false;
   private streamActive = false;
@@ -609,12 +611,16 @@ export class PGliteDuplex extends Duplex {
 
   /**
    * Sends a message (or pipelined batch) to PGlite and pushes the raw protocol
-   * response to the stream.
+   * response to the stream. Must be called inside runExclusive.
    *
-   * For pipelined Extended Query batches, pass `suppressIntermediateRfq`
-   * so only the final ReadyForQuery reaches the client.
-   *
-   * Must be called inside runExclusive.
+   * @param message  One standalone frontend message, or a concatenated EQP
+   *   batch ending in Sync.
+   * @param detectErrors  Watch the response for ErrorResponse frames. Set
+   *   only when a telemetry or diagnostics consumer needs the outcome.
+   * @param suppressIntermediateRfq  Hold back all but the final ReadyForQuery
+   *   — pass for pipelined Extended Query batches.
+   * @returns `false` when `detectErrors` was set and an ErrorResponse was
+   *   observed (protocol-level failure without a throw); `true` otherwise.
    */
   private async streamProtocol(
     message: Uint8Array,

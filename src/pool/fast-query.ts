@@ -1,27 +1,3 @@
-/**
- * FastQuery — a lean pg Submittable for the exact query shape
- * `@prisma/adapter-pg` emits when statement caching names a query: named
- * statement, `rowMode: 'array'`, caller-supplied `types`, extended protocol.
- *
- * Compared to pg's stock Query it skips the Describe round-trip on repeat
- * executions (result-field metadata is cached per statement name in a
- * per-client map), builds no `Result`/EventEmitter per query, and applies
- * parsers in one tight loop. Type semantics are untouched: parsers are
- * re-resolved from the CURRENT call's `types.getTypeParser` on every
- * execution — only the fields metadata is cached — so a caller-supplied
- * `types` object (including adapter-pg's per-query closure and the bridge's
- * fast-array wrapper) is always consulted.
- *
- * Rides pg internals beyond the documented Submittable seam
- * (`connection.parse/bind/describe/execute/sync`, `parsedStatements`,
- * `pg/lib/utils.js` prepareValue) — the `pg seam contract` tests in
- * fast-query.test.ts are the tripwire for pg version bumps. pg.Client
- * invokes exactly the handler set implemented here; it does not require an
- * EventEmitter. Neither the bridge nor adapter-pg uses pg's
- * query-cancellation API, which this class does not implement.
- *
- * @internal
- */
 import pgUtils from 'pg/lib/utils.js';
 
 export type FastQueryField = { name: string; dataTypeID: number; format?: string };
@@ -58,6 +34,30 @@ type FastQueryConnection = {
 // Mirrors pg's Result command-tag regex: COMMAND [oid] [rows].
 const COMMAND_TAG = /^([A-Za-z]+)(?: (\d+))?(?: (\d+))?/;
 
+/**
+ * A lean pg Submittable for the exact query shape `@prisma/adapter-pg`
+ * emits when statement caching names a query: named statement,
+ * `rowMode: 'array'`, caller-supplied `types`, extended protocol.
+ *
+ * Compared to pg's stock Query it skips the Describe round-trip on repeat
+ * executions (result-field metadata is cached per statement name in a
+ * per-client map), builds no `Result`/EventEmitter per query, and applies
+ * parsers in one tight loop. Type semantics are untouched: parsers are
+ * re-resolved from the CURRENT call's `types.getTypeParser` on every
+ * execution — only the fields metadata is cached — so a caller-supplied
+ * `types` object (including adapter-pg's per-query closure and the bridge's
+ * fast-array wrapper) is always consulted.
+ *
+ * Rides pg internals beyond the documented Submittable seam
+ * (`connection.parse/bind/describe/execute/sync`, `parsedStatements`,
+ * `pg/lib/utils.js` prepareValue) — the `pg seam contract` tests in
+ * fast-query.test.ts are the tripwire for pg version bumps. pg.Client
+ * invokes exactly the handler set implemented here; it does not require an
+ * EventEmitter. Neither the bridge nor adapter-pg uses pg's
+ * query-cancellation API, which this class does not implement.
+ *
+ * @internal
+ */
 export class FastQuery {
   readonly name: string;
   readonly text: string;
@@ -79,6 +79,13 @@ export class FastQuery {
   private resolvePromise!: (result: FastQueryResult) => void;
   private rejectPromise!: (error: Error) => void;
 
+  /**
+   * @param config  Already-validated fast-path arguments — `PgBridgeClient`
+   *   gates on the adapter-pg shape before constructing.
+   * @param fieldsCache  Client-owned field-metadata map, keyed by statement
+   *   name and shared across FastQuery instances; `[]` is the NoData
+   *   sentinel for statements without result columns.
+   */
   constructor(
     config: { name: string; text: string; values?: unknown[]; types: FastQueryTypes },
     fieldsCache: Map<string, FastQueryField[]>,
@@ -143,12 +150,19 @@ export class FastQuery {
     return null;
   }
 
+  /**
+   * Cold path — first execution of a statement: cache its result-field
+   * metadata under the statement name (later executions skip Describe) and
+   * resolve this call's parsers.
+   */
   handleRowDescription(msg: { fields: FastQueryField[] }): void {
     this.fieldsReceived = true;
     this.fieldsCache.set(this.name, msg.fields);
     this.applyFields(msg.fields);
   }
 
+  /** Parse one row through the per-column parsers resolved at submit or
+   *  Describe time. */
   handleDataRow(msg: { fields: (string | null)[] }): void {
     /* v8 ignore next 2 — defensive: a straggler row after a fatal error has
        no parsers to run through; stock pg guards the same way. */
@@ -163,6 +177,8 @@ export class FastQuery {
     this.rows.push(row);
   }
 
+  /** Extract `command` / `rowCount` / `oid` from the tag, mirroring pg's
+   *  own Result parsing. */
   handleCommandComplete(msg: { text: string }): void {
     const match = COMMAND_TAG.exec(msg.text);
     /* v8 ignore next — command tags are server-generated and always match */
@@ -177,7 +193,8 @@ export class FastQuery {
     }
   }
 
-  /** EmptyQueryResponse carries no fields and no command — resolve empty. */
+  /** EmptyQueryResponse carries no fields and no command — nothing to
+   *  record; settlement happens at ReadyForQuery. */
   handleEmptyQuery(): void {}
 
   /** Unreachable with `rows: 0` executions; buffered defensively. */

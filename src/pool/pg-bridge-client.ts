@@ -54,6 +54,13 @@ export class PgBridgeClient extends pg.Client {
     this.#fastQueryPath = bridge.fastQueryPath ?? true;
   }
 
+  /**
+   * Dispatch order: null/undefined and Submittable arguments go straight to
+   * stock pg; the callback form re-enters as a promise; remaining
+   * object-form queries get `types` wrapped with fast-array parsers, then
+   * run either the FastQuery fast path or stock pg — both serialized on one
+   * submission chain so mixed-path call order cannot invert.
+   */
   // biome-ignore lint/suspicious/noExplicitAny: satisfy pg.Client.query's overload union
   override query(...args: unknown[]): any {
     const first = args[0];

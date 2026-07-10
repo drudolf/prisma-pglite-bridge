@@ -7,6 +7,7 @@ import {
 import { rewriteRowDescriptionInPlace, rowDescriptionNeedsRewrite } from './row-description.ts';
 
 type BackendMessageFramerOptions = {
+  /** Initial value only — `reset()` supplies the flag per protocol call. */
   suppressIntermediateReadyForQuery?: boolean;
   /**
    * Widen system-catalog "char" columns (OID 18) to text (OID 25) in
