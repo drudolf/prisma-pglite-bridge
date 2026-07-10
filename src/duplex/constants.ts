@@ -42,9 +42,8 @@ export const EQP_MESSAGES: ReadonlySet<number> = new Set([PARSE, BIND, DESCRIBE,
 /**
  * Upper bound on a single wire-protocol message length declared in its
  * 4-byte header — applied to backend messages by the framer and to
- * frontend/startup messages by the duplex (the name predates the frontend
- * checks). PostgreSQL's own wire protocol maxes out around 1 GiB per
- * message; anything larger indicates a corrupted or hostile stream and
- * must not be allocated against.
+ * frontend/startup messages by the duplex. PostgreSQL's own wire protocol
+ * maxes out around 1 GiB per message; anything larger indicates a
+ * corrupted or hostile stream and must not be allocated against.
  */
-export const MAX_BACKEND_MESSAGE_LENGTH = 1_073_741_824;
+export const MAX_MESSAGE_LENGTH = 1_073_741_824;

@@ -39,7 +39,7 @@ import { BackendMessageFramer } from './backend-framer.ts';
 import {
   EQP_MESSAGES,
   FLUSH,
-  MAX_BACKEND_MESSAGE_LENGTH,
+  MAX_MESSAGE_LENGTH,
   RFQ_STATUS_FAILED,
   RFQ_STATUS_IDLE,
   RFQ_STATUS_IN_TRANSACTION,
@@ -429,10 +429,8 @@ export class PGliteDuplex extends Duplex {
     if (len < 8) {
       throw new Error(`Malformed startup message length: ${len}`);
     }
-    if (len > MAX_BACKEND_MESSAGE_LENGTH) {
-      throw new Error(
-        `Startup message length ${len} exceeds sanity cap ${MAX_BACKEND_MESSAGE_LENGTH}`,
-      );
+    if (len > MAX_MESSAGE_LENGTH) {
+      throw new Error(`Startup message length ${len} exceeds sanity cap ${MAX_MESSAGE_LENGTH}`);
     }
     if (this.input.length < len) return;
 
@@ -507,9 +505,9 @@ export class PGliteDuplex extends Duplex {
       if (msgLen < 4) {
         throw new Error(`Malformed frontend message length: ${msgLen}`);
       }
-      if (msgLen > MAX_BACKEND_MESSAGE_LENGTH) {
+      if (msgLen > MAX_MESSAGE_LENGTH) {
         throw new Error(
-          `Frontend message length ${msgLen} exceeds sanity cap ${MAX_BACKEND_MESSAGE_LENGTH}`,
+          `Frontend message length ${msgLen} exceeds sanity cap ${MAX_MESSAGE_LENGTH}`,
         );
       }
       const len = 1 + msgLen;

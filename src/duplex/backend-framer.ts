@@ -1,6 +1,6 @@
 import {
   ERROR_RESPONSE,
-  MAX_BACKEND_MESSAGE_LENGTH,
+  MAX_MESSAGE_LENGTH,
   READY_FOR_QUERY,
   ROW_DESCRIPTION,
 } from './constants.ts';
@@ -104,9 +104,9 @@ export class BackendMessageFramer {
           if (messageLength < 4) {
             throw new Error(`Malformed backend message length: ${messageLength}`);
           }
-          if (messageLength > MAX_BACKEND_MESSAGE_LENGTH) {
+          if (messageLength > MAX_MESSAGE_LENGTH) {
             throw new Error(
-              `Backend message length ${messageLength} exceeds sanity cap ${MAX_BACKEND_MESSAGE_LENGTH}`,
+              `Backend message length ${messageLength} exceeds sanity cap ${MAX_MESSAGE_LENGTH}`,
             );
           }
           const totalLen = 1 + messageLength;
@@ -188,9 +188,9 @@ export class BackendMessageFramer {
         if (messageLength < 4) {
           throw new Error(`Malformed backend message length: ${messageLength}`);
         }
-        if (messageLength > MAX_BACKEND_MESSAGE_LENGTH) {
+        if (messageLength > MAX_MESSAGE_LENGTH) {
           throw new Error(
-            `Backend message length ${messageLength} exceeds sanity cap ${MAX_BACKEND_MESSAGE_LENGTH}`,
+            `Backend message length ${messageLength} exceeds sanity cap ${MAX_MESSAGE_LENGTH}`,
           );
         }
 
