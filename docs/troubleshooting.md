@@ -57,13 +57,15 @@ Then `pnpm install`.
 
 ## `cached plan must not change result type`
 
-The bridge caches Prisma queries as named prepared statements by
-default. PostgreSQL revalidates those plans after
-DDL, and revalidation fails with this error when the DDL changed the
-*result type* of an already-cached query shape — typically
-`ALTER TABLE ... ALTER COLUMN ... TYPE` on a column the query selects.
-Adding tables or columns is safe, and applying schema *before* Prisma
-traffic (as the setup helpers do) can never hit this.
+The bridge caches queries as named prepared statements by default —
+Prisma traffic, and any object-form or parameterized string-form query
+issued through the pool (ORMs like Drizzle, Kysely, TypeORM, or
+MikroORM on the bridge take these paths too). PostgreSQL revalidates
+those plans after DDL, and revalidation fails with this error when the
+DDL changed the *result type* of an already-cached query shape —
+typically `ALTER TABLE ... ALTER COLUMN ... TYPE` on a column the
+query selects. Adding tables or columns is safe, and applying schema
+*before* query traffic (as the setup helpers do) can never hit this.
 
 Fix one of:
 

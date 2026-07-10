@@ -208,13 +208,31 @@ export class PgBridgeClient extends pg.Client {
       };
     }
 
+    // String-form parameterized queries run the extended protocol with an
+    // unnamed statement — the same re-parse cost as object form — so
+    // normalize them into config form for the injection below
+    // (normalizeQueryConfig treats `query(text, values)` and
+    // `query({ text }, values)` identically). Empty values arrays stay
+    // string-form: pg runs those on the simple protocol
+    // (requiresPreparation checks values.length), and a name would flip
+    // the protocol.
+    if (
+      this.#stmtNameGen &&
+      typeof first === 'string' &&
+      Array.isArray(args[1]) &&
+      args[1].length > 0
+    ) {
+      args[0] = { text: first };
+    }
+
     // Inject a stable name into unnamed cacheable DML so PGlite caches the
     // query plan via EQP. pg skips Parse on repeat calls for named statements
     // (connection.parsedStatements guard in Query.prepare). Submittable queries
-    // are already dispatched above; string-form queries are excluded by the
-    // isObject guard below. Empty text is never named — CACHEABLE_SQL requires
-    // a leading statement keyword, and that regex (not this guard) is the
-    // layer keeping empty text unnamed like stock pg runs it.
+    // are already dispatched above; parameterless string-form queries stay on
+    // the simple protocol via the isObject guard below. Empty text is never
+    // named — CACHEABLE_SQL requires a leading statement keyword, and that
+    // regex (not this guard) is the layer keeping empty text unnamed like
+    // stock pg runs it.
     if (this.#stmtNameGen && isObject(args[0])) {
       const c = args[0] as Record<string, unknown>;
       if (typeof c.text === 'string' && c.name == null) {

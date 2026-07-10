@@ -1251,6 +1251,244 @@ describe('PgBridgePool — per-client statement names', () => {
   });
 });
 
+// String-form parameterized queries — `query(text, values)` with a NON-EMPTY
+// values array — get the same per-client statement-name injection as the
+// object form when statement caching is on: pg then skips Parse on repeat
+// executions via its parsedStatements guard. The rest of the string-form
+// dispatch is deliberately untouched: `query(text)` and `query(text, [])`
+// stay unnamed on the simple protocol, non-cacheable text is never named,
+// and a statementCaching: false pool sees no normalization at all.
+describe('PgBridgePool — string-form parameterized statement caching', () => {
+  // Session-side proof of naming: injected names show up in
+  // pg_prepared_statements on the same client. The introspection query
+  // itself is string-form WITHOUT values, so it never appears in the list.
+  const listBridgeStatements = async (client: pg.PoolClient): Promise<string[]> => {
+    const { rows } = await client.query<{ name: string }>(
+      "SELECT name FROM pg_prepared_statements WHERE name LIKE 'ppb_%'",
+    );
+    return rows.map((row) => row.name);
+  };
+
+  it('caches string-form parameterized DML and skips Parse on the warm execution', async () => {
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local });
+    try {
+      const client = await pool.connect();
+      try {
+        parseSpy.mockClear();
+        const cold = await client.query('SELECT $1::int AS n', [7]);
+        const warm = await client.query('SELECT $1::int AS n', [7]);
+
+        expect(cold.rows).toEqual([{ n: 7 }]);
+        expect(warm.rows).toEqual([{ n: 7 }]);
+        // One Parse total across both executions: the cold call named and
+        // parsed the statement, the warm call skipped Parse via pg's
+        // parsedStatements guard — a cached plan, not a re-preparation.
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+
+        // The statement is cached under a bridge-injected name.
+        const names = await listBridgeStatements(client);
+        expect(names).toHaveLength(1);
+        expect(names[0]).toMatch(/^ppb_\d+_\d+$/);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it('reuses one cached statement across the string form and the object form', async () => {
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local });
+    try {
+      const client = await pool.connect();
+      try {
+        parseSpy.mockClear();
+        // Same text, fresh values array per call: the name generator keys on
+        // the SQL text, so both forms must map to ONE statement name — one
+        // Parse total, and the second form rides the first form's cache.
+        const viaString = await client.query('SELECT $1::int AS n', [8]);
+        const viaObject = await client.query({ text: 'SELECT $1::int AS n', values: [8] });
+
+        expect(viaString.rows).toEqual([{ n: 8 }]);
+        expect(viaObject.rows).toEqual([{ n: 8 }]);
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(await listBridgeStatements(client)).toHaveLength(1);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it('leaves a parameterless string-form query unnamed (simple protocol)', async () => {
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local });
+    try {
+      const client = await pool.connect();
+      try {
+        const first = await client.query('SELECT 1 AS one');
+        const second = await client.query('SELECT 1 AS one');
+
+        expect(first.rows).toEqual([{ one: 1 }]);
+        expect(second.rows).toEqual([{ one: 1 }]);
+        expect(await listBridgeStatements(client)).toEqual([]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it('leaves a string-form query with an empty values array unnamed (deliberate guard)', async () => {
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local });
+    try {
+      const client = await pool.connect();
+      try {
+        // values: [] means "simple protocol, no parameters" in pg — the
+        // bridge must not promote it to a named extended-protocol query.
+        const first = await client.query('SELECT 2 AS two', []);
+        const second = await client.query('SELECT 2 AS two', []);
+
+        expect(first.rows).toEqual([{ two: 2 }]);
+        expect(second.rows).toEqual([{ two: 2 }]);
+        expect(await listBridgeStatements(client)).toEqual([]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it('runs a multi-statement string with an empty values array unnamed', async () => {
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local });
+    try {
+      const client = await pool.connect();
+      try {
+        // pg resolves multi-statement simple-protocol queries with an array
+        // of results. Pinned here: it neither errors nor gets a name — an
+        // EQP Parse would reject the multi-statement text outright.
+        const result = await client.query('SELECT 1; SELECT 2', []);
+
+        expect(Array.isArray(result)).toBe(true);
+        expect(await listBridgeStatements(client)).toEqual([]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it('leaves non-DML parameterized text unnamed (EXPLAIN)', async () => {
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local });
+    try {
+      const client = await pool.connect();
+      try {
+        // Extended protocol (values present) but not CACHEABLE_SQL — the
+        // name generator must decline, on the string form like any other.
+        const first = await client.query('EXPLAIN SELECT $1::int', [1]);
+        const second = await client.query('EXPLAIN SELECT $1::int', [1]);
+
+        expect(first.rows.length).toBeGreaterThan(0);
+        expect(second.rows.length).toBeGreaterThan(0);
+        expect(await listBridgeStatements(client)).toEqual([]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it('names nothing on a statementCaching: false pool (string form included)', async () => {
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local, statementCaching: false });
+    try {
+      const client = await pool.connect();
+      try {
+        const first = await client.query('SELECT $1::int AS n', [7]);
+        const second = await client.query('SELECT $1::int AS n', [7]);
+
+        expect(first.rows).toEqual([{ n: 7 }]);
+        expect(second.rows).toEqual([{ n: 7 }]);
+        expect(await listBridgeStatements(client)).toEqual([]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it('passes a null parameter through the string form', async () => {
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local });
+    try {
+      const client = await pool.connect();
+      try {
+        const result = await client.query('SELECT $1::text AS v', [null]);
+        expect(result.rows).toEqual([{ v: null }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it('DEALLOCATE ALL evicts a string-form-cached statement — re-issue re-Parses', async () => {
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local });
+    try {
+      const client = await pool.connect();
+      try {
+        // Cold execution caches the statement under a bridge-injected name.
+        await client.query('SELECT $1::int AS n', [7]);
+
+        // Session-wide wipe: PGlite forgets the statement. The eviction
+        // machinery must drop pg's parse-skip entry for the string-form-
+        // injected name too, or the re-issue would skip Parse straight
+        // into Postgres error 26000.
+        await client.query('DEALLOCATE ALL');
+
+        parseSpy.mockClear();
+        const reIssued = await client.query('SELECT $1::int AS n', [7]);
+        expect(reIssued.rows).toEqual([{ n: 7 }]);
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+
+        // The re-issue re-cached under a bridge-injected name.
+        const names = await listBridgeStatements(client);
+        expect(names).toHaveLength(1);
+        expect(names[0]).toMatch(/^ppb_\d+_\d+$/);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+      await local.close();
+    }
+  });
+});
+
 // The framer rewrites RowDescription `oid 18` ("char") → `oid 25` (text) only
 // when the field originates from a pg_catalog relation. User-defined "char"
 // columns are intentionally left untouched: the bridge must not relabel a
