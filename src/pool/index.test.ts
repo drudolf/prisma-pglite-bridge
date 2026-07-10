@@ -141,6 +141,63 @@ describe('PgBridgePool — connect-time statement cleanup', () => {
       await pool.end();
     }
   });
+
+  it("creating a second pool client leaves the first client's prepared statements intact", async () => {
+    // PGlite is one shared session, so a sibling's connect-time
+    // DEALLOCATE ALL would destroy client A's live named statements —
+    // A's next named execution would fail with Postgres error 26000.
+    // With another live client in the pool, the cleanup must be skipped.
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local, max: 2 });
+    let a: pg.PoolClient | undefined;
+    let b: pg.PoolClient | undefined;
+    try {
+      a = await pool.connect();
+      const cold = await a.query({ name: 'wave2_s1', text: 'SELECT 41 AS x' });
+      expect(cold.rows).toEqual([{ x: 41 }]);
+
+      // A is still checked out, so this forces creation of a second client;
+      // its first query guarantees any connect-time cleanup has completed
+      // (pg serializes queries per client).
+      b = await pool.connect();
+      await b.query('SELECT 1');
+
+      const warm = await a.query({ name: 'wave2_s1', text: 'SELECT 41 AS x' });
+      expect(warm.rows).toEqual([{ x: 41 }]);
+    } finally {
+      a?.release();
+      b?.release();
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it('a replacement client created after a destroy still gets the cleanup', async () => {
+    // Sole-client path: pg.Pool removed the destroyed client, but PGlite's
+    // shared session still holds its server-side prepared statement. The
+    // replacement must see an empty statement namespace — without the
+    // connect-time DEALLOCATE ALL, re-preparing the same name would fail
+    // with 42P05 "prepared statement already exists".
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local, max: 1 });
+    try {
+      const a = await pool.connect();
+      await a.query({ name: 'wave2_s2', text: 'SELECT 1' });
+      // release(err) → pg.Pool destroys the client instead of pooling it.
+      a.release(new Error('force destroy'));
+
+      const b = await pool.connect();
+      try {
+        const r = await b.query({ name: 'wave2_s2', text: 'SELECT 1' });
+        expect(r.rows).toEqual([{ '?column?': 1 }]);
+      } finally {
+        b.release();
+      }
+    } finally {
+      await pool.end();
+      await local.close();
+    }
+  });
 });
 
 describe('PgBridgePool — pglite lifecycle', () => {

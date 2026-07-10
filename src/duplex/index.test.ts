@@ -436,21 +436,6 @@ describe('PGliteDuplex error paths', () => {
     duplex.destroy();
   });
 
-  it('breaks out of processMessages on a malformed length header', async () => {
-    const pglite = createMockPGlite();
-    const duplex = new PGliteDuplex(pglite);
-    duplex.on('error', () => {});
-
-    const startupErr = await writeAndAwait(duplex, startupBytes());
-    expect(startupErr).toBeUndefined();
-
-    const malformed = Buffer.from([0x51, 0x00, 0x00, 0x00, 0x03]);
-    const err = await writeAndAwait(duplex, malformed);
-    expect(err).toBeUndefined();
-
-    duplex.destroy();
-  });
-
   it('releases the session lock and ends the stream on TERMINATE', async () => {
     const pglite = createMockPGlite();
     const lock = new SessionLock();
@@ -1448,5 +1433,152 @@ describe('PGliteDuplex flush portal boundary', () => {
     await duplex.onClose;
 
     expect(queryCalls).toContain('ROLLBACK');
+  });
+});
+
+describe('PGliteDuplex malformed frontend message lengths', () => {
+  // Frontend message type bytes
+  const QUERY = 0x51; // 'Q'
+  const SYNC = 0x53; // 'S'
+
+  // Above the 1 GiB sanity cap but deliberately still positive under signed
+  // readInt32BE — 2 GiB would read negative and belongs to the
+  // malformed-length case, not the cap case.
+  const OVERSIZED_LENGTH = 1_100_000_000;
+
+  const startupBytes = (): Buffer => {
+    const buf = Buffer.alloc(8);
+    buf.writeUInt32BE(8, 0);
+    buf.writeUInt32BE(0x00030000, 4);
+    return buf;
+  };
+
+  /** Post-startup frame: [type byte][4-byte BE declared length incl. itself]. */
+  const frameWithDeclaredLength = (type: number, declaredLength: number): Buffer => {
+    const buf = Buffer.alloc(5);
+    buf[0] = type;
+    buf.writeInt32BE(declaredLength, 1);
+    return buf;
+  };
+
+  /** Startup frame header: [4-byte BE declared length incl. itself] — no type byte. */
+  const startupWithDeclaredLength = (declaredLength: number): Buffer => {
+    const buf = Buffer.alloc(4);
+    buf.writeInt32BE(declaredLength, 0);
+    return buf;
+  };
+
+  const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+    new Promise((resolve) => {
+      duplex.write(chunk, (err) => resolve(err ?? undefined));
+    });
+
+  /** Duplex past a completed startup, so writes hit processMessages. */
+  const createReadyDuplex = async (): Promise<PGliteDuplex> => {
+    const duplex = new PGliteDuplex(createMockPGlite());
+    duplex.on('error', () => {});
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    return duplex;
+  };
+
+  it('fails the write when a post-startup frame declares a length below the 5-byte minimum', async () => {
+    const duplex = await createReadyDuplex();
+
+    // 'Q' with declared length 3 — cannot even cover its own 4 length bytes.
+    // Today the duplex treats this as "incomplete, wait for more data": the
+    // callback resolves null and the poisoned bytes buffer forever.
+    const err = await writeAndAwait(duplex, frameWithDeclaredLength(QUERY, 3));
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toMatch(/Malformed frontend message length/);
+
+    duplex.destroy();
+  });
+
+  it('fails the write when a post-startup frame declares a length above the 1 GiB sanity cap', async () => {
+    const duplex = await createReadyDuplex();
+
+    // Today the duplex "waits" for a gigabyte that never arrives, buffering
+    // unboundedly while every write callback reports success.
+    const err = await writeAndAwait(duplex, frameWithDeclaredLength(QUERY, OVERSIZED_LENGTH));
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toMatch(/exceeds sanity cap/);
+
+    duplex.destroy();
+  });
+
+  it('destroys the duplex after a malformed length error so subsequent writes fail', async () => {
+    const duplex = await createReadyDuplex();
+
+    const err = await writeAndAwait(duplex, frameWithDeclaredLength(QUERY, 3));
+    expect(err).toBeInstanceOf(Error);
+
+    // duplex.write() auto-destroys the stream once a write callback errors —
+    // pin that the poisoned duplex cannot accept further traffic.
+    await settle();
+    expect(duplex.destroyed).toBe(true);
+
+    // A well-formed Sync frame, so the failure is the destroyed stream — not
+    // re-detection of the malformed bytes.
+    const followUpErr = await writeAndAwait(duplex, frameWithDeclaredLength(SYNC, 4));
+    expect(followUpErr).toBeInstanceOf(Error);
+  });
+
+  it('fails the write when the startup frame declares a length below the 8-byte SSL-probe minimum', async () => {
+    const duplex = new PGliteDuplex(createMockPGlite());
+    duplex.on('error', () => {});
+
+    // Declared length 4 covers only the length field itself — below the
+    // 8-byte SSL probe, the smallest valid pre-startup frame. Today this is
+    // consumed as an empty-payload startup message and the phase flips to
+    // 'ready', reinterpreting whatever follows as regular messages.
+    const err = await writeAndAwait(duplex, startupWithDeclaredLength(4));
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toMatch(/Malformed startup message length/);
+
+    duplex.destroy();
+  });
+
+  it('fails the write when the startup frame declares a length above the 1 GiB sanity cap', async () => {
+    const duplex = new PGliteDuplex(createMockPGlite());
+    duplex.on('error', () => {});
+
+    // Today the pre-startup framer stalls buffering toward a length no sane
+    // startup message reaches, with success write callbacks throughout.
+    const err = await writeAndAwait(duplex, startupWithDeclaredLength(OVERSIZED_LENGTH));
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toMatch(/exceeds sanity cap/);
+
+    duplex.destroy();
+  });
+
+  it('waits for more bytes when a startup frame is merely incomplete', async () => {
+    const duplex = new PGliteDuplex(createMockPGlite());
+    duplex.on('error', () => {});
+
+    // Only the length field of a valid 8-byte startup — wait, don't throw.
+    await expect(writeAndAwait(duplex, startupWithDeclaredLength(8))).resolves.toBeUndefined();
+
+    // The remaining protocol-version bytes complete the startup.
+    const rest = Buffer.alloc(4);
+    rest.writeUInt32BE(0x00030000, 0);
+    await expect(writeAndAwait(duplex, rest)).resolves.toBeUndefined();
+
+    duplex.destroy();
+  });
+
+  it('waits for more bytes when a post-startup frame is merely incomplete', async () => {
+    const duplex = await createReadyDuplex();
+
+    // 'Q' declaring 10 bytes with only the 5-byte header present — wait.
+    await expect(
+      writeAndAwait(duplex, frameWithDeclaredLength(QUERY, 10)),
+    ).resolves.toBeUndefined();
+
+    // The remaining 6 payload bytes complete the frame.
+    await expect(writeAndAwait(duplex, Buffer.from('sel;;\0'))).resolves.toBeUndefined();
+
+    duplex.destroy();
   });
 });

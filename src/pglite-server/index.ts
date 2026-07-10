@@ -113,7 +113,11 @@ export class PGliteServer {
   readonly #sockets = new Set<BridgedSocket>();
   readonly #ownsPglite: boolean;
 
-  #connectionString: string | undefined;
+  /** In-flight or completed bind; memoizes repeat `listen()` calls and lets
+   *  `close()` wait out a still-binding listener. Cleared on bind failure so
+   *  the documented EADDRINUSE unlink-and-retry flow keeps working. */
+  #listening: Promise<string> | undefined;
+  #closing: Promise<void> | undefined;
 
   constructor(options: PGliteServerOptions = {}) {
     const { pglite, ...rest } = options;
@@ -126,16 +130,26 @@ export class PGliteServer {
       port: rest.port ?? (!rest.dataDir ? 0 : DEFAULT_SOCKET_PORT),
       user: rest.user ? encodeURIComponent(rest.user) : 'postgres',
     };
-    this.#server = net.createServer((socket) => this.#onConnection(socket));
+    this.#server = net.createServer((socket) => {
+      /* c8 ignore next 4 — reachable only if node's accept path races close() before the listener unbinds */
+      if (this.#closing) {
+        socket.destroy();
+        return;
+      }
+      this.#onConnection(socket);
+    });
   }
 
   listen = async (): Promise<string> => {
-    if (this.#connectionString) return this.#connectionString;
+    if (this.#closing) {
+      throw new Error('PGliteServer is closed — create a new instance to listen again.');
+    }
+    if (this.#listening) return this.#listening;
     if (this.pglite.closed) {
       throw new Error('PGliteServer requires an open PGlite instance; got a closed one.');
     }
 
-    return new Promise<string>((resolve, reject) => {
+    const attempt = new Promise<string>((resolve, reject) => {
       const onError = (err: Error): void => reject(err);
       this.#server.once('error', onError);
 
@@ -145,8 +159,9 @@ export class PGliteServer {
 
         this.#server.listen(nodePath.join(dataDir, `.s.PGSQL.${port}`), () => {
           this.#server.removeListener('error', onError);
-          this.#connectionString = `postgres://${user}@/postgres?host=${encodeURIComponent(dataDir)}&port=${port}`;
-          return resolve(this.#connectionString);
+          return resolve(
+            `postgres://${user}@/postgres?host=${encodeURIComponent(dataDir)}&port=${port}`,
+          );
         });
 
         return;
@@ -162,15 +177,25 @@ export class PGliteServer {
         // pre-listen null that Node's union return type also allows.
         const { address, family, port } = this.#server.address() as net.AddressInfo;
 
-        this.#connectionString =
-          family === 'IPv6'
-            ? `postgres://${user}@/postgres?host=${encodeURIComponent(address)}&port=${port}`
-            : `postgres://${user}@${address}:${port}/postgres`;
         this.#options.port = port; // re-assign used port
 
-        return resolve(this.#connectionString);
+        return resolve(
+          family === 'IPv6'
+            ? `postgres://${user}@/postgres?host=${encodeURIComponent(address)}&port=${port}`
+            : `postgres://${user}@${address}:${port}/postgres`,
+        );
       });
     });
+
+    this.#listening = attempt;
+    try {
+      return await attempt;
+    } catch (err) {
+      // A failed bind stays retryable — the Unix-socket EADDRINUSE flow in
+      // docs/server.md unlinks the stale socket and calls listen() again.
+      this.#listening = undefined;
+      throw err;
+    }
   };
 
   /**
@@ -178,13 +203,32 @@ export class PGliteServer {
    * `pglite` option at construction), also closes that instance. When the
    * caller supplied a `pglite`, it is left open — the caller is responsible
    * for closing it.
+   *
+   * Idempotent: repeat calls return the same promise, and closing a server
+   * that never listened resolves cleanly.
    */
-  close = async (): Promise<void> => {
+  close = (): Promise<void> => {
+    this.#closing ??= this.#doClose();
+    return this.#closing;
+  };
+
+  #doClose = async (): Promise<void> => {
+    // Wait out an in-flight bind — node silently drops a close() issued
+    // mid-bind, which would leak the listener and leave listen() unsettled.
+    await this.#listening?.catch(() => {});
+    // Stop accepting BEFORE destroying sockets: a connection accepted
+    // between the two would escape the sweep. server.close() only settles
+    // once all live sockets are gone, so it is awaited after the sweep.
+    // Its callback error (ERR_SERVER_NOT_RUNNING) is unreachable here — the
+    // listening guard plus close() memoization rule it out.
+    const listenerClosed = this.#server.listening
+      ? new Promise<void>((resolve) => {
+          this.#server.close(() => resolve());
+        })
+      : undefined;
     const sockets = [...this.#sockets];
     for (const socket of sockets) socket.destroy();
-    await new Promise<void>((resolve, reject) => {
-      this.#server.close((err) => (err ? reject(err) : resolve()));
-    });
+    await listenerClosed;
     await Promise.all(sockets.map(({ duplex }) => duplex?.onClose));
     if (this.#ownsPglite && !this.pglite.closed) {
       await this.pglite.close();

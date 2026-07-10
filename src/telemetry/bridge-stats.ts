@@ -186,7 +186,10 @@ export class BridgeStats implements TelemetrySink {
       this.cachedDurationMs ?? nsToMs(process.hrtime.bigint() - this.createdAtHrtime);
     const dbSizeBytes = this.dbSizeFrozen ? this.cachedDbSizeBytes : await this.queryDbSize(pglite);
 
-    const sorted = [...this.queryDurations].sort((a, b) => a - b);
+    // recordQuery trims lazily at 2× the window (amortized O(1)), so the
+    // retained array can exceed the documented window — slice here so the
+    // recent* stats honor QUERY_DURATION_WINDOW_SIZE exactly.
+    const sorted = this.queryDurations.slice(-QUERY_DURATION_WINDOW_SIZE).sort((a, b) => a - b);
     const avgQueryMs = this.queryCount === 0 ? 0 : this.totalQueryMs / this.queryCount;
 
     const base: StatsBase = {

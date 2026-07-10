@@ -146,20 +146,31 @@ export const createBridgeContextFromDump = async <TClient>(
   options: Pick<SetupPGliteBridgeOptions<TClient>, 'client' | 'bridge'>,
 ): Promise<LoadedBridgeContext<TClient>> => {
   const pglite = new PGlite({ loadDataDir: dump });
-  const bridge = new PGliteBridge({ ...options.bridge, pglite });
-  const prisma = options.client(bridge.adapter);
-  return {
-    prisma,
-    bridge,
-    close: async () => {
-      // The bridge treats the injected pglite as caller-owned, so close it
-      // here too — and in a `finally` so a bridge.close() failure can't orphan
-      // the loaded WASM instance (which matters most under test.concurrent).
-      try {
-        await bridge.close();
-      } finally {
-        await pglite.close();
-      }
-    },
-  };
+  let bridge: PGliteBridge | undefined;
+  try {
+    const readyBridge = new PGliteBridge({ ...options.bridge, pglite });
+    bridge = readyBridge;
+    const prisma = options.client(readyBridge.adapter);
+    return {
+      prisma,
+      bridge: readyBridge,
+      close: async () => {
+        // The bridge treats the injected pglite as caller-owned, so close it
+        // here too — and in a `finally` so a bridge.close() failure can't orphan
+        // the loaded WASM instance (which matters most under test.concurrent).
+        try {
+          await readyBridge.close();
+        } finally {
+          await pglite.close();
+        }
+      },
+    };
+  } catch (err) {
+    // Same contract as createBridgeContext: no PGlite instance outlives a
+    // failed setup, and the setup error — not a secondary teardown error —
+    // is what propagates.
+    await bridge?.close().catch(() => {});
+    await pglite.close().catch(() => {});
+    throw err;
+  }
 };

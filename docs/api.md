@@ -340,6 +340,15 @@ the PGlite session the way an open transaction does — in a
 `max > 1` pool, other clients queue until the cursor is exhausted,
 closed, or its client is released back to the pool.
 
+A second shared-session caveat: named prepared statements
+(`query({ name, text })`) within a `max > 1` pool are unsupported.
+All clients share one PGlite session and therefore one statement
+namespace — two clients preparing the same name collide with
+Postgres error 42P05 ("prepared statement already exists"). The
+pool's connect-time namespace cleanup only runs for a client with
+no live siblings, so it never destroys statements another client
+is still using. Use `max: 1` (the default) with named statements.
+
 Most users should prefer [`PGliteBridge`](#pglitebridge), which
 wraps this class and adds schema/reset/snapshot lifecycle.
 

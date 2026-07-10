@@ -216,6 +216,12 @@ export class PgBridgePool extends pg.Pool {
     // names (42P05 "prepared statement already exists"). pg serializes
     // queries per client, so this runs before the client's first query.
     this.on('connect', (client) => {
+      // pg-pool pushes the client into _clients before emitting 'connect',
+      // so totalCount includes it: > 1 means a live sibling shares the
+      // session and DEALLOCATE ALL would destroy its named statements
+      // mid-flight. With a sibling there is no safe cleanup — named
+      // statements at max > 1 are unsupported (see docs/api.md).
+      if (this.totalCount > 1) return;
       void client.query('DEALLOCATE ALL').catch(() => {
         // Best-effort: a broken session surfaces errors on real queries.
       });

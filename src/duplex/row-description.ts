@@ -54,10 +54,13 @@ export const rowDescriptionNeedsRewrite = (
  * untouched, since arbitrary bytes in user "char" data can't safely be
  * relabelled as text. Frame length is unchanged because all rewrites are
  * fixed-size in place.
+ *
+ * Walks unconditionally — the loop's per-field guard is the filter. Callers
+ * that need to avoid copying a frame gate on {@link
+ * rowDescriptionNeedsRewrite} first (the framer's zero-copy fast path);
+ * callers that already hold an owned buffer just call this.
  */
 export const rewriteRowDescriptionInPlace = (buf: Buffer): void => {
-  if (!rowDescriptionNeedsRewrite(buf)) return;
-
   const fieldCount = buf.readInt16BE(5);
   let p = 7;
   for (let i = 0; i < fieldCount; i++) {

@@ -66,7 +66,10 @@ const ARRAY_OID_WITH_ELEMENT: ReadonlyMap<number, number> = new Map([
 const FAST_TEXT_ARRAY_PARSER: Parser = (raw) => parseArrayV3(raw);
 
 export const wrapTypesWithFastArrayParsers = <T extends TypesLike>(types: T): T => {
-  const original = types.getTypeParser;
+  // Bind the receiver, capture nothing else: pg's TypeOverrides resolves its
+  // overrides at call time, so parsers registered via setTypeParser() after
+  // wrapping stay live through `original`.
+  const original = types.getTypeParser.bind(types);
   const wrapped: GetTypeParser = (oid, format = 'text') => {
     if (format === 'text') {
       if (ARRAY_OID_TEXT_LIKE.has(oid)) return FAST_TEXT_ARRAY_PARSER;
@@ -78,5 +81,7 @@ export const wrapTypesWithFastArrayParsers = <T extends TypesLike>(types: T): T 
     }
     return original(oid, format);
   };
+  // The spread intentionally drops prototype identity — the only contract
+  // consumers rely on is `getTypeParser` (pg's Result reads nothing else).
   return { ...types, getTypeParser: wrapped };
 };

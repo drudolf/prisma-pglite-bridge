@@ -550,14 +550,6 @@ describe('PGliteServer', () => {
     }
   });
 
-  it('close() rejects when the server has already been closed', async () => {
-    const server = new PGliteServer();
-    await server.listen();
-
-    await server.close();
-    await expect(server.close()).rejects.toThrow();
-  });
-
   it('close() resolves promptly while a client is still connected', async () => {
     const server = new PGliteServer();
     const url = await server.listen();
@@ -573,5 +565,142 @@ describe('PGliteServer', () => {
     ]);
     await client.end().catch(() => {});
     expect(server.pglite.closed).toBe(true);
+  });
+
+  describe('lifecycle idempotency', () => {
+    it('close() resolves when called a second time after a successful close', async () => {
+      const pglite = await db.clone();
+      await pglite.waitReady;
+      const server = new PGliteServer({ pglite });
+      cleanups.push(async () => {
+        await pglite.close();
+      });
+      await server.listen();
+
+      await server.close();
+      await expect(server.close()).resolves.toBeUndefined();
+    });
+
+    it('close() before listen() resolves cleanly', async () => {
+      const pglite = await db.clone();
+      await pglite.waitReady;
+      const server = new PGliteServer({ pglite });
+      cleanups.push(async () => {
+        await pglite.close();
+      });
+
+      await expect(server.close()).resolves.toBeUndefined();
+    });
+
+    it('listen() after close() rejects instead of returning the stale URL', async () => {
+      const pglite = await db.clone();
+      await pglite.waitReady;
+      const server = new PGliteServer({ pglite });
+      cleanups.push(async () => {
+        await pglite.close();
+      });
+      await server.listen();
+      await server.close();
+
+      await expect(server.listen()).rejects.toThrow(/closed/);
+    });
+
+    it('close() during a pending listen() resolves and tears down the bound listener', async () => {
+      const pglite = await db.clone();
+      await pglite.waitReady;
+      const server = new PGliteServer({ pglite });
+
+      const pendingListen = server.listen();
+      const pendingClose = server.close();
+      cleanups.push(async () => {
+        // Today close() silently cancels the mid-bind listen (Node drops the
+        // dns-lookup continuation), so pendingListen may never settle —
+        // don't block cleanup on it.
+        await Promise.race([
+          pendingListen.catch(() => {}),
+          new Promise((resolve) => setTimeout(resolve, 250)),
+        ]);
+        await server.close().catch(() => {});
+        await pglite.close();
+      });
+
+      await expect(pendingClose).resolves.toBeUndefined();
+
+      // close() awaits the in-flight bind before tearing down, so listen()
+      // settles either way; a resolved URL is acceptable — but nothing may
+      // be listening behind it afterwards.
+      const url = await pendingListen.catch(() => undefined);
+      if (url === undefined) return;
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          const socket = tcpConnect(url);
+          socket.once('connect', () => {
+            socket.destroy();
+            resolve();
+          });
+          socket.once('error', reject);
+        }),
+      ).rejects.toThrow(/ECONNREFUSED/);
+    });
+
+    it('a failed listen() stays retryable — bind errors are not memoized', async () => {
+      const pglite = await db.clone();
+      await pglite.waitReady;
+
+      // Occupy an ephemeral port with a plain TCP server.
+      const blocker = net.createServer();
+      await new Promise<void>((resolve, reject) => {
+        blocker.once('error', reject);
+        blocker.listen(0, '127.0.0.1', () => resolve());
+      });
+      const { port } = blocker.address() as net.AddressInfo;
+
+      const server = new PGliteServer({ pglite, port });
+      cleanups.push(async () => {
+        await server.close().catch(() => {});
+        await pglite.close();
+        // Swallow ERR_SERVER_NOT_RUNNING when the test already closed it.
+        await new Promise<void>((resolve) => {
+          blocker.close(() => resolve());
+        });
+      });
+
+      await expect(server.listen()).rejects.toThrow(/EADDRINUSE/);
+
+      // Free the port, then retry on the same server instance.
+      await new Promise<void>((resolve, reject) => {
+        blocker.close((err) => (err ? reject(err) : resolve()));
+      });
+
+      const url = await server.listen();
+      expect(url).toBe(`postgres://postgres@127.0.0.1:${port}/postgres`);
+    });
+
+    it('close() during a failing bind resolves and swallows the bind error', async () => {
+      const pglite = await db.clone();
+      await pglite.waitReady;
+
+      const blocker = net.createServer();
+      await new Promise<void>((resolve, reject) => {
+        blocker.once('error', reject);
+        blocker.listen(0, '127.0.0.1', () => resolve());
+      });
+      const { port } = blocker.address() as net.AddressInfo;
+
+      const server = new PGliteServer({ pglite, port });
+      cleanups.push(async () => {
+        await server.close().catch(() => {});
+        await pglite.close();
+        await new Promise<void>((resolve) => {
+          blocker.close(() => resolve());
+        });
+      });
+
+      // The bind is doomed (EADDRINUSE); close() must wait it out and
+      // resolve rather than reject or leak the pending listen.
+      const pending = server.listen();
+      await expect(server.close()).resolves.toBeUndefined();
+      await expect(pending).rejects.toThrow(/EADDRINUSE/);
+    });
   });
 });

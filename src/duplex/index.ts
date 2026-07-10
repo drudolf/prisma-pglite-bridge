@@ -39,6 +39,7 @@ import { BackendMessageFramer } from './backend-framer.ts';
 import {
   EQP_MESSAGES,
   FLUSH,
+  MAX_BACKEND_MESSAGE_LENGTH,
   RFQ_STATUS_FAILED,
   RFQ_STATUS_IDLE,
   RFQ_STATUS_IN_TRANSACTION,
@@ -418,7 +419,21 @@ export class PGliteDuplex extends Duplex {
     if (this.input.length < 4) return;
     const len = this.input.readInt32BE(0);
     /* c8 ignore next — len === undefined unreachable once length ≥ 4 */
-    if (len === undefined || this.input.length < len) return;
+    if (len === undefined) return;
+    // Minimum valid pre-startup frame is the 8-byte SSL/GSSENC probe (the
+    // length includes itself); a smaller declared length can never complete,
+    // and readInt32BE is signed, so hostile lengths read negative and land
+    // here too. Throwing propagates through the drain loop's catch: session
+    // lock released, queued write callbacks failed, socket torn down.
+    if (len < 8) {
+      throw new Error(`Malformed startup message length: ${len}`);
+    }
+    if (len > MAX_BACKEND_MESSAGE_LENGTH) {
+      throw new Error(
+        `Startup message length ${len} exceeds sanity cap ${MAX_BACKEND_MESSAGE_LENGTH}`,
+      );
+    }
+    if (this.input.length < len) return;
 
     const message = this.input.consume(len);
 
@@ -483,8 +498,21 @@ export class PGliteDuplex extends Duplex {
       const msgLen = this.input.readInt32BE(1);
       /* c8 ignore next — input.length ≥ 5 guarantees readable int32 */
       if (msgLen === undefined) break;
+      // A declared length below 4 (the length field itself) can never
+      // complete — only a genuinely short buffer may wait for more bytes.
+      // Mirrors the backend framer's malformed-length and sanity-cap
+      // throws; the drain loop's catch turns either into failed write
+      // callbacks and teardown.
+      if (msgLen < 4) {
+        throw new Error(`Malformed frontend message length: ${msgLen}`);
+      }
+      if (msgLen > MAX_BACKEND_MESSAGE_LENGTH) {
+        throw new Error(
+          `Frontend message length ${msgLen} exceeds sanity cap ${MAX_BACKEND_MESSAGE_LENGTH}`,
+        );
+      }
       const len = 1 + msgLen;
-      if (len < 5 || this.input.length < len) break;
+      if (this.input.length < len) break;
 
       const message = this.input.consume(len);
       /* c8 ignore next — consume(len ≥ 5) returns non-empty */

@@ -83,6 +83,28 @@ describe('BridgeStats — percentile math', () => {
   });
 });
 
+describe('BridgeStats — recent-query window sizing', () => {
+  it('drops an outlier older than the last QUERY_DURATION_WINDOW_SIZE queries from recentMaxQueryMs', async () => {
+    await withStats('basic', async (c) => {
+      c.recordQuery(5000, true);
+      for (let i = 0; i < QUERY_DURATION_WINDOW_SIZE; i++) c.recordQuery(1, true);
+      const s = await c.snapshot(pglite);
+      expect(s.queryCount).toBe(QUERY_DURATION_WINDOW_SIZE + 1);
+      expect(s.recentMaxQueryMs).toBe(1);
+    });
+  });
+
+  it('computes recent percentiles over exactly the last QUERY_DURATION_WINDOW_SIZE queries', async () => {
+    await withStats('basic', async (c) => {
+      for (let i = 0; i < QUERY_DURATION_WINDOW_SIZE; i++) c.recordQuery(100, true);
+      for (let i = 0; i < QUERY_DURATION_WINDOW_SIZE; i++) c.recordQuery(1, true);
+      const s = await c.snapshot(pglite);
+      expect(s.recentP50QueryMs).toBe(1);
+      expect(s.recentP95QueryMs).toBe(1);
+    });
+  });
+});
+
 describe('BridgeStats — counters', () => {
   it('recordQuery is additive across calls', async () => {
     await withStats('basic', async (c) => {

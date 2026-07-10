@@ -73,10 +73,12 @@ export class PgBridgeClient extends pg.Client {
 
   /**
    * Dispatch order: null/undefined and Submittable arguments go straight to
-   * stock pg; the callback form re-enters as a promise; remaining
-   * object-form queries get `types` wrapped with fast-array parsers, then
-   * run either the FastQuery fast path or stock pg — both serialized on one
-   * submission chain so mixed-path call order cannot invert.
+   * stock pg; the callback forms — positional or config-embedded, last
+   * positional winning like pg's normalizeQueryConfig — re-enter as a
+   * promise and return `undefined`; remaining object-form queries get
+   * `types` wrapped with fast-array parsers, then run either the FastQuery
+   * fast path or stock pg — both serialized on one submission chain so
+   * mixed-path call order cannot invert.
    */
   // biome-ignore lint/suspicious/noExplicitAny: satisfy pg.Client.query's overload union
   override query(...args: unknown[]): any {
@@ -97,19 +99,38 @@ export class PgBridgeClient extends pg.Client {
       return submit();
     }
 
-    const cbIndex = args.findIndex((arg) => typeof arg === 'function');
-    if (cbIndex !== -1) {
-      const origCb = args[cbIndex] as (err: unknown, res: unknown) => void;
-      const promiseArgs = args.slice();
-      promiseArgs.splice(cbIndex, 1);
+    // pg's normalizeQueryConfig collapses every positional function and a
+    // config-embedded `callback` into one callback slot — the last positional
+    // function wins over `config.callback`. Mirror that, re-enter as a
+    // promise, and return `undefined` like stock pg does in callback mode.
+    const promiseArgs: unknown[] = [];
+    let origCb: ((err: unknown, res: unknown) => void) | undefined;
+    for (const arg of args) {
+      if (typeof arg === 'function') {
+        origCb = arg as (err: unknown, res: unknown) => void;
+      } else {
+        promiseArgs.push(arg);
+      }
+    }
+    if (origCb === undefined && isObject(first) && typeof first.callback === 'function') {
+      origCb = first.callback as (err: unknown, res: unknown) => void;
+    }
+    if (origCb !== undefined) {
+      const cb = origCb;
+      if (isObject(first) && 'callback' in first) {
+        // Strip even a non-function `callback` — pg would overwrite it with
+        // the positional one, so it must not resurface on re-entry.
+        const { callback: _callback, ...rest } = first;
+        promiseArgs[0] = rest;
+      }
 
       try {
         this.query(...promiseArgs).then(
-          (res: unknown) => origCb(null, res),
-          (err: unknown) => origCb(err, undefined),
+          (res: unknown) => cb(null, res),
+          (err: unknown) => cb(err, undefined),
         );
       } catch (err) {
-        origCb(err, undefined);
+        cb(err, undefined);
       }
       return undefined;
     }
