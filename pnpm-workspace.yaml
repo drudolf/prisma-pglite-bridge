@@ -12,16 +12,6 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - "@arethetypeswrong/cli@0.18.5"
   - "@arethetypeswrong/core@0.18.5"
-  - "@commitlint/cli@21.1.0"
-  - "@commitlint/config-conventional@21.1.0"
-  - "@commitlint/is-ignored@21.1.0"
-  - "@commitlint/lint@21.1.0"
-  - "@commitlint/load@21.1.0"
-  - "@commitlint/message@21.0.2"
-  - "@commitlint/parse@21.1.0"
-  - "@commitlint/read@21.1.0"
-  - "@commitlint/rules@21.1.0"
-  - "@commitlint/top-level@21.0.2"
   - pg-connection-string@2.14.0
   - pg-protocol@1.15.0
   - pg@8.22.0
