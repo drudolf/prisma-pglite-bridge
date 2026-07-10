@@ -18,6 +18,7 @@ import type { OrmDefinition, OrmOps } from './types.ts';
 
 const ORMS: Record<string, () => Promise<OrmDefinition>> = {
   drizzle: async () => (await import('./drizzle.ts')).drizzle,
+  kysely: async () => (await import('./kysely.ts')).kysely,
 };
 
 const DDL = `

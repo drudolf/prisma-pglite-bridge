@@ -549,8 +549,9 @@ implement `OrmDefinition` in a sibling of `orm/drizzle.ts`, register it
 in `run.ts`'s `ORMS` map, and add the ORM as a devDependency.
 
 Reference results — Apple i9-9980HK, 2026-07-10, bridge at `e72dfd4`
-(per-client statement caching on), `drizzle-orm` 0.45.2, PGlite 0.5.4,
-N=300:
+(per-client statement caching on), PGlite 0.5.4, N=300.
+
+**drizzle** (`drizzle-orm` 0.45.2 — native: `drizzle-orm/pglite`):
 
 | Operation | native p50 | wire p50 | native p99 | wire p99 |
 | ------------- | ------ | ---------- | ------ | ---------- |
@@ -560,13 +561,25 @@ N=300:
 | join | 1.30ms | **0.44ms** | 3.35ms | **1.02ms** |
 | tx (r+w) | 1.24ms | **0.49ms** | 2.13ms | **0.89ms** |
 
-The wire path wins every operation (2.7–3.9× at p50) despite the extra
-protocol layer: the pool's client-level statement-name injection
-parse-skips repeat shapes, while `drizzle-orm/pglite` re-parses every
-call. Drizzle's object-form queries carry no `types`, so they ride the
-stock named path, not the FastQuery fast path — the win here is the
-statement cache and the protocol path, and it transfers to any ORM that
-issues object-form queries through a pg `Pool`.
+**kysely** (`kysely` 0.29.3 — native: the first-party built-in
+`PGliteDialect`):
+
+| Operation | native p50 | wire p50 | native p99 | wire p99 |
+| ------------- | ------ | ---------- | ------ | ---------- |
+| single insert | 0.39ms | **0.18ms** | 0.85ms | **0.35ms** |
+| findMany | 1.22ms | **0.31ms** | 2.75ms | **0.71ms** |
+| select where | 0.44ms | **0.20ms** | 1.09ms | **0.47ms** |
+| join | 1.28ms | **0.46ms** | 3.51ms | **0.87ms** |
+| tx (r+w) | 1.26ms | **0.53ms** | 2.22ms | **0.91ms** |
+
+The wire path wins every operation for both ORMs (2.2–3.9× at p50)
+despite the extra protocol layer — even against Kysely's first-party
+dialect: the pool's client-level statement-name injection parse-skips
+repeat shapes, while the native drivers re-parse every call. Object-form
+ORM queries carry no `types`, so they ride the stock named path, not the
+FastQuery fast path — the win is the statement cache and the protocol
+path, and it transfers to any ORM that issues object-form queries
+through a pg `Pool`.
 
 ## Environment
 
