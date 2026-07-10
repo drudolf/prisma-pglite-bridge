@@ -1,5 +1,0 @@
----
-"prisma-pglite-bridge": patch
----
-
-Recover fast-path clients from synchronous bind failures. pg serializes query values synchronously during Bind; an unserializable value (a circular structure, a throwing `toPostgres`) made the fast query path throw out of pg's queue pump with the client marked busy — wedging that client forever (every later query queued unresolved). The failure is now caught and recovered: the query rejects with the serialization error, a bare Sync restores the protocol state, and the client stays usable. Unlike stock pg, the just-parsed statement is deliberately kept (not Closed): the client's parse-skip cache still records it, so closing it server-side would desync the cache and fail the next execution with Postgres error 26000 — keeping it is exactly the cache's normal warm state, and a retry with valid values reuses it without a re-Parse. Non-`Error` throws are wrapped in an `Error`. Not reachable through Prisma (adapter-pg pre-serializes values); affects direct `PgBridgePool` / `PgBridgeClient` use with the adapter-shaped query form.

@@ -20,3 +20,11 @@ Observable difference: fast-path results resolve to a plain
 instance. Every other query shape — unnamed statements, object row mode,
 Submittables, COPY, row-limited queries — uses the stock pg path unchanged.
 Opt out with the new `PgBridgePoolOptions.fastQueryPath: false`.
+
+Robustness details: `getTypeParser` is bound to its receiver, so
+`this`-dependent `types` objects (pg's own `TypeOverrides` class) work as
+query-level types; and a synchronous serialization failure during Bind (a
+circular value, a throwing `toPostgres`) rejects the query and leaves the
+client fully usable — the parsed statement stays cached, so a retry with
+valid values skips the re-Parse. Non-`Error` throws are wrapped in an
+`Error`.
