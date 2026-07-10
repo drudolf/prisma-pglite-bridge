@@ -162,6 +162,35 @@ describe('PgBridgeClient', () => {
     }
   });
 
+  it('delivers rows to the callback when a trailing non-function follows it (documented deviation)', async () => {
+    const pglite = new PGlite();
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        // query(text, cb, []) — a malformed ordering. Stock pg's
+        // normalizeQueryConfig clobbers the callback slot with the trailing
+        // truthy array and throws TypeError at settlement; the bridge's
+        // collapse keeps the last positional FUNCTION, so the callback is
+        // served. A deliberate, saner deviation — pinned so it stays chosen.
+        const { rows } = await new Promise<{ rows: unknown[] }>((resolve, reject) => {
+          const ret = (client.query as unknown as (...args: unknown[]) => unknown)(
+            'SELECT 1 AS n',
+            (err: unknown, res: { rows: unknown[] }) => (err ? reject(err) : resolve(res)),
+            [],
+          );
+          expect(ret).toBeUndefined();
+        });
+        expect(rows).toEqual([{ n: 1 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await close();
+      await pglite.close();
+    }
+  });
+
   it('does not trigger pg same-client query-queue deprecation warning', async () => {
     const pglite = new PGlite();
     const { pool, close } = await createBridgePool(pglite);

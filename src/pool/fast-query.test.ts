@@ -571,7 +571,10 @@ describe('pg seam contract', () => {
 
     // FastQuery batches its EQP messages inside stream.cork()/uncork().
     // FastQuery optional-chains these, so drift would silently drop the
-    // batching rather than throw — this assertion is the only alarm.
+    // batching rather than throw — this assertion is the only alarm. It is
+    // a perf-drift sentinel, not a correctness seam like sendCopyFail: on a
+    // future pg where the stream loses cork, delete it deliberately after
+    // re-measuring the fast path, not as a green-degradation fix.
     const stream = connection.stream as Record<string, unknown>;
     for (const method of ['cork', 'uncork'] as const) {
       expect(typeof stream[method], `connection.stream.${method}`).toBe('function');

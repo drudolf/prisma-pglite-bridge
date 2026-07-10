@@ -187,6 +187,10 @@ export class PgBridgeClient extends pg.Client {
       }
 
       try {
+        // Known deviation: a callback that throws surfaces as an unhandled
+        // rejection here, where stock pg propagates it synchronously from
+        // the connection's message handler (uncaughtException channel).
+        // adapter-pg never uses callback mode.
         this.query(...promiseArgs).then(
           (res: unknown) => cb(null, res),
           (err: unknown) => cb(err, undefined),
@@ -208,7 +212,9 @@ export class PgBridgeClient extends pg.Client {
     // query plan via EQP. pg skips Parse on repeat calls for named statements
     // (connection.parsedStatements guard in Query.prepare). Submittable queries
     // are already dispatched above; string-form queries are excluded by the
-    // isObject guard below.
+    // isObject guard below. Empty text is never named — CACHEABLE_SQL requires
+    // a leading statement keyword, and that regex (not this guard) is the
+    // layer keeping empty text unnamed like stock pg runs it.
     if (this.#stmtNameGen && isObject(args[0])) {
       const c = args[0] as Record<string, unknown>;
       if (typeof c.text === 'string' && c.name == null) {
