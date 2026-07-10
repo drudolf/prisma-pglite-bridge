@@ -72,7 +72,7 @@ Another pool or bridge connected to the same live PGlite instance:
 each new pool clears the session's prepared-statement namespace on
 connect, destroying the first bridge's cache. Concurrent pools on one
 instance are unsupported (their transactions can also interleave) —
-the bridge emits `PGliteSharedPGliteWarning` when it detects this.
+the bridge emits `PGliteBridgeSharedInstanceWarning` when it detects this.
 
 Use one pool/bridge per PGlite instance, or pass
 `preparedStatements: false` to the bridges sharing it. Sequential

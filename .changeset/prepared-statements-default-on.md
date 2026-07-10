@@ -11,7 +11,7 @@ p99 in the reference benchmark). Opt out with `preparedStatements: false`.
 disable it: each new pool's connect-time session cleanup deallocates the
 others' cached statements, and their next cached query fails with Postgres
 error 26000 ("prepared statement does not exist"). The bridge now emits
-`PGliteSharedPGliteWarning` when it detects this topology, which was already
+`PGliteBridgeSharedInstanceWarning` when it detects this topology, which was already
 unsupported for transactions. Sequential sharing (close one bridge before
 creating the next) is unaffected.
 

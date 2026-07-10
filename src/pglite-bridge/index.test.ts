@@ -226,6 +226,47 @@ describe('PGliteBridge', () => {
   });
 });
 
+describe('PGliteBridge — adapter construction failure', () => {
+  it('releases the shared-instance pool slot when PrismaPg construction throws', async () => {
+    // Real `pg`, real PgBridgePool — only the adapter is mocked, throwing on
+    // first construction. The bridge constructor creates its pool (which
+    // counts toward the shared-instance tracker) before PrismaPg; if
+    // PrismaPg throws, the slot must be released, or the next bridge on the
+    // same PGlite gets a spurious PGliteBridgeSharedInstanceWarning.
+    vi.resetModules();
+    const prismaPg = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('adapter boom');
+      })
+      .mockImplementation(function MockPrismaPg() {
+        return { mocked: true };
+      });
+    vi.doMock('@prisma/adapter-pg', () => ({ PrismaPg: prismaPg }));
+
+    const warnings: Error[] = [];
+    const onWarning = (warning: Error): void => {
+      if (warning.name === 'PGliteBridgeSharedInstanceWarning') warnings.push(warning);
+    };
+    process.on('warning', onWarning);
+    try {
+      const module = await import('./index.ts');
+      const mockPglite = createMockPGlite();
+
+      expect(() => new module.PGliteBridge({ pglite: mockPglite })).toThrow('adapter boom');
+
+      const bridge = new module.PGliteBridge({ pglite: mockPglite });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(warnings).toHaveLength(0);
+      await bridge.close();
+    } finally {
+      process.removeListener('warning', onWarning);
+      vi.doUnmock('@prisma/adapter-pg');
+      vi.resetModules();
+    }
+  });
+});
+
 describe('PGliteBridge — mocked pg.Pool', () => {
   type ClassModule = typeof import('./index.ts');
 

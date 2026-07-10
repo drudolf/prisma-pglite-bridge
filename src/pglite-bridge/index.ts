@@ -234,10 +234,22 @@ export class PGliteBridge {
     if (preparedStatements) {
       adapterOptions.statementNameGenerator = statementNameGenerator;
     }
-    this.adapter = new PrismaPg(
-      this.#pool,
-      Object.keys(adapterOptions).length > 0 ? adapterOptions : undefined,
-    );
+    try {
+      this.adapter = new PrismaPg(
+        this.#pool,
+        Object.keys(adapterOptions).length > 0 ? adapterOptions : undefined,
+      );
+    } catch (err) {
+      // The half-constructed bridge is unreachable after a throw, so nothing
+      // would ever call close() — release the pool (whose end() frees its
+      // shared-instance slot synchronously) before rethrowing. Constructors
+      // cannot await; the async remainder of end() is best-effort.
+      void this.#pool.end().catch(
+        /* v8 ignore next — end() on a never-used pool does not reject */
+        () => {},
+      );
+      throw err;
+    }
 
     leakRegistry.register(this.adapter, undefined, this.#leakToken);
   }

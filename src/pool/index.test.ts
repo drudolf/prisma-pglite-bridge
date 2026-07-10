@@ -14,14 +14,17 @@ const seenSyncToFs = (spy: ExecProtocolSpy): boolean[] =>
 
 describe('PgBridgePool — bridgeId', async () => {
   it('returns a symbol, unique per call when omitted', async () => {
+    // Sequential pools — two live pools on one PGlite would (correctly)
+    // emit PGliteBridgeSharedInstanceWarning, and uniqueness doesn't need
+    // them alive at the same time.
     const a = new PgBridgePool({ pglite });
+    await a.end();
     const b = new PgBridgePool({ pglite });
     try {
       expect(typeof a.bridgeId).toBe('symbol');
       expect(typeof b.bridgeId).toBe('symbol');
       expect(a.bridgeId).not.toBe(b.bridgeId);
     } finally {
-      await a.end();
       await b.end();
     }
   });
@@ -173,7 +176,7 @@ describe('PgBridgePool — shared-PGlite warning', () => {
   const captureSharedWarnings = (): { warnings: Error[]; stop: () => void } => {
     const warnings: Error[] = [];
     const onWarning = (warning: Error): void => {
-      if (warning.name === 'PGliteSharedPGliteWarning') warnings.push(warning);
+      if (warning.name === 'PGliteBridgeSharedInstanceWarning') warnings.push(warning);
     };
     process.on('warning', onWarning);
     return {

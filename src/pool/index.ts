@@ -174,9 +174,10 @@ export class PgBridgePool extends pg.Pool {
         'Multiple live PgBridgePools share one PGlite instance. This is unsupported: ' +
           'transactions from different pools can interleave, and each new pool ' +
           "deallocates the others' cached prepared statements (subsequent queries " +
-          'fail with Postgres error 26000). Use one pool per PGlite instance, or ' +
-          'pass preparedStatements: false to the bridges sharing it.',
-        { type: 'PGliteSharedPGliteWarning' },
+          'fail with Postgres error 26000). Use one pool per PGlite instance; when ' +
+          'the pools come from PGliteBridge, prepared-statement caching can be ' +
+          'disabled with preparedStatements: false.',
+        { type: 'PGliteBridgeSharedInstanceWarning' },
       );
     }
 
@@ -201,8 +202,14 @@ export class PgBridgePool extends pg.Pool {
   override end(): Promise<void>;
   override end(callback: () => void): void;
   override end(callback?: () => void): Promise<void> | void {
+    // Release the shared-instance slot synchronously: once end() is called
+    // the pool accepts no new connections, so it can no longer run
+    // connect-time cleanup against the session and stops counting toward
+    // the concurrent-pool hazard immediately. Synchronous release also lets
+    // PGliteBridge's constructor-failure path free the slot before it
+    // rethrows (it cannot await).
+    this.#releaseLiveSlot();
     const cleanup = async (): Promise<void> => {
-      this.#releaseLiveSlot();
       if (this.#ownsPglite && !this.pglite.closed) {
         await this.pglite.close();
       }

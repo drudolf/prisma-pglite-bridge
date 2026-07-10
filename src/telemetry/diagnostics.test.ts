@@ -1,7 +1,6 @@
 import diagnostics_channel from 'node:diagnostics_channel';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { setupPGlite } from '../__tests__/pglite.ts';
 import { PgBridgePool } from '../pool';
 import {
   LOCK_WAIT_CHANNEL,
@@ -12,16 +11,19 @@ import {
 
 const queryCh = diagnostics_channel.channel(QUERY_CHANNEL);
 const lockWaitCh = diagnostics_channel.channel(LOCK_WAIT_CHANNEL);
-const pglite = await setupPGlite();
 
 let queryPool: PgBridgePool;
 let queryPoolB: PgBridgePool;
 let lockWaitPool: PgBridgePool;
 
 beforeAll(() => {
-  queryPool = new PgBridgePool({ pglite });
-  queryPoolB = new PgBridgePool({ pglite });
-  lockWaitPool = new PgBridgePool({ pglite, max: 2 });
+  // One pool-owned PGlite per pool — the supported topology. bridgeId
+  // filtering does not depend on the pools sharing an instance, and
+  // concurrent pools on one instance would (correctly) emit
+  // PGliteBridgeSharedInstanceWarning. `pool.end()` closes owned instances.
+  queryPool = new PgBridgePool();
+  queryPoolB = new PgBridgePool();
+  lockWaitPool = new PgBridgePool({ max: 2 });
 });
 
 afterAll(async () => {
