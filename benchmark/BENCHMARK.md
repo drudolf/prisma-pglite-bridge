@@ -549,10 +549,11 @@ into its own query-builder API (see `orm/types.ts`); to add one,
 implement `OrmDefinition` in a sibling of `orm/drizzle.ts`, register it
 in `run.ts`'s `ORMS` map, and add the ORM as a devDependency.
 
-Reference results — Apple i9-9980HK, 2026-07-10, bridge at `f1b66a2`
-(per-client statement caching on), PGlite 0.5.4, N=300, `-r 3`: p50 is
-the median [min–max spread] of per-repeat p50s, p99 the median of
-per-repeat p99s.
+Reference results — detailed per-op tables from the Apple i9-9980HK,
+2026-07-10, bridge at `f1b66a2` (per-client statement caching on),
+PGlite 0.5.4, N=300, `-r 3`: p50 is the median [min–max spread] of
+per-repeat p50s, p99 the median of per-repeat p99s. A cross-machine
+summary for all three reference machines follows the tables.
 
 **drizzle** (`drizzle-orm` 0.45.2 — native: `drizzle-orm/pglite`):
 
@@ -614,6 +615,29 @@ bridge pool, since TypeORM has no external-pool option; re-measured at
 | join | 2.19ms [2.12–2.23] | **0.95ms** [0.87–1.03] | 4.89ms | 1.99ms |
 | tx (r+w) | 1.46ms [1.44–1.50] | **0.58ms** [0.56–0.61] | 2.73ms | 1.04ms |
 
+**Cross-machine summary** — the same five-ORM sweep (`-r 3`, N=300,
+bridge at `7b51f57`+) on all three reference machines from the
+[methodology](#methodology) section, remotes synced via git bundle.
+The wire path won every operation of every ORM on every machine — 75
+of 75 cells. Per ORM, the range of native-p50 ÷ wire-p50 ratios across
+the five operations:
+
+| ORM | Apple M3 Max | Apple i9-9980HK | Linux i7-8700 |
+| --------- | -------- | -------- | -------- |
+| drizzle | 2.7–3.3× | 2.3–3.4× | 2.3–3.1× |
+| knex | 3.0–4.1× | 2.5–4.0× | 2.5–3.4× |
+| kysely | 2.7–3.7× | 2.4–3.4× | 2.5–3.5× |
+| typeorm | 2.2–4.0× | 2.2–2.6× | 2.1–2.5× |
+| mikro-orm | 1.4–2.3× | 1.4–1.8× | 1.4–1.8× |
+
+The ranking and ratio bands are architecture-independent — consistent
+with the mechanism being PGlite's fixed per-call API cost, which every
+platform pays. Absolute latencies scale with single-core speed (M3 Max
+wire p50s run 0.03–0.05ms on the query builders' point ops, roughly 3×
+faster than the two Intel machines), and the M3 Max margins are the
+widest: the faster the machine, the more that fixed per-call overhead
+dominates the native path.
+
 The wire path wins every operation for all five ORMs despite the extra
 protocol layer — even against Kysely's first-party dialect and
 MikroORM's official driver. **Why:** every native driver funnels into
@@ -636,11 +660,11 @@ share a shape and there is nothing to cache — its wire numbers are
 caching-independent. FastQuery never engages on any wire path (no
 caller `types`). The win therefore transfers to any ORM driving a pg
 `Pool`, regardless of query form. The margin tracks how
-much of an operation is driver time: roughly 2–4× at p50 for the query
-builders, 1.8–3.0× for TypeORM and 1.4–1.8× for MikroORM, whose entity
-hydration and unit-of-work bookkeeping dilute the driver share. Knex
-additionally exercises the bridge's callback-form dispatch (its pg
-dialect passes a positional callback).
+much of an operation is driver time: across the three machines,
+roughly 2–4× at p50 for the query builders and TypeORM, 1.4–2.3× for
+MikroORM, whose entity hydration and unit-of-work bookkeeping dilute
+the driver share. Knex additionally exercises the bridge's
+callback-form dispatch (its pg dialect passes a positional callback).
 
 The tables are `-r 3` whole-run repeats (fresh PGlite instances, pool,
 and ORM per repeat) on the i9 — the machine the methodology notes flag
