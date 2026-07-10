@@ -25,6 +25,7 @@ minimumReleaseAgeExclude:
   - pg-connection-string@2.14.0
   - pg-protocol@1.15.0
   - pg@8.22.0
+  - knip@6.25.0
 overrides:
   "@hono/node-server@<1.19.13": ^1.19.13
   # PgBridgeClient subclasses pg.Client and must be driven by the same pg copy
