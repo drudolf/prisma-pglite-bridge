@@ -561,4 +561,20 @@ describe('pg seam contract', () => {
     expect(typeof connection.parsedStatements).toBe('object');
     expect(connection.parsedStatements).not.toBeNull();
   });
+
+  it('an unconnected pg.Client exposes the COPY-abort and stream-cork seams', () => {
+    const client = new pg.Client({ host: 'localhost' });
+    const connection = client.connection as unknown as Record<string, unknown>;
+
+    // FastQuery aborts a server-initiated COPY via connection.sendCopyFail.
+    expect(typeof connection.sendCopyFail).toBe('function');
+
+    // FastQuery batches its EQP messages inside stream.cork()/uncork().
+    // FastQuery optional-chains these, so drift would silently drop the
+    // batching rather than throw — this assertion is the only alarm.
+    const stream = connection.stream as Record<string, unknown>;
+    for (const method of ['cork', 'uncork'] as const) {
+      expect(typeof stream[method], `connection.stream.${method}`).toBe('function');
+    }
+  });
 });
