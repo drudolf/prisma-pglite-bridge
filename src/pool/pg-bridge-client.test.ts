@@ -127,6 +127,41 @@ describe('PgBridgeClient', () => {
     }
   });
 
+  it('treats a leading function argument as a query config, not a callback (stock pg parity)', async () => {
+    const pglite = new PGlite();
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        // Stock pg only collapses positional functions AFTER the first
+        // argument into the callback slot (client.query(config, values,
+        // callback)); the first argument is always the query config. A bare
+        // function is therefore a (nonsensical) config: every function has a
+        // string `.name`, so pg's text-or-name guard passes and it runs as a
+        // named empty statement (EmptyQueryResponse → command null). Parity
+        // here is only that the call returns a promise and the function is
+        // never invoked as a callback — the settlement value is stock pg's.
+        const fn = vi.fn();
+        const ret = (client.query as unknown as (...args: unknown[]) => unknown)(fn);
+
+        expect(ret).toBeInstanceOf(Promise);
+        const result = await (ret as Promise<{ command: string | null }>);
+        expect(result.command).toBeNull();
+        expect(fn).not.toHaveBeenCalled();
+
+        // A nonsense config is a per-query affair, not a connection error —
+        // the client must stay usable.
+        const followUp = await client.query<{ n: number }>('SELECT 1 AS n');
+        expect(followUp.rows[0]?.n).toBe(1);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await close();
+      await pglite.close();
+    }
+  });
+
   it('does not trigger pg same-client query-queue deprecation warning', async () => {
     const pglite = new PGlite();
     const { pool, close } = await createBridgePool(pglite);

@@ -863,6 +863,23 @@ describe('PgBridgePool — fastQueryPath', () => {
       }
     });
 
+    it('rejects an empty query text (stock pg owns EmptyQueryResponse semantics)', async () => {
+      const pool = new PgBridgePool({ pglite });
+      try {
+        // values: [] — the empty statement takes no parameters, and binding
+        // one fails identically on either path, masking the discriminator.
+        const result = await pool.query({
+          ...fastShapeQuery(),
+          name: 'fq_emptytext',
+          text: '',
+          values: [],
+        });
+        expect(isStockResult(result)).toBe(true);
+      } finally {
+        await pool.end();
+      }
+    });
+
     it('rejects a name-only re-execution (no text — a legitimate stock pattern)', async () => {
       const pool = new PgBridgePool({ pglite });
       try {

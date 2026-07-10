@@ -158,13 +158,16 @@ export class PgBridgeClient extends pg.Client {
       return submit();
     }
 
-    // pg's normalizeQueryConfig collapses every positional function and a
-    // config-embedded `callback` into one callback slot — the last positional
-    // function wins over `config.callback`. Mirror that, re-enter as a
-    // promise, and return `undefined` like stock pg does in callback mode.
-    const promiseArgs: unknown[] = [];
+    // pg's query(config, values, callback) never reads the first argument as
+    // a callback — normalizeQueryConfig collapses the positional functions
+    // after it and a config-embedded `callback` into one callback slot, the
+    // last positional winning over `config.callback`. Mirror that, re-enter
+    // as a promise, and return `undefined` like stock pg does in callback
+    // mode.
+    const promiseArgs: unknown[] = [first];
     let origCb: ((err: unknown, res: unknown) => void) | undefined;
-    for (const arg of args) {
+    for (let i = 1; i < args.length; i++) {
+      const arg = args[i];
       if (typeof arg === 'function') {
         origCb = arg as (err: unknown, res: unknown) => void;
       } else {
@@ -334,6 +337,8 @@ export class PgBridgeClient extends pg.Client {
       typeof name !== 'string' ||
       name === '' ||
       typeof text !== 'string' ||
+      // Stock pg owns EmptyQueryResponse semantics.
+      text === '' ||
       config.rowMode !== 'array' ||
       (values !== undefined && !Array.isArray(values)) ||
       !isTypesLike(types) ||
