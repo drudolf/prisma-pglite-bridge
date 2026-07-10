@@ -11,6 +11,7 @@
  * Usage:
  *   pnpm bench:orm                          # all ORMs, N=300 w=30
  *   pnpm bench:orm --orm drizzle -n 300 -w 30
+ *   pnpm bench:orm -r 3                     # whole-run repeats; p50 spread reported
  */
 import { PGlite } from '@electric-sql/pglite';
 import { PgBridgePool } from '../../src/pool';
@@ -42,6 +43,7 @@ const getArg = (long: string, short?: string): string | undefined => {
 const ormFilter = getArg('orm');
 const N = Number(getArg('n', 'n') ?? '300');
 const WARMUP = Number(getArg('warmup', 'w') ?? '30');
+const REPEAT = Number(getArg('repeat', 'r') ?? '1');
 
 // ─── Timing ───────────────────────────────────────────────────────────────────
 
@@ -54,6 +56,11 @@ const time = async (fn: () => Promise<unknown>): Promise<number> => {
 const pct = (arr: number[], p: number): number => {
   const s = [...arr].sort((a, b) => a - b);
   return s[Math.ceil((p / 100) * s.length) - 1] ?? 0;
+};
+const median = (xs: number[]): number => {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? (s[m] ?? 0) : ((s[m - 1] ?? 0) + (s[m] ?? 0)) / 2;
 };
 const fmt = (ms: number) => `${ms.toFixed(2)}ms`;
 const col = (s: string, w: number) => s.padEnd(w);
@@ -131,32 +138,42 @@ const runBench = async (ops: OrmOps, label: string): Promise<Record<string, numb
 
 // ─── Report ───────────────────────────────────────────────────────────────────
 
-const report = (nR: Record<string, number[]>, wR: Record<string, number[]>): void => {
-  const LINE = '─'.repeat(74);
+const report = (nRuns: Record<string, number[]>[], wRuns: Record<string, number[]>[]): void => {
+  const multi = nRuns.length > 1;
+  const p50w = multi ? 26 : 12;
+  const LINE = '─'.repeat(multi ? 102 : 74);
   console.log(`\n${LINE}`);
-  console.log('Results (ms, lower is better)\n');
+  console.log(
+    `Results (ms, lower is better${multi ? `; p50 median [spread] of ${nRuns.length} repeats, p99 median` : ''})\n`,
+  );
   console.log(
     col('Operation', 16) +
-      col('native p50', 12) +
-      col('wire p50', 12) +
+      col('native p50', p50w) +
+      col('wire p50', p50w) +
       col('native p99', 12) +
       col('wire p99', 12) +
       'overhead (p50)',
   );
   console.log(LINE);
 
-  for (const op of Object.keys(nR)) {
-    const n = nR[op] ?? [];
-    const w = wR[op] ?? [];
-    const np50 = pct(n, 50);
-    const wp50 = pct(w, 50);
+  const cell = (p50s: number[]): string => {
+    const med = fmt(median(p50s));
+    if (!multi) return med;
+    return `${med} [${fmt(Math.min(...p50s))}–${fmt(Math.max(...p50s))}]`;
+  };
+
+  for (const op of Object.keys(nRuns[0] ?? {})) {
+    const nP50s = nRuns.map((r) => pct(r[op] ?? [], 50));
+    const wP50s = wRuns.map((r) => pct(r[op] ?? [], 50));
+    const nP99 = median(nRuns.map((r) => pct(r[op] ?? [], 99)));
+    const wP99 = median(wRuns.map((r) => pct(r[op] ?? [], 99)));
     console.log(
       col(op, 16) +
-        col(fmt(np50), 12) +
-        col(fmt(wp50), 12) +
-        col(fmt(pct(n, 99)), 12) +
-        col(fmt(pct(w, 99)), 12) +
-        `${(wp50 / np50).toFixed(1)}×`,
+        col(cell(nP50s), p50w) +
+        col(cell(wP50s), p50w) +
+        col(fmt(nP99), 12) +
+        col(fmt(wP99), 12) +
+        `${(median(wP50s) / median(nP50s)).toFixed(1)}×`,
     );
   }
   console.log(LINE);
@@ -176,37 +193,45 @@ const main = async () => {
     const def = await load();
 
     console.log(`═══ ${def.name} ═══`);
-    console.log(`Setup: native (${def.nativeLabel})...`);
-    const nativePglite = new PGlite();
-    await nativePglite.waitReady;
-    await nativePglite.exec(DDL);
-    const nativePath = await def.createNative(nativePglite);
+    const nRuns: Record<string, number[]>[] = [];
+    const wRuns: Record<string, number[]>[] = [];
 
-    console.log(`Setup: wire (${def.wireLabel})...`);
-    const wirePglite = new PGlite();
-    await wirePglite.waitReady;
-    await wirePglite.exec(DDL);
-    const pool = new PgBridgePool({ pglite: wirePglite });
-    const wirePath = await def.createWire(pool);
+    // Whole-run repeats: fresh PGlite instances, pool, and ORM per repeat,
+    // aggregated in report() as p50 median [min–max spread].
+    for (let rep = 1; rep <= REPEAT; rep++) {
+      if (REPEAT > 1) console.log(`— repeat ${rep}/${REPEAT} —`);
+      console.log(`Setup: native (${def.nativeLabel})...`);
+      const nativePglite = new PGlite();
+      await nativePglite.waitReady;
+      await nativePglite.exec(DDL);
+      const nativePath = await def.createNative(nativePglite);
 
-    console.log('Correctness:');
-    await checkCorrectness(nativePath.ops, wirePath.ops);
+      console.log(`Setup: wire (${def.wireLabel})...`);
+      const wirePglite = new PGlite();
+      await wirePglite.waitReady;
+      await wirePglite.exec(DDL);
+      const pool = new PgBridgePool({ pglite: wirePglite });
+      const wirePath = await def.createWire(pool);
 
-    console.log('\nNative path:');
-    const nR = await runBench(nativePath.ops, 'native');
-    console.log('\nWire path:');
-    const wR = await runBench(wirePath.ops, 'wire');
+      console.log('Correctness:');
+      await checkCorrectness(nativePath.ops, wirePath.ops);
 
-    await nativePath.end();
-    await wirePath.end();
-    // Guarded teardown: some ORM teardowns reach into harness-owned
-    // resources — knex-pglite closes a caller-supplied PGlite, and
-    // MikroORM's kysely client ends the wire pool on orm.close().
-    if (!(pool as unknown as { ended?: boolean }).ended) await pool.end();
-    if (!wirePglite.closed) await wirePglite.close();
-    if (!nativePglite.closed) await nativePglite.close();
+      console.log('\nNative path:');
+      nRuns.push(await runBench(nativePath.ops, 'native'));
+      console.log('\nWire path:');
+      wRuns.push(await runBench(wirePath.ops, 'wire'));
 
-    report(nR, wR);
+      await nativePath.end();
+      await wirePath.end();
+      // Guarded teardown: some ORM teardowns reach into harness-owned
+      // resources — knex-pglite closes a caller-supplied PGlite, and
+      // MikroORM's kysely client ends the wire pool on orm.close().
+      if (!(pool as unknown as { ended?: boolean }).ended) await pool.end();
+      if (!wirePglite.closed) await wirePglite.close();
+      if (!nativePglite.closed) await nativePglite.close();
+    }
+
+    report(nRuns, wRuns);
   }
 };
 

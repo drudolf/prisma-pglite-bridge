@@ -539,6 +539,7 @@ committed transaction visible) runs before any timing.
 ```bash
 pnpm bench:orm                            # all ORMs, N=300 warmup=30
 pnpm bench:orm --orm drizzle -n 300 -w 30
+pnpm bench:orm -r 3                       # whole-run repeats, p50 spread reported
 ```
 
 The workload is fixed in `orm/run.ts` — single insert, findMany,
@@ -548,66 +549,68 @@ into its own query-builder API (see `orm/types.ts`); to add one,
 implement `OrmDefinition` in a sibling of `orm/drizzle.ts`, register it
 in `run.ts`'s `ORMS` map, and add the ORM as a devDependency.
 
-Reference results — Apple i9-9980HK, 2026-07-10, bridge at `e72dfd4`
-(per-client statement caching on), PGlite 0.5.4, N=300.
+Reference results — Apple i9-9980HK, 2026-07-10, bridge at `f1b66a2`
+(per-client statement caching on), PGlite 0.5.4, N=300, `-r 3`: p50 is
+the median [min–max spread] of per-repeat p50s, p99 the median of
+per-repeat p99s.
 
 **drizzle** (`drizzle-orm` 0.45.2 — native: `drizzle-orm/pglite`):
 
-| Operation | native p50 | wire p50 | native p99 | wire p99 |
+| Operation | native p50 [spread] | wire p50 [spread] | native p99 | wire p99 |
 | ------------- | ------ | ---------- | ------ | ---------- |
-| single insert | 0.40ms | **0.17ms** | 1.03ms | **0.37ms** |
-| findMany | 1.33ms | **0.37ms** | 3.36ms | **0.77ms** |
-| select where | 0.45ms | **0.18ms** | 0.86ms | **0.40ms** |
-| join | 1.30ms | **0.44ms** | 3.35ms | **1.02ms** |
-| tx (r+w) | 1.24ms | **0.49ms** | 2.13ms | **0.89ms** |
+| single insert | 0.42ms [0.41–0.43] | **0.18ms** [0.17–0.18] | 0.76ms | 0.35ms |
+| findMany | 1.36ms [1.18–1.40] | **0.40ms** [0.37–0.41] | 2.39ms | 0.75ms |
+| select where | 0.48ms [0.45–0.49] | **0.19ms** [0.18–0.19] | 1.06ms | 0.32ms |
+| join | 1.43ms [1.24–1.47] | **0.47ms** [0.44–0.47] | 2.86ms | 0.81ms |
+| tx (r+w) | 1.30ms [1.24–1.35] | **0.51ms** [0.49–0.52] | 2.25ms | 0.77ms |
 
 **knex** (`knex` 3.3.0, wire via its `connectionPool` option — native:
 community `knex-pglite` 0.14.0):
 
-| Operation | native p50 | wire p50 | native p99 | wire p99 |
+| Operation | native p50 [spread] | wire p50 [spread] | native p99 | wire p99 |
 | ------------- | ------ | ---------- | ------ | ---------- |
-| single insert | 0.41ms | **0.15ms** | 0.69ms | **0.35ms** |
-| findMany | 1.28ms | **0.34ms** | 3.05ms | **0.73ms** |
-| select where | 0.48ms | **0.17ms** | 0.82ms | **0.36ms** |
-| join | 1.32ms | **0.40ms** | 3.53ms | **0.82ms** |
-| tx (r+w) | 1.53ms | **0.51ms** | 4.13ms | **1.38ms** |
+| single insert | 0.35ms [0.34–0.38] | **0.14ms** [0.13–0.14] | 0.78ms | 0.36ms |
+| findMany | 1.23ms [1.18–1.26] | **0.31ms** [0.31–0.32] | 3.28ms | 0.89ms |
+| select where | 0.40ms [0.38–0.43] | **0.15ms** [0.15–0.16] | 1.04ms | 0.41ms |
+| join | 1.28ms [1.24–1.30] | **0.37ms** [0.36–0.38] | 3.43ms | 0.98ms |
+| tx (r+w) | 1.31ms [1.26–1.44] | **0.47ms** [0.45–0.50] | 3.24ms | 1.16ms |
 
 **kysely** (`kysely` 0.29.3 — native: the first-party built-in
 `PGliteDialect`):
 
-| Operation | native p50 | wire p50 | native p99 | wire p99 |
+| Operation | native p50 [spread] | wire p50 [spread] | native p99 | wire p99 |
 | ------------- | ------ | ---------- | ------ | ---------- |
-| single insert | 0.39ms | **0.18ms** | 0.85ms | **0.35ms** |
-| findMany | 1.22ms | **0.31ms** | 2.75ms | **0.71ms** |
-| select where | 0.44ms | **0.20ms** | 1.09ms | **0.47ms** |
-| join | 1.28ms | **0.46ms** | 3.51ms | **0.87ms** |
-| tx (r+w) | 1.26ms | **0.53ms** | 2.22ms | **0.91ms** |
+| single insert | 0.39ms [0.37–0.39] | **0.20ms** [0.20–0.23] | 0.79ms | 0.33ms |
+| findMany | 1.23ms [1.21–1.25] | **0.34ms** [0.31–0.38] | 2.50ms | 0.63ms |
+| select where | 0.43ms [0.41–0.44] | **0.22ms** [0.22–0.25] | 0.78ms | 0.40ms |
+| join | 1.29ms [1.27–1.30] | **0.48ms** [0.45–0.53] | 2.34ms | 0.79ms |
+| tx (r+w) | 1.25ms [1.18–1.25] | **0.57ms** [0.57–0.66] | 2.26ms | 0.82ms |
 
 **mikro-orm** (`@mikro-orm/*` 7.1.5 — native: the official
 `@mikro-orm/pglite` driver; wire: a kysely `PostgresDialect` wrapping the
 bridge pool via `driverOptions`; entity ORM, ops fork the EntityManager
 per call):
 
-| Operation | native p50 | wire p50 | native p99 | wire p99 |
+| Operation | native p50 [spread] | wire p50 [spread] | native p99 | wire p99 |
 | ------------- | ------ | ---------- | ------ | ---------- |
-| single insert | 0.49ms | **0.26ms** | 0.84ms | **0.57ms** |
-| findMany | 2.37ms | **1.47ms** | 4.70ms | **2.89ms** |
-| select where | 0.69ms | **0.41ms** | 2.16ms | **0.83ms** |
-| join | 4.63ms | **3.34ms** | 9.30ms | **7.82ms** |
-| tx (r+w) | 1.86ms | **1.01ms** | 3.67ms | **2.39ms** |
+| single insert | 0.49ms [0.48–0.56] | **0.27ms** [0.26–0.30] | 0.84ms | 0.50ms |
+| findMany | 2.56ms [2.53–2.63] | **1.50ms** [1.49–1.61] | 5.33ms | 3.38ms |
+| select where | 0.69ms [0.69–0.84] | **0.44ms** [0.43–0.50] | 1.36ms | 1.30ms |
+| join | 4.97ms [4.84–5.27] | **3.50ms** [3.49–3.51] | 10.25ms | 8.90ms |
+| tx (r+w) | 1.87ms [1.86–2.19] | **1.10ms** [1.06–1.26] | 3.59ms | 2.44ms |
 
 **typeorm** (`typeorm` 1.0.0 — native: community `typeorm-pglite` 0.3.4,
 harness instance injected into its module-level singleton; wire: a
 hand-rolled `driver` shim whose `Pool` constructor returns the existing
 bridge pool, since TypeORM has no external-pool option):
 
-| Operation | native p50 | wire p50 | native p99 | wire p99 |
+| Operation | native p50 [spread] | wire p50 [spread] | native p99 | wire p99 |
 | ------------- | ------ | ---------- | ------ | ---------- |
-| single insert | 0.47ms | **0.27ms** | 0.88ms | **0.50ms** |
-| findMany | 1.32ms | **0.52ms** | 2.40ms | **1.20ms** |
-| select where | 0.51ms | **0.30ms** | 1.37ms | **0.83ms** |
-| join | 2.21ms | **0.98ms** | 3.97ms | **2.32ms** |
-| tx (r+w) | 1.47ms | **0.73ms** | 2.61ms | **1.41ms** |
+| single insert | 0.49ms [0.47–0.52] | **0.27ms** [0.26–0.28] | 0.73ms | 0.45ms |
+| findMany | 1.40ms [1.28–1.44] | **0.47ms** [0.47–0.53] | 3.39ms | 1.01ms |
+| select where | 0.53ms [0.50–0.56] | **0.30ms** [0.28–0.32] | 1.04ms | 0.58ms |
+| join | 2.25ms [2.00–2.35] | **0.87ms** [0.87–1.01] | 4.46ms | 1.75ms |
+| tx (r+w) | 1.53ms [1.43–1.64] | **0.73ms** [0.69–0.79] | 2.57ms | 1.46ms |
 
 The wire path wins every operation for all five ORMs despite the extra
 protocol layer — even against Kysely's first-party dialect and
@@ -626,22 +629,22 @@ margin depending on the operation. FastQuery never engages on any wire
 path (no caller `types`). The win therefore transfers to any ORM
 driving a pg `Pool`, regardless of query form. The margin tracks how
 much of an operation is driver time: roughly 2–4× at p50 for the query
-builders (individual ops ranged 1.8–3.9× across re-runs), 1.7–2.5× for
-TypeORM and 1.4–1.9× for MikroORM, whose entity hydration and
-unit-of-work bookkeeping dilute the driver share. Knex additionally
-exercises the bridge's callback-form dispatch (its pg dialect passes a
-positional callback).
+builders, 1.8–3.0× for TypeORM and 1.4–1.8× for MikroORM, whose entity
+hydration and unit-of-work bookkeeping dilute the driver share. Knex
+additionally exercises the bridge's callback-form dispatch (its pg
+dialect passes a positional callback).
 
-Unlike the main-suite tables, these are single runs (no `-r` repeats)
-on the i9 — the machine the methodology notes flag for run-to-run
-variance. An adversarial re-verification (2026-07-10, same machine)
-confirmed the p50 columns and the ranking: p50s reproduced within
-±0.03ms over three repeats, and the margins survived reversing the
-native/wire run order (second-runner JIT advantage ≲5–10%, far below
-the margins). The p99 columns did not reproduce as numbers (single-run
-point estimates over a growing table; wire findMany p99 varied 0.68 to
-1.73ms across identical runs) — no native/wire p99 inversion was ever
-observed, but read them as indicative, not as reference values.
+The tables are `-r 3` whole-run repeats (fresh PGlite instances, pool,
+and ORM per repeat) on the i9 — the machine the methodology notes flag
+for run-to-run variance; the spread column is the min–max of per-repeat
+p50s. An adversarial re-verification (2026-07-10, same machine)
+additionally confirmed the ranking survives reversing the native/wire
+run order (second-runner JIT advantage ≲5–10%, far below the margins)
+and quantified the statement-caching share via a `statementCaching:
+false` control run. The p99 columns are medians of per-repeat p99s over
+a growing table and remain the noisiest numbers here — no native/wire
+p99 inversion has been observed in any run, but read them as
+indicative, not as reference values.
 
 ## Environment
 
