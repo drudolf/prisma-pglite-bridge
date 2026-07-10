@@ -31,6 +31,10 @@ const createBridgePool = async (pglite: PGlite) => {
 describe('PgBridgeClient', () => {
   it('throws when bridge options are missing', () => {
     expect(() => new PgBridgeClient()).toThrow('PgBridgeClient requires bridge options');
+    // A config object without the options key throws the same way.
+    expect(() => new PgBridgeClient({} as ConstructorParameters<typeof PgBridgeClient>[0])).toThrow(
+      'PgBridgeClient requires bridge options',
+    );
   });
 
   it('forwards deferred callback-form query failures to the callback', async () => {

@@ -4,12 +4,7 @@ import { PGliteDuplex } from '../duplex';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import type { SessionLock } from '../utils/session-lock.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
-import {
-  FastQuery,
-  type FastQueryField,
-  type FastQueryResult,
-  type FastQueryTypes,
-} from './fast-query.ts';
+import { FastQuery, type FastQueryField, type FastQueryResult } from './fast-query.ts';
 
 export interface PgBridgeClientOptions {
   pglite: PGlite | PGliteInterface;
@@ -28,6 +23,12 @@ type PgBridgeClientConfig = pg.ClientConfig & {
   [PgBridgeClient.OptionsKey]: PgBridgeClientOptions;
 };
 
+/** Mirrors stock pg's Submittable probe (`typeof config.submit === 'function'`,
+ *  which boxes primitives). Callers pre-exclude null/undefined — the dispatch
+ *  in {@link PgBridgeClient.query} returns those to pg first. */
+const isSubmittable = (value: unknown): value is pg.Submittable =>
+  typeof (value as { submit?: unknown }).submit === 'function';
+
 export class PgBridgeClient extends pg.Client {
   private querySubmissionChain?: Promise<void>;
   /** Result-field metadata per statement name, mirroring the lifetime of
@@ -42,11 +43,10 @@ export class PgBridgeClient extends pg.Client {
   static readonly OptionsKey: unique symbol = Symbol('PgBridgeClientOptions');
 
   constructor(config?: PgBridgeClientConfig) {
-    const resolved = config ?? ({} as PgBridgeClientConfig);
-    const { [PgBridgeClient.OptionsKey]: bridge, ...clientConfig } = resolved;
-    if (!bridge) {
+    if (!config?.[PgBridgeClient.OptionsKey]) {
       throw new Error('PgBridgeClient requires bridge options');
     }
+    const { [PgBridgeClient.OptionsKey]: bridge, ...clientConfig } = config;
 
     const duplexBox: { current?: PGliteDuplex } = {};
     super({
@@ -84,8 +84,10 @@ export class PgBridgeClient extends pg.Client {
   override query(...args: unknown[]): any {
     const first = args[0];
     const submit = () => {
-      // biome-ignore lint/suspicious/noExplicitAny: pg.Client.query has 7 overloads
-      return (super.query as any).apply(this, args) as Promise<unknown>;
+      // Collapse pg.Client.query's 7-overload union for a spread call; only
+      // the chain path treats the result as a promise, which stock pg
+      // guarantees for the shapes that reach it.
+      return (super.query as unknown as (...a: unknown[]) => Promise<unknown>).apply(this, args);
     };
 
     // Preserve pg's synchronous TypeError for null/undefined query.
@@ -95,7 +97,7 @@ export class PgBridgeClient extends pg.Client {
     // Let pg's internal queue handle it unserialized. adapter-pg never uses
     // this form; users mixing Submittable + Promise forms on one client may
     // still trip the pg queue deprecation.
-    if (typeof (first as { submit?: unknown }).submit === 'function') {
+    if (isSubmittable(first)) {
       return submit();
     }
 
@@ -184,27 +186,21 @@ export class PgBridgeClient extends pg.Client {
 
     const values = args[1] ?? config.values;
     const { name, text, types } = config;
-    const eligible =
-      args.length <= 2 &&
-      typeof name === 'string' &&
-      name !== '' &&
-      typeof text === 'string' &&
-      config.rowMode === 'array' &&
-      (values === undefined || Array.isArray(values)) &&
-      isTypesLike(types) &&
+    if (
+      args.length > 2 ||
+      typeof name !== 'string' ||
+      name === '' ||
+      typeof text !== 'string' ||
+      config.rowMode !== 'array' ||
+      (values !== undefined && !Array.isArray(values)) ||
+      !isTypesLike(types) ||
       // Disqualifiers stock pg gives meaning to that FastQuery does not.
-      ![config.binary, config.rows, config.portal, config.queryMode, config.callback].some(Boolean);
-    if (!eligible) return undefined;
+      [config.binary, config.rows, config.portal, config.queryMode, config.callback].some(Boolean)
+    ) {
+      return undefined;
+    }
 
-    const fastQuery = new FastQuery(
-      {
-        name: name as string,
-        text: text as string,
-        values: values as unknown[] | undefined,
-        types: types as FastQueryTypes,
-      },
-      this.#fieldsCache,
-    );
+    const fastQuery = new FastQuery({ name, text, values, types }, this.#fieldsCache);
     return () => {
       super.query(fastQuery as unknown as pg.Submittable);
       return fastQuery.promise;
