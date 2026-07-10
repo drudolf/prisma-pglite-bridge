@@ -20,6 +20,7 @@ const ORMS: Record<string, () => Promise<OrmDefinition>> = {
   drizzle: async () => (await import('./drizzle.ts')).drizzle,
   knex: async () => (await import('./knex.ts')).knex,
   kysely: async () => (await import('./kysely.ts')).kysely,
+  'mikro-orm': async () => (await import('./mikro-orm.ts')).mikroOrm,
 };
 
 const DDL = `
@@ -197,9 +198,10 @@ const main = async () => {
 
     await nativePath.end();
     await wirePath.end();
-    await pool.end();
-    // Guarded: some native dialects (knex-pglite) close even a
-    // caller-supplied PGlite instance on their own teardown.
+    // Guarded teardown: some ORM teardowns reach into harness-owned
+    // resources — knex-pglite closes a caller-supplied PGlite, and
+    // MikroORM's kysely client ends the wire pool on orm.close().
+    if (!(pool as unknown as { ended?: boolean }).ended) await pool.end();
     if (!wirePglite.closed) await wirePglite.close();
     if (!nativePglite.closed) await nativePglite.close();
 

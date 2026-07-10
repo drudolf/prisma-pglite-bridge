@@ -583,15 +583,31 @@ community `knex-pglite` 0.14.0):
 | join | 1.28ms | **0.46ms** | 3.51ms | **0.87ms** |
 | tx (r+w) | 1.26ms | **0.53ms** | 2.22ms | **0.91ms** |
 
-The wire path wins every operation for all three ORMs (2.2–3.9× at p50)
-despite the extra protocol layer — even against Kysely's first-party
-dialect: the pool's client-level statement-name injection parse-skips
-repeat shapes, while the native drivers re-parse every call. Object-form
-ORM queries carry no `types`, so they ride the stock named path, not the
-FastQuery fast path — the win is the statement cache and the protocol
-path, and it transfers to any ORM that issues object-form queries
-through a pg `Pool`. Knex additionally exercises the bridge's
-callback-form dispatch (its pg dialect passes a positional callback).
+**mikro-orm** (`@mikro-orm/*` 7.1.5 — native: the official
+`@mikro-orm/pglite` driver; wire: a kysely `PostgresDialect` wrapping the
+bridge pool via `driverOptions`; entity ORM, ops fork the EntityManager
+per call):
+
+| Operation | native p50 | wire p50 | native p99 | wire p99 |
+| ------------- | ------ | ---------- | ------ | ---------- |
+| single insert | 0.49ms | **0.26ms** | 0.84ms | **0.57ms** |
+| findMany | 2.37ms | **1.47ms** | 4.70ms | **2.89ms** |
+| select where | 0.69ms | **0.41ms** | 2.16ms | **0.83ms** |
+| join | 4.63ms | **3.34ms** | 9.30ms | **7.82ms** |
+| tx (r+w) | 1.86ms | **1.01ms** | 3.67ms | **2.39ms** |
+
+The wire path wins every operation for all four ORMs despite the extra
+protocol layer — even against Kysely's first-party dialect and
+MikroORM's official driver: the pool's client-level statement-name
+injection parse-skips repeat shapes, while the native drivers re-parse
+every call. Object-form ORM queries carry no `types`, so they ride the
+stock named path, not the FastQuery fast path — the win is the statement
+cache and the protocol path, and it transfers to any ORM that issues
+object-form queries through a pg `Pool`. The margin tracks how much of
+an operation is driver time: 2.2–3.9× at p50 for the query builders,
+1.4–1.9× for MikroORM, whose entity hydration and identity map dilute
+the driver share. Knex additionally exercises the bridge's callback-form
+dispatch (its pg dialect passes a positional callback).
 
 ## Environment
 
