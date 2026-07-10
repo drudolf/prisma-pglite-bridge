@@ -10,8 +10,8 @@ allowBuilds:
   esbuild: true
   prisma: true
 minimumReleaseAgeExclude:
-  - "@arethetypeswrong/cli@0.18.4"
-  - "@arethetypeswrong/core@0.18.4"
+  - "@arethetypeswrong/cli@0.18.5"
+  - "@arethetypeswrong/core@0.18.5"
   - "@commitlint/cli@21.1.0"
   - "@commitlint/config-conventional@21.1.0"
   - "@commitlint/is-ignored@21.1.0"

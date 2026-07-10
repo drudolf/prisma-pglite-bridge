@@ -1,0 +1,9 @@
+{
+  "versionGroups": [
+    {
+      "label": "Ignore peer dependencies",
+      "dependencyTypes": ["peer"],
+      "isIgnored": true
+    }
+  ]
+}
