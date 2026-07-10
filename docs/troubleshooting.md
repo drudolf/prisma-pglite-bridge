@@ -50,6 +50,34 @@ If you see more than one version, force a single supported version
 
 Then `pnpm install`.
 
+## `cached plan must not change result type`
+
+The bridge caches Prisma queries as named prepared statements by
+default (for `max: 1` pools). PostgreSQL revalidates those plans after
+DDL, and revalidation fails with this error when the DDL changed the
+*result type* of an already-cached query shape — typically
+`ALTER TABLE ... ALTER COLUMN ... TYPE` on a column the query selects.
+Adding tables or columns is safe, and applying schema *before* Prisma
+traffic (as the setup helpers do) can never hit this.
+
+Fix one of:
+
+- Recreate the bridge (or `PrismaClient`) after mid-session DDL — the
+  usual flow anyway for schema iteration against an in-memory database.
+- Pass `preparedStatements: false` to the bridge.
+
+## `prepared statement "ppb_..." does not exist` (error 26000)
+
+Another pool or bridge connected to the same live PGlite instance:
+each new pool clears the session's prepared-statement namespace on
+connect, destroying the first bridge's cache. Concurrent pools on one
+instance are unsupported (their transactions can also interleave) —
+the bridge emits `PGliteSharedPGliteWarning` when it detects this.
+
+Use one pool/bridge per PGlite instance, or pass
+`preparedStatements: false` to the bridges sharing it. Sequential
+sharing (close the first bridge before creating the second) is fine.
+
 ## `ExperimentalWarning: Importing WebAssembly module instances is an experimental feature`
 
 Emitted by Node when `pushSchema` / `resetSchema` loads

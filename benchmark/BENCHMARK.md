@@ -36,8 +36,9 @@ were refreshed 2026-07-05; memory and cold start are from the
   *p50 spread* column (min–max of per-repeat p50s) shows run
   stability; treat cross-adapter ratios as the signal and absolute
   numbers as indicative.
-- **Versions:** bridge 1.4.0 + prepared-statement caching (opt-in
-  `preparedStatements: true` from the following release),
+- **Versions:** bridge 1.4.0 + prepared-statement caching (shipped
+  opt-in as `preparedStatements: true` in the following release; the
+  default for `max: 1` pools since 1.7),
   `@electric-sql/pglite` 0.5.3 (both PGlite adapters resolve the
   same copy), `pglite-prisma-adapter` 0.7.2, `@prisma/adapter-pg`
   7.8.0, `pg` 8.22.0, Prisma 7.8.0. The bridge rows run with the
@@ -118,8 +119,8 @@ max. The prepared-statement asymmetry still holds: statement caching
 buys the bridge ~0.1–0.4ms per query (WASM parse/plan is expensive)
 but is also worth ~0.1ms to native Postgres — and unlike many
 production setups (transaction-mode poolers break named statements),
-the bridge can always run with it on (opt-in via
-`preparedStatements: true`).
+the bridge can always run with it on (the default for `max: 1` pools
+since 1.7).
 
 ### Operation breadth — `micro` (p50, ratio vs bridge)
 

@@ -66,7 +66,22 @@ export interface PgBridgePoolOptions
    * before each bridge operation. Defaults to no timeout (waits indefinitely).
    */
   timeout?: number;
+
+  /**
+   * Milliseconds an idle pool client lives before eviction. Defaults to
+   * `0` (never evict) — an in-process duplex client holds no socket or
+   * server resource, and evicting it would discard its prepared-statement
+   * cache and re-run connect-time session cleanup for no benefit. Set a
+   * positive value to restore `pg.Pool`'s usual eviction behavior.
+   */
+  idleTimeoutMillis?: number;
 }
+
+// Live pools per PGlite instance. Concurrent pools on one instance are
+// unsupported: their SessionLocks don't coordinate (transactions can
+// interleave), and each pool's connect-time DEALLOCATE ALL destroys the
+// others' cached prepared statements (queries then fail with 26000).
+const livePoolCounts = new WeakMap<object, number>();
 
 /**
  * A pg.Pool where every connection is an in-process PGlite bridge.
@@ -124,6 +139,7 @@ export class PgBridgePool extends pg.Pool {
     telemetry,
     timeout,
     syncToFs,
+    idleTimeoutMillis = 0,
   }: PgBridgePoolOptions & { telemetry?: TelemetrySink } = {}) {
     const resolvedPglite = pglite ?? new PGlite();
 
@@ -133,6 +149,7 @@ export class PgBridgePool extends pg.Pool {
     const poolConfig = {
       Client: PgBridgeClient,
       max,
+      idleTimeoutMillis,
       [PgBridgeClient.OptionsKey]: {
         pglite: resolvedPglite,
         sessionLock: max > 1 ? new SessionLock() : undefined,
@@ -149,6 +166,19 @@ export class PgBridgePool extends pg.Pool {
     this.bridgeId = bridgeId;
     this.pglite = resolvedPglite;
     this.#ownsPglite = !pglite;
+
+    const liveCount = (livePoolCounts.get(resolvedPglite) ?? 0) + 1;
+    livePoolCounts.set(resolvedPglite, liveCount);
+    if (liveCount > 1) {
+      process.emitWarning(
+        'Multiple live PgBridgePools share one PGlite instance. This is unsupported: ' +
+          'transactions from different pools can interleave, and each new pool ' +
+          "deallocates the others' cached prepared statements (subsequent queries " +
+          'fail with Postgres error 26000). Use one pool per PGlite instance, or ' +
+          'pass preparedStatements: false to the bridges sharing it.',
+        { type: 'PGliteSharedPGliteWarning' },
+      );
+    }
 
     // A fresh connection must see an empty prepared-statement namespace,
     // as it would on a real server. PGlite is one shared session, so
@@ -172,6 +202,7 @@ export class PgBridgePool extends pg.Pool {
   override end(callback: () => void): void;
   override end(callback?: () => void): Promise<void> | void {
     const cleanup = async (): Promise<void> => {
+      this.#releaseLiveSlot();
       if (this.#ownsPglite && !this.pglite.closed) {
         await this.pglite.close();
       }
@@ -183,5 +214,19 @@ export class PgBridgePool extends pg.Pool {
       return;
     }
     return super.end().then(cleanup);
+  }
+
+  #liveSlotReleased = false;
+
+  /** Decrement this pool's slot in the shared-instance counter exactly once.
+   *  pg.Pool rejects a second `end()`, so cleanup normally runs once — the
+   *  guard covers the callback form, where pg surfaces the double-end error
+   *  through the callback and our wrapper would otherwise run cleanup again. */
+  #releaseLiveSlot(): void {
+    /* v8 ignore next — double-end guard; second end() rejects before cleanup */
+    if (this.#liveSlotReleased) return;
+    this.#liveSlotReleased = true;
+    const count = livePoolCounts.get(this.pglite) as number;
+    livePoolCounts.set(this.pglite, count - 1);
   }
 }

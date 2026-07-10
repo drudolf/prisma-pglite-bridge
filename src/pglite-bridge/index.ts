@@ -127,10 +127,25 @@ export interface PGliteBridgeOptions {
    * are truncated, never dropped, so retained statements revalidate
    * transparently and the cache stays warm across per-test resets.
    *
-   * Default: `false` — opt in deliberately. Requires `max: 1` semantics
-   * to be safe: PGlite is a single session shared by every pool client,
-   * so at `max > 1` named statements prepared through different clients
-   * would collide.
+   * Default: enabled when `max` is 1 (the default), disabled otherwise.
+   * Explicit `true` with `max > 1` throws: PGlite is a single session
+   * shared by every pool client, so named statements prepared through
+   * different clients would collide.
+   *
+   * Set `false` when:
+   * - additional pools or bridges run against this bridge's PGlite
+   *   instance while it is live — their connect-time session cleanup
+   *   deallocates this bridge's cached statements, and subsequent
+   *   queries fail with Postgres error 26000; or
+   * - you issue DDL mid-session that changes the result type of an
+   *   already-cached query shape (fails with "cached plan must not
+   *   change result type" — see docs/troubleshooting.md). Applying
+   *   schema before Prisma traffic, as the setup helpers do, is safe.
+   *
+   * The cache names the first 500 distinct query texts (bounded and
+   * frozen, not LRU); later shapes run unnamed. Only SELECT / INSERT /
+   * UPDATE / DELETE / WITH / MERGE / VALUES statements are named — DDL
+   * and transaction control never consume cache slots.
    */
   preparedStatements?: boolean;
 
@@ -177,6 +192,18 @@ export class PGliteBridge {
       throw new Error(`statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`);
     }
 
+    // Validate before any PGlite is created so a rejected configuration
+    // cannot leak an unclosed WASM instance.
+    const max = options.max ?? 1;
+    const preparedStatements = options.preparedStatements ?? max === 1;
+    if (preparedStatements && max > 1) {
+      throw new TypeError(
+        `preparedStatements: true requires max: 1 (got max: ${max}) — PGlite is a single ` +
+          'session shared by every pool client, so named statements prepared through ' +
+          'different clients would collide',
+      );
+    }
+
     this.#ownsPglite = !options.pglite;
     this.pglite = options.pglite ?? new PGlite();
     this.bridgeId = options.bridgeId ?? Symbol('bridge');
@@ -190,7 +217,6 @@ export class PGliteBridge {
     });
     this.#snapshot = new SnapshotManager(this.pglite);
 
-    const preparedStatements = options.preparedStatements ?? false;
     // adapter-pg types the generator as `=> string`, but it forwards the
     // result straight into pg's `QueryConfig.name`, where `undefined` is
     // the documented "unnamed statement" path — which is exactly the

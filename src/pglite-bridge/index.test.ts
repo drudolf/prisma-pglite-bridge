@@ -347,14 +347,14 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     await created.close();
   });
 
-  it('passes no statementNameGenerator by default', async () => {
+  it('passes a statementNameGenerator by default at max 1', async () => {
     const mockPglite = createMockPGlite();
     const { module, prismaPg } = await loadClassWithMocks();
 
     const created = new module.PGliteBridge({ pglite: mockPglite });
 
     expect(prismaPg).toHaveBeenCalledTimes(1);
-    expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeUndefined();
+    expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeTypeOf('function');
 
     await created.close();
   });
@@ -371,29 +371,34 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     await created.close();
   });
 
-  it('passes a statementNameGenerator when preparedStatements is true despite max > 1', async () => {
+  it('rejects preparedStatements: true when max > 1 before creating anything', async () => {
     const mockPglite = createMockPGlite();
     const { module, prismaPg } = await loadClassWithMocks();
 
-    const created = new module.PGliteBridge({
-      pglite: mockPglite,
-      max: 2,
-      preparedStatements: true,
-    });
+    expect(
+      () =>
+        new module.PGliteBridge({
+          pglite: mockPglite,
+          max: 2,
+          preparedStatements: true,
+        }),
+    ).toThrow(TypeError);
 
-    expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeTypeOf('function');
-
-    await created.close();
+    expect(prismaPg).not.toHaveBeenCalled();
   });
 
   it('forwards schema to PrismaPg when set', async () => {
     const mockPglite = createMockPGlite();
     const { module, prismaPg } = await loadClassWithMocks();
 
-    const created = new module.PGliteBridge({ pglite: mockPglite, schema: 'tenant_a' });
+    const created = new module.PGliteBridge({
+      pglite: mockPglite,
+      schema: 'tenant_a',
+      preparedStatements: false,
+    });
 
     expect(prismaPgOptions(prismaPg)?.schema).toBe('tenant_a');
-    // schema alone must not turn on statement caching.
+    // schema forwards independently of statement caching.
     expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeUndefined();
 
     await created.close();

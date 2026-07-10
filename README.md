@@ -77,8 +77,9 @@ Running the Prisma CLI against this bridge (shadow DB for
 
 On reads, the wire-protocol path is roughly 2x faster than going
 through a direct PGlite driver adapter — on every latency percentile
-and every query shape — and, with the opt-in prepared-statement
-caching (`preparedStatements: true`), ahead of a *native local*
+and every query shape — and, with prepared-statement caching (the
+default for `max: 1` pools; opt out with `preparedStatements: false`),
+ahead of a *native local*
 PostgreSQL server on both Apple Silicon and x86. Prisma
 `findMany({ take: 100 })`, 1000 iterations, PGlite 0.5.3, bridge
 measured with the cache enabled:

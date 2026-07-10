@@ -26,9 +26,9 @@ export const bridge: AdapterHarness = {
     stackProbe.instrumentBridgePGlite(pglite);
     await pglite.exec(schemaSql);
     const adapterFactory = new PrismaPg(pool, {
-      // Prepared-statement caching on, matching the bridge's documented fast
-      // path (`preparedStatements: true`) and fair against Postgres run with
-      // prepared statements. The shipped bridge default is opt-in (off).
+      // Prepared-statement caching on, matching the bridge's default for
+      // max: 1 pools (opt-out via `preparedStatements: false`) and fair
+      // against Postgres run with prepared statements.
       statementNameGenerator: createStatementNameGenerator() as (query: { sql: string }) => string,
     });
     const driverAdapter = await adapterFactory.connect();

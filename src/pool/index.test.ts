@@ -57,6 +57,26 @@ describe('PgBridgePool — max default', () => {
   });
 });
 
+describe('PgBridgePool — idleTimeoutMillis default', () => {
+  it('defaults idleTimeoutMillis to 0 when the option is omitted', async () => {
+    const pool = new PgBridgePool({ pglite });
+    try {
+      expect(pool.options.idleTimeoutMillis).toBe(0);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('honors an explicit idleTimeoutMillis override', async () => {
+    const pool = new PgBridgePool({ pglite, idleTimeoutMillis: 5000 });
+    try {
+      expect(pool.options.idleTimeoutMillis).toBe(5000);
+    } finally {
+      await pool.end();
+    }
+  });
+});
+
 describe('PgBridgePool — syncToFs', () => {
   it('defaults to false for in-memory PGlite', async () => {
     const spy = vi.spyOn(pglite, 'execProtocolRawStream');
@@ -142,6 +162,86 @@ describe('PgBridgePool — pglite lifecycle', () => {
       await pool.end();
       expect(local.closed).toBe(false);
     } finally {
+      await local.close();
+    }
+  });
+});
+
+describe('PgBridgePool — shared-PGlite warning', () => {
+  // process.emitWarning delivers the 'warning' event on a later tick, so
+  // callers capture into an array and await a setImmediate before asserting.
+  const captureSharedWarnings = (): { warnings: Error[]; stop: () => void } => {
+    const warnings: Error[] = [];
+    const onWarning = (warning: Error): void => {
+      if (warning.name === 'PGliteSharedPGliteWarning') warnings.push(warning);
+    };
+    process.on('warning', onWarning);
+    return {
+      warnings,
+      stop: () => {
+        process.removeListener('warning', onWarning);
+      },
+    };
+  };
+
+  it('warns when a second pool is constructed on a PGlite still used by a live pool', async () => {
+    const local = new PGlite();
+    await local.waitReady;
+    const { warnings, stop } = captureSharedWarnings();
+    const first = new PgBridgePool({ pglite: local });
+    let second: PgBridgePool | undefined;
+    try {
+      second = new PgBridgePool({ pglite: local });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(warnings.length).toBeGreaterThanOrEqual(1);
+      expect(warnings[0]?.message).toMatch(/prepared statement/i);
+    } finally {
+      stop();
+      await second?.end();
+      await first.end();
+      await local.close();
+    }
+  });
+
+  it('does not warn for two pools on two different PGlite instances', async () => {
+    const localA = new PGlite();
+    const localB = new PGlite();
+    await Promise.all([localA.waitReady, localB.waitReady]);
+    const { warnings, stop } = captureSharedWarnings();
+    const poolA = new PgBridgePool({ pglite: localA });
+    const poolB = new PgBridgePool({ pglite: localB });
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(warnings).toHaveLength(0);
+    } finally {
+      stop();
+      await poolA.end();
+      await poolB.end();
+      await localA.close();
+      await localB.close();
+    }
+  });
+
+  it('does not warn for sequential reuse — first pool ended before the second starts', async () => {
+    const local = new PGlite();
+    await local.waitReady;
+    const { warnings, stop } = captureSharedWarnings();
+    try {
+      const first = new PgBridgePool({ pglite: local });
+      await first.end();
+
+      const second = new PgBridgePool({ pglite: local });
+      try {
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(warnings).toHaveLength(0);
+      } finally {
+        await second.end();
+      }
+    } finally {
+      stop();
       await local.close();
     }
   });

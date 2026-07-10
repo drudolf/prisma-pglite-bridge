@@ -1,10 +1,14 @@
 // Integration coverage for prepared-statement caching, running against a real
 // PGlite and the real generated PrismaClient.
 //
-// With the opt-in `preparedStatements: true`, the bridge caches Prisma
-// queries as named prepared statements (`ppb_<n>`). resetDb keeps those
-// statements alive — tables are truncated, never dropped, so cached statements
-// replan transparently — while still clearing the rest of the session state.
+// Caching is ON by default at `max: 1` (the default pool size): the bridge
+// caches Prisma queries as named prepared statements (`ppb_<n>`). Opt out
+// with `preparedStatements: false`; at `max > 1` caching stays off because
+// PGlite's single shared session would collide names across clients, and
+// forcing `preparedStatements: true` together with `max > 1` throws. resetDb
+// keeps cached statements alive — tables are truncated, never dropped, so
+// cached statements replan transparently — while still clearing the rest of
+// the session state.
 import { PrismaClient } from '@prisma/client';
 import { describe, expect, it } from 'vitest';
 
@@ -43,13 +47,117 @@ describe('prepared-statement caching', () => {
     }
   });
 
-  it('caches nothing by default', async () => {
+  it('caches by default at max 1', async () => {
     const { bridge, prisma } = await setupSuite();
     try {
       await prisma.tenant.findMany();
       await prisma.tenant.findMany();
 
+      expect(hasBridgeStatement(await listPreparedStatementNames(bridge))).toBe(true);
+    } finally {
+      await prisma.$disconnect();
+      await bridge.close();
+    }
+  });
+
+  it('caches by default with a caller-supplied PGlite', async () => {
+    const { PGlite } = await import('@electric-sql/pglite');
+    const pglite = new PGlite();
+    try {
+      const bridge = new PGliteBridge({ pglite });
+      await pushMigrations(pglite, { configRoot: process.cwd() });
+      const prisma = new PrismaClient({ adapter: bridge.adapter });
+
+      await prisma.tenant.findMany();
+      await prisma.tenant.findMany();
+
+      expect(hasBridgeStatement(await listPreparedStatementNames(bridge))).toBe(true);
+
+      await prisma.$disconnect();
+      await bridge.close();
+    } finally {
+      await pglite.close();
+    }
+  });
+
+  it('caches nothing at max > 1', async () => {
+    const { bridge, prisma } = await setupSuite({ max: 2 });
+    try {
+      await prisma.tenant.findMany();
+      await prisma.tenant.findMany();
+
       expect(hasBridgeStatement(await listPreparedStatementNames(bridge))).toBe(false);
+    } finally {
+      await prisma.$disconnect();
+      await bridge.close();
+    }
+  });
+
+  it('caches nothing when preparedStatements is explicitly false', async () => {
+    const { bridge, prisma } = await setupSuite({ preparedStatements: false });
+    try {
+      await prisma.tenant.findMany();
+      await prisma.tenant.findMany();
+
+      expect(hasBridgeStatement(await listPreparedStatementNames(bridge))).toBe(false);
+    } finally {
+      await prisma.$disconnect();
+      await bridge.close();
+    }
+  });
+
+  it('rejects preparedStatements: true combined with max > 1', () => {
+    // The validation throws synchronously before any PGlite instance is
+    // created, so there is nothing to clean up.
+    const construct = () => new PGliteBridge({ preparedStatements: true, max: 2 });
+
+    expect(construct).toThrow(TypeError);
+    expect(construct).toThrow(/max/);
+  });
+
+  it('caches every runtime Prisma SQL shape and never transaction control', async () => {
+    const { bridge, prisma } = await setupSuite();
+    try {
+      await prisma.tenant.create({
+        data: { id: 'tenant-corpus-1', name: 'Corpus One', slug: 'corpus-1' },
+      });
+      await prisma.tenant.createMany({
+        data: [
+          { id: 'tenant-corpus-2', name: 'Corpus Two', slug: 'corpus-2' },
+          { id: 'tenant-corpus-3', name: 'Corpus Three', slug: 'corpus-3' },
+        ],
+      });
+      await prisma.tenant.findMany({ take: 10 });
+      await prisma.tenant.findUnique({ where: { id: 'tenant-corpus-1' } });
+      await prisma.tenant.update({
+        where: { id: 'tenant-corpus-1' },
+        data: { name: 'Corpus One Updated' },
+      });
+      await prisma.tenant.count();
+      await prisma.tenant.groupBy({ by: ['slug'] });
+      await prisma.tenant.findMany({ include: { workspaces: true } });
+      await prisma.tenant.delete({ where: { id: 'tenant-corpus-3' } });
+      await prisma.$transaction(async (tx) => {
+        await tx.tenant.count();
+        await tx.tenant.findMany();
+      });
+
+      const { rows } = await bridge.pglite.query<{ name: string; statement: string }>(
+        'SELECT name, statement FROM pg_prepared_statements',
+      );
+      const statements = rows.map((row) => row.statement);
+
+      // Every DML shape Prisma emits at runtime ends up cached…
+      expect(statements.some((statement) => /^select/i.test(statement))).toBe(true);
+      expect(statements.some((statement) => /^insert/i.test(statement))).toBe(true);
+      expect(statements.some((statement) => /^update/i.test(statement))).toBe(true);
+      expect(statements.some((statement) => /^delete/i.test(statement))).toBe(true);
+      // …while transaction control and session statements never are.
+      expect(
+        statements.filter((statement) =>
+          /^(begin|commit|rollback|set|deallocate)/i.test(statement),
+        ),
+      ).toEqual([]);
     } finally {
       await prisma.$disconnect();
       await bridge.close();
