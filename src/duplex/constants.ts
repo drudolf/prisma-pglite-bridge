@@ -40,8 +40,10 @@ export const PG_FIRST_USER_OID = 16384;
 export const EQP_MESSAGES: ReadonlySet<number> = new Set([PARSE, BIND, DESCRIBE, EXECUTE, CLOSE]);
 
 /**
- * Upper bound on a single backend message length declared in its 4-byte
- * header. PostgreSQL's own wire protocol maxes out around 1 GiB per
+ * Upper bound on a single wire-protocol message length declared in its
+ * 4-byte header — applied to backend messages by the framer and to
+ * frontend/startup messages by the duplex (the name predates the frontend
+ * checks). PostgreSQL's own wire protocol maxes out around 1 GiB per
  * message; anything larger indicates a corrupted or hostile stream and
  * must not be allocated against.
  */

@@ -24,6 +24,11 @@ const SNAPSHOT_SCHEMA_LITERAL = escapeLiteral(SNAPSHOT_SCHEMA);
  * values in a dedicated `_pglite_snapshot` schema so tests can reset to a
  * known seed state without re-running migrations.
  *
+ * Operations are serialized per manager instance, not per session: a
+ * second bridge's snapshot calls against the same shared PGlite session
+ * are not serialized against this one's (covered only by the
+ * shared-instance advisory warning).
+ *
  * @internal
  */
 export class SnapshotManager {

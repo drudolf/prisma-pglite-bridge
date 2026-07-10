@@ -113,7 +113,9 @@ export class FastQuery {
 
   /**
    * Called by pg.Client when this query becomes active. Returns an Error
-   * (never throws) for client-side validation failures — stock Query parity.
+   * (never throws) for client-side validation failures — stock Query
+   * parity. A synchronous serialization failure inside Bind settles the
+   * promise directly and returns null instead (see the catch below).
    */
   submit(connection: FastQueryConnection): Error | null {
     const previous = connection.parsedStatements[this.name];

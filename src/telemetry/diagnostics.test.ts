@@ -17,7 +17,7 @@ let queryPoolB: PgBridgePool;
 let lockWaitPool: PgBridgePool;
 
 beforeAll(() => {
-  // One pool-owned PGlite per pool — the supported topology. bridgeId
+  // One pool-owned PGlite per pool — the warning-free topology. bridgeId
   // filtering does not depend on the pools sharing an instance, and
   // concurrent pools on one instance would (correctly) emit
   // PGliteBridgeSharedInstanceWarning. `pool.end()` closes owned instances.
