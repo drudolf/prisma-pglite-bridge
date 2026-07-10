@@ -44,8 +44,10 @@ on the two Apple machines.
 - **Versions:** bridge 1.7.0 (measured pre-release at `a35e971`:
   prepared-statement caching and the lean fast-query path are on by
   default for `max: 1` pools — no opt-in flags in the harness beyond
-  the statement-name generator), `@electric-sql/pglite` 0.5.3 (both
-  PGlite adapters resolve the same copy), `pglite-prisma-adapter`
+  the statement-name generator), `@electric-sql/pglite` 0.5.4 (both
+  PGlite adapters resolve the same copy — the tables below were first
+  measured on 0.5.3 and reproduced within noise, no ranking changes,
+  in a 2026-07-08 three-machine re-run on 0.5.4), `pglite-prisma-adapter`
   0.7.2, `@prisma/adapter-pg` 7.8.0, `pg` 8.22.0, Prisma 7.8.0.
   Native Postgres appears twice — default configuration and with
   `BENCH_POSTGRES_PREPARED=1` giving it the same statement-caching
