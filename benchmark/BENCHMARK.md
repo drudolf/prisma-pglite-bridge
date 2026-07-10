@@ -561,6 +561,17 @@ Reference results — Apple i9-9980HK, 2026-07-10, bridge at `e72dfd4`
 | join | 1.30ms | **0.44ms** | 3.35ms | **1.02ms** |
 | tx (r+w) | 1.24ms | **0.49ms** | 2.13ms | **0.89ms** |
 
+**knex** (`knex` 3.3.0, wire via its `connectionPool` option — native:
+community `knex-pglite` 0.14.0):
+
+| Operation | native p50 | wire p50 | native p99 | wire p99 |
+| ------------- | ------ | ---------- | ------ | ---------- |
+| single insert | 0.41ms | **0.15ms** | 0.69ms | **0.35ms** |
+| findMany | 1.28ms | **0.34ms** | 3.05ms | **0.73ms** |
+| select where | 0.48ms | **0.17ms** | 0.82ms | **0.36ms** |
+| join | 1.32ms | **0.40ms** | 3.53ms | **0.82ms** |
+| tx (r+w) | 1.53ms | **0.51ms** | 4.13ms | **1.38ms** |
+
 **kysely** (`kysely` 0.29.3 — native: the first-party built-in
 `PGliteDialect`):
 
@@ -572,14 +583,15 @@ Reference results — Apple i9-9980HK, 2026-07-10, bridge at `e72dfd4`
 | join | 1.28ms | **0.46ms** | 3.51ms | **0.87ms** |
 | tx (r+w) | 1.26ms | **0.53ms** | 2.22ms | **0.91ms** |
 
-The wire path wins every operation for both ORMs (2.2–3.9× at p50)
+The wire path wins every operation for all three ORMs (2.2–3.9× at p50)
 despite the extra protocol layer — even against Kysely's first-party
 dialect: the pool's client-level statement-name injection parse-skips
 repeat shapes, while the native drivers re-parse every call. Object-form
 ORM queries carry no `types`, so they ride the stock named path, not the
 FastQuery fast path — the win is the statement cache and the protocol
 path, and it transfers to any ORM that issues object-form queries
-through a pg `Pool`.
+through a pg `Pool`. Knex additionally exercises the bridge's
+callback-form dispatch (its pg dialect passes a positional callback).
 
 ## Environment
 

@@ -18,6 +18,7 @@ import type { OrmDefinition, OrmOps } from './types.ts';
 
 const ORMS: Record<string, () => Promise<OrmDefinition>> = {
   drizzle: async () => (await import('./drizzle.ts')).drizzle,
+  knex: async () => (await import('./knex.ts')).knex,
   kysely: async () => (await import('./kysely.ts')).kysely,
 };
 
@@ -197,8 +198,10 @@ const main = async () => {
     await nativePath.end();
     await wirePath.end();
     await pool.end();
-    await wirePglite.close();
-    await nativePglite.close();
+    // Guarded: some native dialects (knex-pglite) close even a
+    // caller-supplied PGlite instance on their own teardown.
+    if (!wirePglite.closed) await wirePglite.close();
+    if (!nativePglite.closed) await nativePglite.close();
 
     report(nR, wR);
   }

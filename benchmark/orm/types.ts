@@ -35,7 +35,9 @@ export type OrmOps = {
 };
 
 /** One configured path. `end()` releases ORM-side resources only — the
- *  harness owns and closes the PGlite instances and the bridge pool. */
+ *  harness owns and closes the PGlite instances and the bridge pool
+ *  (tolerating native dialects like knex-pglite whose own teardown
+ *  closes a caller-supplied PGlite). */
 type OrmPath = {
   ops: OrmOps;
   end(): Promise<void>;
