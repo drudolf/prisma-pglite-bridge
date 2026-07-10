@@ -611,17 +611,37 @@ bridge pool, since TypeORM has no external-pool option):
 
 The wire path wins every operation for all five ORMs despite the extra
 protocol layer — even against Kysely's first-party dialect and
-MikroORM's official driver: the pool's client-level statement-name
-injection parse-skips repeat shapes, while the native drivers re-parse
-every call. Object-form ORM queries carry no `types`, so they ride the
-stock named path, not the FastQuery fast path — the win is the statement
-cache and the protocol path, and it transfers to any ORM that issues
-object-form queries through a pg `Pool`. The margin tracks how much of
-an operation is driver time: 2.2–3.9× at p50 for the query builders,
-1.7–2.5× for TypeORM and 1.4–1.9× for MikroORM, whose entity hydration
-and unit-of-work bookkeeping dilute the driver share. Knex additionally
+MikroORM's official driver. **Why:** every native driver funnels into
+PGlite's public `query()` API, which per call takes the WASM mutex and
+issues Parse / Describe / Bind / Describe / Execute / Sync as ~6
+separate protocol crossings plus JS-side result-message parsing; the
+bridge sends the same extended-protocol conversation as one buffered
+duplex write on the raw-stream path. Statement-name injection
+(parse-skip) is a bonus on top, not the cause: it engages only for
+object-form queries (drizzle, knex — kysely and typeorm issue
+string-form queries, verified via empty `pg_prepared_statements`, and
+still win), and a `statementCaching: false` control run left drizzle's
+wire path winning 1.9–3.2× — caching contributes only ~4–27% of the
+margin depending on the operation. FastQuery never engages on any wire
+path (no caller `types`). The win therefore transfers to any ORM
+driving a pg `Pool`, regardless of query form. The margin tracks how
+much of an operation is driver time: roughly 2–4× at p50 for the query
+builders (individual ops ranged 1.8–3.9× across re-runs), 1.7–2.5× for
+TypeORM and 1.4–1.9× for MikroORM, whose entity hydration and
+unit-of-work bookkeeping dilute the driver share. Knex additionally
 exercises the bridge's callback-form dispatch (its pg dialect passes a
 positional callback).
+
+Unlike the main-suite tables, these are single runs (no `-r` repeats)
+on the i9 — the machine the methodology notes flag for run-to-run
+variance. An adversarial re-verification (2026-07-10, same machine)
+confirmed the p50 columns and the ranking: p50s reproduced within
+±0.03ms over three repeats, and the margins survived reversing the
+native/wire run order (second-runner JIT advantage ≲5–10%, far below
+the margins). The p99 columns did not reproduce as numbers (single-run
+point estimates over a growing table; wire findMany p99 varied 0.68 to
+1.73ms across identical runs) — no native/wire p99 inversion was ever
+observed, but read them as indicative, not as reference values.
 
 ## Environment
 
