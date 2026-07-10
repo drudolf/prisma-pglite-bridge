@@ -12,9 +12,18 @@
  * call within one runExclusive. This prevents portal interleaving between
  * concurrent streams AND reduces async overhead (1 WASM call instead of 5).
  *
- * The response from a batched pipeline contains spurious ReadyForQuery messages
- * after each sub-message (PGlite's single-user mode). These are stripped,
- * keeping only the final ReadyForQuery after Sync.
+ * Flush is a second pipeline boundary: pg drives row-limited executions
+ * (rows: N, pg-cursor) with Flush and waits for the response, so those
+ * batches stream immediately. Because the portal then stays suspended
+ * across separate execProtocolRawStream calls, the duplex holds the
+ * SessionLock until the terminating Sync (or error) so concurrent duplexes
+ * cannot clobber the unnamed portal.
+ *
+ * The response from a Sync-terminated pipeline contains spurious
+ * ReadyForQuery messages after each sub-message (PGlite's single-user
+ * mode). These are stripped, keeping only the final ReadyForQuery after
+ * Sync; Flush-terminated responses keep an RFQ only after an error (see
+ * RfqMode).
  */
 import { Duplex } from 'node:stream';
 
@@ -29,6 +38,7 @@ import { waitPGliteReady } from '../utils/wait-pglite-ready.ts';
 import { BackendMessageFramer } from './backend-framer.ts';
 import {
   EQP_MESSAGES,
+  FLUSH,
   RFQ_STATUS_FAILED,
   RFQ_STATUS_IDLE,
   RFQ_STATUS_IN_TRANSACTION,
@@ -42,6 +52,7 @@ import { FrontendMessageBuffer } from './frontend-buffer.ts';
 // parsed-message array. Verified through PGlite 0.4.6 and 0.5.1;
 // re-verify on upgrades.
 const TERMINATE_MESSAGE = new Uint8Array([TERMINATE, 0x00, 0x00, 0x00, 0x04]);
+const SYNC_MESSAGE = new Uint8Array([SYNC, 0x00, 0x00, 0x00, 0x04]);
 // Keep cleanup infrequent on small queries, but bounded for large read bursts;
 // these thresholds came from the adapter comparison memory profile.
 const PROTOCOL_CLEANUP_RAW_BYTES = 8 * 1024 * 1024;
@@ -50,6 +61,19 @@ const PROTOCOL_CLEANUP_CALLS = 32;
 type PGliteProtocolCleanupCapable = PGliteInterface & {
   execProtocolStream?: PGlite['execProtocolStream'];
 };
+
+/**
+ * How ReadyForQuery frames in a protocol response are treated:
+ * - `'passthrough'` — every RFQ is forwarded (startup, SimpleQuery).
+ * - `'suppress'` — intermediate RFQs are dropped, the final one is emitted
+ *   (Sync-terminated EQP batch; PGlite's single-user mode appends spurious
+ *   RFQs after each sub-message).
+ * - `'flush-boundary'` — Flush-terminated EQP batch: real Postgres sends no
+ *   RFQ for Flush, so any RFQ is dropped — except after an ErrorResponse,
+ *   where the RFQ PGlite emits is forwarded so pg can recover the
+ *   connection (stock pg never sends a recovery Sync in rows mode).
+ */
+type RfqMode = 'passthrough' | 'suppress' | 'flush-boundary';
 
 export interface PGliteDuplexOptions {
   /**
@@ -167,10 +191,11 @@ export class PGliteDuplex extends Duplex {
     syncToFs: boolean;
     onRawData: (chunk: Uint8Array) => void;
   };
-  /** Per-call stream state (with `errSeen` and `streamActive` below) — safe
-   *  as instance fields for the same sequential-calls reason as `framer`. */
-  private detectErrors = false;
+  /** Per-call stream state (with `rfqSeenInCall` and `streamActive` below) —
+   *  safe as instance fields for the same sequential-calls reason as
+   *  `framer`. */
   private errSeen = false;
+  private rfqSeenInCall = false;
   private streamActive = false;
   /** Resolves once the stream has fully torn down (post-`_final` rollback,
    *  post-`_destroy`). Single-shot, mirroring the `'close'` event. */
@@ -203,9 +228,10 @@ export class PGliteDuplex extends Duplex {
         }
       },
       onErrorResponse: () => {
-        if (this.detectErrors) this.errSeen = true;
+        this.errSeen = true;
       },
       onReadyForQuery: (status) => {
+        this.rfqSeenInCall = true;
         this.lastSeenRfqStatus = status;
         if (this.sessionLock) {
           this.sessionLock.updateStatus(this.duplexId, status);
@@ -397,7 +423,7 @@ export class PGliteDuplex extends Duplex {
     const message = this.input.consume(len);
 
     await this.runUntimed(async () => {
-      await this.streamProtocol(message, false, false);
+      await this.streamProtocol(message, 'passthrough');
     });
 
     this.phase = 'ready';
@@ -442,10 +468,13 @@ export class PGliteDuplex extends Duplex {
   /**
    * Frames and processes regular wire protocol messages.
    *
-   * Extended Query Protocol messages (Parse, Bind, Describe, Execute, Close,
-   * Flush) are buffered in `this.pipeline`. When Sync arrives, the entire
+   * Extended Query Protocol messages (Parse, Bind, Describe, Execute, Close)
+   * are buffered in `this.pipeline`. When Sync or Flush arrives, the entire
    * pipeline is concatenated and sent to PGlite as one atomic
-   * execProtocolRawStream call within one runExclusive.
+   * execProtocolRawStream call within one runExclusive. Flush marks a portal
+   * boundary — pg drives row-limited executions (rows: N, pg-cursor) with
+   * Flush and waits for the response, so it must flush the pipeline like
+   * Sync but with `'flush-boundary'` RFQ semantics.
    *
    * SimpleQuery messages are sent directly (they're self-contained).
    */
@@ -473,14 +502,14 @@ export class PGliteDuplex extends Duplex {
         continue;
       }
 
-      if (msgType === SYNC) {
+      if (msgType === SYNC || msgType === FLUSH) {
         this.pipeline.push(message);
-        await this.flushPipeline();
+        await this.flushPipeline(msgType === SYNC ? 'suppress' : 'flush-boundary');
         continue;
       }
 
       // SimpleQuery or other standalone message
-      await this.runWithTiming((detectErrors) => this.streamProtocol(message, detectErrors, false));
+      await this.runWithTiming(() => this.streamProtocol(message, 'passthrough'));
     }
   }
 
@@ -489,17 +518,20 @@ export class PGliteDuplex extends Duplex {
    *
    * All buffered messages are concatenated into a single buffer and sent
    * as one execProtocolRawStream call. This is both correct (prevents
-   * portal interleaving) and fast (1 WASM call + 1 async boundary instead
-   * of 5). A streaming framer suppresses intermediate ReadyForQuery
-   * messages while forwarding the rest of the response without
+   * portal interleaving within the batch) and fast (1 WASM call + 1 async
+   * boundary instead of 5). A streaming framer applies the `rfqMode`
+   * ReadyForQuery policy while forwarding the rest of the response without
    * materializing it.
+   *
+   * The pipeline is length 1 when a standalone Sync or Flush arrives with
+   * nothing buffered (e.g. a bare continuation Flush from an exotic client).
    */
-  private async flushPipeline(): Promise<void> {
+  private async flushPipeline(rfqMode: 'suppress' | 'flush-boundary'): Promise<void> {
     const messages = this.pipeline;
     let batch: Uint8Array;
-    /* c8 ignore next 3 — flushPipeline only runs after Sync is appended */
     if (messages.length === 1) {
-      batch = messages[0] ?? new Uint8Array(0);
+      // Non-empty by construction: the Sync/Flush trigger was just pushed.
+      batch = messages[0] as Uint8Array;
     } else {
       batch = this.tryContiguousPipelineBatch(messages) ?? this.concatPipeline(messages);
     }
@@ -508,7 +540,7 @@ export class PGliteDuplex extends Duplex {
     // appended mid-flush (the drain loop awaits this call before consuming
     // more input), so the array can be cleared in place and reused.
     messages.length = 0;
-    await this.runWithTiming((detectErrors) => this.streamProtocol(batch, detectErrors, true));
+    await this.runWithTiming(() => this.streamProtocol(batch, rfqMode));
   }
 
   private tryContiguousPipelineBatch(messages: Uint8Array[]): Uint8Array | undefined {
@@ -554,19 +586,17 @@ export class PGliteDuplex extends Duplex {
    * `op` returns `false` when an `ErrorResponse` was seen without throwing
    * (protocol-level failure). Combined with the catch branch, both failure
    * modes flip `succeeded` so both `BridgeStats` and `QUERY_CHANNEL`
-   * payloads stay accurate. `detectErrors` is therefore tied to whether
-   * either of those consumers is active, not to timing in general.
+   * payloads stay accurate.
    */
-  private async runWithTiming(op: (detectErrors: boolean) => Promise<boolean>): Promise<void> {
+  private async runWithTiming(op: () => Promise<boolean>): Promise<void> {
     const wantTelemetry = this.telemetry !== undefined;
     const publishQuery = this.bridgeId !== undefined && queryChannel.hasSubscribers;
     const publishLockWait = this.bridgeId !== undefined && lockWaitChannel.hasSubscribers;
     const wantTiming = wantTelemetry || publishQuery || publishLockWait;
-    const detectErrors = wantTelemetry || publishQuery;
 
     if (!wantTiming) {
       await this.runUntimed(async () => {
-        await op(false);
+        await op();
       });
       return;
     }
@@ -589,7 +619,7 @@ export class PGliteDuplex extends Duplex {
     let succeeded = true;
     try {
       await this.runUnderRunExclusive(async () => {
-        succeeded = await op(detectErrors);
+        succeeded = await op();
       });
     } catch (err) {
       succeeded = false;
@@ -614,27 +644,23 @@ export class PGliteDuplex extends Duplex {
    * response to the stream. Must be called inside runExclusive.
    *
    * @param message  One standalone frontend message, or a concatenated EQP
-   *   batch ending in Sync.
-   * @param detectErrors  Watch the response for ErrorResponse frames. Set
-   *   only when a telemetry or diagnostics consumer needs the outcome.
-   * @param suppressIntermediateRfq  Hold back all but the final ReadyForQuery
-   *   — pass for pipelined Extended Query batches.
-   * @returns `false` when `detectErrors` was set and an ErrorResponse was
-   *   observed (protocol-level failure without a throw); `true` otherwise.
+   *   batch ending in Sync or Flush.
+   * @param rfqMode  ReadyForQuery policy for the response — see {@link RfqMode}.
+   * @returns `false` when an ErrorResponse was observed (protocol-level
+   *   failure without a throw); `true` otherwise.
    */
-  private async streamProtocol(
-    message: Uint8Array,
-    detectErrors: boolean,
-    suppressIntermediateRfq: boolean,
-  ): Promise<boolean> {
+  private async streamProtocol(message: Uint8Array, rfqMode: RfqMode): Promise<boolean> {
     // Reset at the START of each call, not the end: a failed stream (a throw
     // from execProtocolRawStream or from framer.write on malformed input)
     // propagates before flush and may leave the framer mid-message. Resetting
     // here makes every call independent of prior failures — equivalent to the
-    // fresh-framer-per-call this replaced.
-    this.detectErrors = detectErrors;
+    // fresh-framer-per-call this replaced. errSeen in particular decides
+    // whether a flush-boundary response keeps its trailing RFQ; a stale value
+    // from a previous call would emit a spurious RFQ and desync pg's state
+    // machine.
     this.errSeen = false;
-    this.framer.reset(suppressIntermediateRfq);
+    this.rfqSeenInCall = false;
+    this.framer.reset(rfqMode !== 'passthrough');
 
     // Re-check readiness inside the runExclusive mutex: the caller could
     // have closed pglite between `runUnderRunExclusive`'s pre-check and
@@ -670,8 +696,92 @@ export class PGliteDuplex extends Duplex {
       }
     }
 
-    this.framer.flush({ dropHeldReadyForQuery: this.tornDown });
+    this.framer.flush({
+      dropHeldReadyForQuery: this.tornDown || (rfqMode === 'flush-boundary' && !this.errSeen),
+    });
+
+    if (rfqMode === 'flush-boundary' && this.errSeen) {
+      // PGlite emits the error's ReadyForQuery immediately, but the backend
+      // still enters ignore-till-sync — without a Sync it silently ignores
+      // every subsequent message on the session (the next query hangs with
+      // an empty response). Stock pg never sends a recovery Sync in rows
+      // mode (the delivered RFQ tells it the connection already recovered),
+      // so recover the backend here, inside the same runExclusive. The
+      // response (ParameterStatus + another RFQ) is dropped — pg already
+      // has the authoritative error RFQ.
+      await this.recoverySync();
+    }
+
+    if (rfqMode === 'flush-boundary' && this.sessionLock) {
+      if (!this.errSeen) {
+        // The unnamed portal may be suspended awaiting a continuation
+        // Execute+Flush from pg. Claim the session so no other duplex can
+        // clobber the portal between batches; the next real RFQ (the Sync
+        // response, or the RFQ PGlite appends to an error) releases it via
+        // the onReadyForQuery → updateStatus path. Non-stealing: a duplex
+        // that won the acquire race keeps its ownership and this portal is
+        // doomed anyway (its continuation surfaces a portal error, not a
+        // hang) — the same acquire-before-own window the transaction path
+        // tolerates.
+        this.sessionLock.hold(this.duplexId);
+      } else if (
+        !this.rfqSeenInCall &&
+        // Intentionally stale read: rfqSeenInCall is false, so
+        // lastSeenRfqStatus predates this call — exactly the pre-batch
+        // transaction state the guard needs.
+        this.lastSeenRfqStatus !== RFQ_STATUS_IN_TRANSACTION &&
+        this.lastSeenRfqStatus !== RFQ_STATUS_FAILED
+      ) {
+        // Errored without any RFQ (unobserved on PGlite 0.4.6/0.5.3, which
+        // both append one — defensive for future versions): pg cannot
+        // recover this connection (stock pg sends no Sync in rows mode), so
+        // drop a hold this duplex took for the now-dead portal rather than
+        // blocking every other client behind a wedged connection. A real
+        // transaction (status T/E) keeps ownership — it still needs its
+        // COMMIT/ROLLBACK.
+        this.sessionLock.release(this.duplexId);
+      }
+    }
+
     return !this.errSeen;
+  }
+
+  /** Send a bare Sync to clear the backend's ignore-till-sync state after an
+   *  errored flush-boundary batch, discarding the response. Must be called
+   *  inside runExclusive. If the recovery itself fails, the stream is torn
+   *  down: pg already received the error RFQ and believes the connection
+   *  recovered, so an unrecovered backend would silently ignore every later
+   *  query — a loud connection error the pool can evict beats that. */
+  private async recoverySync(): Promise<void> {
+    try {
+      await this.pglite.execProtocolRawStream(SYNC_MESSAGE, {
+        syncToFs: false,
+        onRawData: () => {},
+      });
+    } catch (err) {
+      this.destroy(new Error('PGlite recovery Sync failed', { cause: err }));
+    }
+  }
+
+  /**
+   * Drop a portal-suspension hold this duplex still has on the session.
+   *
+   * Called by `PgBridgePool` when a client is released back to the pool: a
+   * released client whose last query left a suspended portal open (an
+   * unclosed pg-cursor) will never produce the terminating Sync that
+   * releases the hold, and every other pool client would block forever. The
+   * abandoned portal is dead either way. A real transaction (last RFQ
+   * status T/E) keeps ownership — releasing a client mid-transaction is a
+   * pre-existing shared-session hazard covered by teardown rollback.
+   */
+  releaseAbandonedPortalHold(): void {
+    if (
+      this.sessionLock?.isOwner(this.duplexId) === true &&
+      this.lastSeenRfqStatus !== RFQ_STATUS_IN_TRANSACTION &&
+      this.lastSeenRfqStatus !== RFQ_STATUS_FAILED
+    ) {
+      this.sessionLock.release(this.duplexId);
+    }
   }
 
   private async clearPGliteProtocolMessages(): Promise<void> {

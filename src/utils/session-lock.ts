@@ -58,6 +58,26 @@ export class SessionLock {
   }
 
   /**
+   * Claim the session outside ReadyForQuery-status tracking. Used for
+   * portal-suspension windows (row-limited executions), where the backend
+   * emits no RFQ until Sync so `updateStatus` cannot engage ownership.
+   * Non-stealing: never displaces another holder — an interleaver that
+   * won the acquire race keeps its (possibly transactional) ownership.
+   * Released by the existing paths: `updateStatus` with IDLE, `release`,
+   * or `cancel`.
+   *
+   * @returns `true` if `id` now holds the session, `false` if another
+   *   bridge already holds it.
+   */
+  hold(id: symbol): boolean {
+    if (this.owner === undefined) {
+      this.owner = id;
+      return true;
+    }
+    return this.owner === id;
+  }
+
+  /**
    * Update session state based on the ReadyForQuery status byte.
    * Call after every PGlite response that contains RFQ.
    *

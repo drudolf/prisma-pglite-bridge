@@ -181,6 +181,63 @@ describe('SessionLock', () => {
   });
 });
 
+// ─── Unit tests for SessionLock.hold (flush portal-boundary hold) ───
+
+describe('SessionLock portal hold', () => {
+  it('hold() on a free lock claims ownership', () => {
+    const lock = new SessionLock();
+    const a = Symbol('bridge');
+
+    expect(lock.hold(a)).toBe(true);
+    expect(lock.isOwner(a)).toBe(true);
+  });
+
+  it('hold() is a no-op success when the id already owns the session', () => {
+    const lock = new SessionLock();
+    const a = Symbol('bridge');
+
+    lock.hold(a);
+
+    expect(lock.hold(a)).toBe(true);
+    expect(lock.isOwner(a)).toBe(true);
+  });
+
+  it('hold() does not steal ownership from another id', () => {
+    const lock = new SessionLock();
+    const a = Symbol('bridge');
+    const b = Symbol('bridge');
+
+    lock.hold(a);
+
+    expect(lock.hold(b)).toBe(false);
+    expect(lock.isOwner(a)).toBe(true);
+    expect(lock.isOwner(b)).toBe(false);
+  });
+
+  it('updateStatus IDLE after hold() releases and grants the next waiter', async () => {
+    const lock = new SessionLock();
+    const a = Symbol('bridge');
+    const b = Symbol('bridge');
+
+    lock.hold(a);
+
+    let bResolved = false;
+    const bPromise = lock.acquire(b).then(() => {
+      bResolved = true;
+    });
+
+    await drainMicrotasks();
+    expect(bResolved).toBe(false);
+
+    // The next real RFQ with status 'I' releases the hold via the
+    // existing updateStatus path.
+    lock.updateStatus(a, 0x49);
+
+    await bPromise;
+    expect(bResolved).toBe(true);
+  });
+});
+
 // ─── Integration: concurrent transactions through pool ───
 
 describe('session lock integration', async () => {

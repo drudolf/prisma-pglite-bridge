@@ -34,6 +34,10 @@ export class PgBridgeClient extends pg.Client {
    *  `connection.parsedStatements`: a recycled client starts both empty. */
   readonly #fieldsCache = new Map<string, FastQueryField[]>();
   readonly #fastQueryPath: boolean;
+  /** Latest duplex from the stream factory. Boxed because the factory
+   *  closure is created inside the `super()` arguments, where `this` is
+   *  not yet accessible. */
+  readonly #duplexBox: { current?: PGliteDuplex };
 
   static readonly OptionsKey: unique symbol = Symbol('PgBridgeClientOptions');
 
@@ -44,14 +48,27 @@ export class PgBridgeClient extends pg.Client {
       throw new Error('PgBridgeClient requires bridge options');
     }
 
+    const duplexBox: { current?: PGliteDuplex } = {};
     super({
       ...clientConfig,
       user: 'postgres',
       database: 'postgres',
-      stream: () => new PGliteDuplex(bridge.pglite, bridge),
+      stream: () => {
+        const duplex = new PGliteDuplex(bridge.pglite, bridge);
+        duplexBox.current = duplex;
+        return duplex;
+      },
     });
 
+    this.#duplexBox = duplexBox;
     this.#fastQueryPath = bridge.fastQueryPath ?? true;
+  }
+
+  /** See {@link PGliteDuplex.releaseAbandonedPortalHold} — invoked by
+   *  `PgBridgePool`'s `'release'` listener when this client returns to the
+   *  pool. */
+  releaseAbandonedPortalHold(): void {
+    this.#duplexBox.current?.releaseAbandonedPortalHold();
   }
 
   /**

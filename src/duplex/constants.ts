@@ -4,7 +4,7 @@ const BIND = 0x42; // B
 const DESCRIBE = 0x44; // D
 const EXECUTE = 0x45; // E
 const CLOSE = 0x43; // C
-const FLUSH = 0x48; // H
+export const FLUSH = 0x48; // H
 export const SYNC = 0x53; // S (frontend)
 export const TERMINATE = 0x58; // X
 
@@ -34,15 +34,10 @@ export const PG_TYPE_OID_TEXT = 25;
 // system catalog relation has an OID below this; user-created objects start at it.
 export const PG_FIRST_USER_OID = 16384;
 
-// Extended Query Protocol message types — must be batched until Sync
-export const EQP_MESSAGES: ReadonlySet<number> = new Set([
-  PARSE,
-  BIND,
-  DESCRIBE,
-  EXECUTE,
-  CLOSE,
-  FLUSH,
-]);
+// Extended Query Protocol message types — batched until a Sync or Flush
+// boundary. Flush is a boundary, not a member: pg drives row-limited
+// executions (rows: N, pg-cursor) with Flush and waits for the response.
+export const EQP_MESSAGES: ReadonlySet<number> = new Set([PARSE, BIND, DESCRIBE, EXECUTE, CLOSE]);
 
 /**
  * Upper bound on a single backend message length declared in its 4-byte

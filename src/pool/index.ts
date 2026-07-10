@@ -220,6 +220,15 @@ export class PgBridgePool extends pg.Pool {
         // Best-effort: a broken session surfaces errors on real queries.
       });
     });
+
+    // A client released with a suspended portal still open (an unclosed
+    // pg-cursor) will never produce the terminating Sync that frees its
+    // portal-suspension hold on the session lock — other clients would
+    // block forever. The abandoned portal is dead either way; drop the
+    // hold at release time.
+    this.on('release', (_err, client) => {
+      (client as unknown as PgBridgeClient).releaseAbandonedPortalHold();
+    });
   }
 
   /**
