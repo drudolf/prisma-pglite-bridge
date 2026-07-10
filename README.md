@@ -77,28 +77,28 @@ Running the Prisma CLI against this bridge (shadow DB for
 
 On reads, the wire-protocol path is roughly 2x faster than going
 through a direct PGlite driver adapter — on every latency percentile
-and every query shape — and, with prepared-statement caching (the
-default for `max: 1` pools; opt out with `preparedStatements: false`),
-ahead of a *native local*
-PostgreSQL server on both Apple Silicon and x86. Prisma
-`findMany({ take: 100 })`, 1000 iterations, PGlite 0.5.3, bridge
-measured with the cache enabled:
+and every query shape — and ahead of a *native local* PostgreSQL
+server on both Apple Silicon and x86 with the 1.7 defaults
+(prepared-statement caching plus the fast query path; opt out with
+`preparedStatements: false`). Prisma `findMany({ take: 100 })`, 1000
+iterations, PGlite 0.5.3, measured 2026-07-06:
 
 | Machine | bridge (p50 / p99) | direct adapter (p50 / p99) | native Postgres (p50 / p99) |
 | ------- | ------------------ | -------------------------- | --------------------------- |
-| Apple M3 Max | **0.34ms / 0.63ms** | 0.88ms / 1.91ms | 0.51ms / 1.19ms |
-| Apple i9-9980HK | **0.95ms / 1.79ms** | 2.49ms / 4.75ms | 1.10ms / 2.87ms |
-| Linux i7-8700 | **0.71ms / 1.23ms** | 1.70ms / 4.16ms | 0.95ms / 2.78ms |
+| Apple M3 Max | **0.33ms / 0.54ms** | 0.88ms / 1.90ms | 0.40ms / 1.05ms |
+| Apple i9-9980HK | **0.87ms / 1.73ms** | 2.45ms / 4.95ms | 1.03ms / 2.80ms |
+| Linux i7-8700 | **0.67ms / 1.01ms** | 1.69ms / 4.10ms | 0.95ms / 2.76ms |
 
 That lead isn't an artifact of one hot query: across a nine-shape
 read mix (point lookups, filters, sorts, joins, `count`/`groupBy`)
-the bridge stays ahead on every shape and machine. The trade-off is
-honest, though — on x86 prepared-native still edges the read median,
-and interactive transactions come down to indexing (the bridge wins
-them when the sorted column is indexed, native's sequential scan wins
-when it isn't; the suite reports both). Full tables (operation breadth,
-multi-shape reads, transactions, memory, cold start, where native wins)
-and
+the bridge stays ahead on every shape and machine, and it now wins
+indexed interactive transactions on every machine too. The trade-offs
+are honest, though — give native Postgres prepared statements and the
+read median becomes a near-tie (native wins it outright on one of the
+three machines and keeps the tightest worst case everywhere), and
+native's faster sequential scan still takes unindexed sorts on Apple
+Silicon. Full tables (operation breadth, multi-shape
+reads, transactions, memory, cold start, where native wins) and
 methodology live in the
 [benchmark suite](./benchmark/BENCHMARK.md). Reproduce with:
 
