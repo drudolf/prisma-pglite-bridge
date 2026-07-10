@@ -13,6 +13,7 @@ pnpm bench --adapter bridge -n 20         # more iterations
 pnpm bench --json > results.json          # machine-readable output
 pnpm bench:isolation                      # per-test isolation cost (own entry point)
 pnpm bench:pg-server                      # native Postgres baseline (separate terminal)
+pnpm bench:orm                            # ORM native drivers vs the bridge (own entry point)
 ```
 
 The first run generates schema SQL via `prisma migrate diff`, so Prisma's
@@ -525,6 +526,47 @@ NODE_OPTIONS="--expose-gc" pnpm bench --scenario all -r 3
 
 Without `--expose-gc` the memory numbers are noisy and include GC lag.
 The runner warns when you skip it.
+
+## ORM benchmark (`benchmark/orm/`)
+
+A separate harness (`pnpm bench:orm`) that skips Prisma entirely: for
+each registered ORM it compares the ORM's **native PGlite driver**
+(calling the PGlite JS API directly) against the same ORM driving
+**`PgBridgePool` over the wire protocol**, on identical fresh PGlite
+instances. A correctness gate (identical values from both paths,
+committed transaction visible) runs before any timing.
+
+```bash
+pnpm bench:orm                            # all ORMs, N=300 warmup=30
+pnpm bench:orm --orm drizzle -n 300 -w 30
+```
+
+The workload is fixed in `orm/run.ts` — single insert, findMany,
+select-where, left join, and a read+write transaction — so results are
+comparable across ORMs. An ORM module only translates those operations
+into its own query-builder API (see `orm/types.ts`); to add one,
+implement `OrmDefinition` in a sibling of `orm/drizzle.ts`, register it
+in `run.ts`'s `ORMS` map, and add the ORM as a devDependency.
+
+Reference results — Apple i9-9980HK, 2026-07-10, bridge at `e72dfd4`
+(per-client statement caching on), `drizzle-orm` 0.45.2, PGlite 0.5.4,
+N=300:
+
+| Operation | native p50 | wire p50 | native p99 | wire p99 |
+| ------------- | ------ | ---------- | ------ | ---------- |
+| single insert | 0.40ms | **0.17ms** | 1.03ms | **0.37ms** |
+| findMany | 1.33ms | **0.37ms** | 3.36ms | **0.77ms** |
+| select where | 0.45ms | **0.18ms** | 0.86ms | **0.40ms** |
+| join | 1.30ms | **0.44ms** | 3.35ms | **1.02ms** |
+| tx (r+w) | 1.24ms | **0.49ms** | 2.13ms | **0.89ms** |
+
+The wire path wins every operation (2.7–3.9× at p50) despite the extra
+protocol layer: the pool's client-level statement-name injection
+parse-skips repeat shapes, while `drizzle-orm/pglite` re-parses every
+call. Drizzle's object-form queries carry no `types`, so they ride the
+stock named path, not the FastQuery fast path — the win here is the
+statement cache and the protocol path, and it transfers to any ORM that
+issues object-form queries through a pg `Pool`.
 
 ## Environment
 
