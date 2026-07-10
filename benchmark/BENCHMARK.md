@@ -576,15 +576,16 @@ community `knex-pglite` 0.14.0):
 | tx (r+w) | 1.31ms [1.26–1.44] | **0.47ms** [0.45–0.50] | 3.24ms | 1.16ms |
 
 **kysely** (`kysely` 0.29.3 — native: the first-party built-in
-`PGliteDialect`):
+`PGliteDialect`; re-measured at `7b51f57` after string-form
+statement-name injection landed):
 
 | Operation | native p50 [spread] | wire p50 [spread] | native p99 | wire p99 |
 | ------------- | ------ | ---------- | ------ | ---------- |
-| single insert | 0.39ms [0.37–0.39] | **0.20ms** [0.20–0.23] | 0.79ms | 0.33ms |
-| findMany | 1.23ms [1.21–1.25] | **0.34ms** [0.31–0.38] | 2.50ms | 0.63ms |
-| select where | 0.43ms [0.41–0.44] | **0.22ms** [0.22–0.25] | 0.78ms | 0.40ms |
-| join | 1.29ms [1.27–1.30] | **0.48ms** [0.45–0.53] | 2.34ms | 0.79ms |
-| tx (r+w) | 1.25ms [1.18–1.25] | **0.57ms** [0.57–0.66] | 2.26ms | 0.82ms |
+| single insert | 0.39ms [0.39–0.41] | **0.16ms** [0.13–0.19] | 0.79ms | 0.39ms |
+| findMany | 1.32ms [1.32–1.33] | **0.39ms** [0.33–0.53] | 2.66ms | 0.80ms |
+| select where | 0.45ms [0.44–0.46] | **0.18ms** [0.14–0.23] | 0.98ms | 0.37ms |
+| join | 1.38ms [1.37–1.40] | **0.54ms** [0.48–0.78] | 2.93ms | 1.06ms |
+| tx (r+w) | 1.29ms [1.27–1.32] | **0.52ms** [0.42–0.68] | 2.22ms | 1.07ms |
 
 **mikro-orm** (`@mikro-orm/*` 7.1.5 — native: the official
 `@mikro-orm/pglite` driver; wire: a kysely `PostgresDialect` wrapping the
@@ -602,15 +603,16 @@ per call):
 **typeorm** (`typeorm` 1.0.0 — native: community `typeorm-pglite` 0.3.4,
 harness instance injected into its module-level singleton; wire: a
 hand-rolled `driver` shim whose `Pool` constructor returns the existing
-bridge pool, since TypeORM has no external-pool option):
+bridge pool, since TypeORM has no external-pool option; re-measured at
+`7b51f57` after string-form statement-name injection landed):
 
 | Operation | native p50 [spread] | wire p50 [spread] | native p99 | wire p99 |
 | ------------- | ------ | ---------- | ------ | ---------- |
-| single insert | 0.49ms [0.47–0.52] | **0.27ms** [0.26–0.28] | 0.73ms | 0.45ms |
-| findMany | 1.40ms [1.28–1.44] | **0.47ms** [0.47–0.53] | 3.39ms | 1.01ms |
-| select where | 0.53ms [0.50–0.56] | **0.30ms** [0.28–0.32] | 1.04ms | 0.58ms |
-| join | 2.25ms [2.00–2.35] | **0.87ms** [0.87–1.01] | 4.46ms | 1.75ms |
-| tx (r+w) | 1.53ms [1.43–1.64] | **0.73ms** [0.69–0.79] | 2.57ms | 1.46ms |
+| single insert | 0.47ms [0.47–0.48] | **0.21ms** [0.20–0.22] | 0.85ms | 0.34ms |
+| findMany | 1.32ms [1.28–1.33] | **0.50ms** [0.47–0.54] | 3.51ms | 1.13ms |
+| select where | 0.51ms [0.50–0.53] | **0.23ms** [0.22–0.24] | 0.96ms | 0.44ms |
+| join | 2.19ms [2.12–2.23] | **0.95ms** [0.87–1.03] | 4.89ms | 1.99ms |
+| tx (r+w) | 1.46ms [1.44–1.50] | **0.58ms** [0.56–0.61] | 2.73ms | 1.04ms |
 
 The wire path wins every operation for all five ORMs despite the extra
 protocol layer — even against Kysely's first-party dialect and
@@ -620,14 +622,20 @@ issues Parse / Describe / Bind / Describe / Execute / Sync as ~6
 separate protocol crossings plus JS-side result-message parsing; the
 bridge sends the same extended-protocol conversation as one buffered
 duplex write on the raw-stream path. Statement-name injection
-(parse-skip) is a bonus on top, not the cause: it engages only for
-object-form queries (drizzle, knex — kysely and typeorm issue
-string-form queries, verified via empty `pg_prepared_statements`, and
-still win), and a `statementCaching: false` control run left drizzle's
-wire path winning 1.9–3.2× — caching contributes only ~4–27% of the
-margin depending on the operation. FastQuery never engages on any wire
-path (no caller `types`). The win therefore transfers to any ORM
-driving a pg `Pool`, regardless of query form. The margin tracks how
+(parse-skip) is a bonus on top, not the cause: a
+`statementCaching: false` control run left drizzle's wire path winning
+1.9–3.2× — caching contributes only ~4–27% of the margin depending on
+the operation. Since `7b51f57` the injection also covers string-form
+parameterized queries, so it engages for drizzle/knex (object form)
+and kysely/typeorm (string form — measured effect: ~20% lower wire p50
+on the parse-heavy ops: insert, select-where, and the transaction;
+findMany/join are row-transfer-dominated and moved within noise).
+MikroORM v7 is the exception: it inlines parameters into the SQL text
+client-side (`CompiledQuery.raw`, no bind values), so no two calls
+share a shape and there is nothing to cache — its wire numbers are
+caching-independent. FastQuery never engages on any wire path (no
+caller `types`). The win therefore transfers to any ORM driving a pg
+`Pool`, regardless of query form. The margin tracks how
 much of an operation is driver time: roughly 2–4× at p50 for the query
 builders, 1.8–3.0× for TypeORM and 1.4–1.8× for MikroORM, whose entity
 hydration and unit-of-work bookkeeping dilute the driver share. Knex
