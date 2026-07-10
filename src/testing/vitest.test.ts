@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createBridgeTest, setupPGliteBridge } from './index.ts';
+import { createBridgeTest, setupPGliteBridge } from './vitest.ts';
 
 // Validation-only unit tests. setupPGliteBridge must reject invalid option
 // combinations before any PGliteBridge (and thus any PGlite) is created, so

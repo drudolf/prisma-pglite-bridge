@@ -13,12 +13,12 @@ const { beforeEachSpy, afterAllSpy, createBridgeContextSpy } = vi.hoisted(() => 
 }));
 
 vi.mock('@jest/globals', () => ({ beforeEach: beforeEachSpy, afterAll: afterAllSpy }));
-vi.mock('../testing/core.ts', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../testing/core.ts')>()),
+vi.mock('./core.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./core.ts')>()),
   createBridgeContext: createBridgeContextSpy,
 }));
 
-import { setupPGliteBridge } from './index.ts';
+import { setupPGliteBridge } from './jest.ts';
 
 // The suite's `restoreMocks` resets implementations but not call history, and
 // these hoisted spies are shared across tests — clear their call records so

@@ -8,7 +8,7 @@ import { PrismaClient } from '@prisma/client';
 import { describe, expect } from 'vitest';
 
 import { PGliteBridge } from '../../index.ts';
-import { createBridgeTest } from '../../vitest/index.ts';
+import { createBridgeTest } from '../../testing/vitest.ts';
 
 // Module-level captures let later tests assert that setup ran once per scope
 // and that the underlying instances are shared across tests.

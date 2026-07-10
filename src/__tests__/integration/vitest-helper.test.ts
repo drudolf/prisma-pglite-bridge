@@ -8,7 +8,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { PGliteBridge } from '../../index.ts';
-import { setupPGliteBridge } from '../../vitest/index.ts';
+import { setupPGliteBridge } from '../../testing/vitest.ts';
 
 // Called at the file's top level so the helper's auto-registered hooks
 // (beforeEach → bridge.resetDb, afterAll → bridge.close) apply file-wide.

@@ -25,7 +25,7 @@
  * apply to every file the worker runs.
  *
  * `vitest` is an optional peer dependency — this module is the only entry
- * point that imports it. The runner-agnostic core lives in `../testing/core`
+ * point that imports it. The runner-agnostic core lives in `./core`
  * and is shared with the `prisma-pglite-bridge/jest` entry.
  */
 import { afterAll, test as baseTest, beforeEach, type TestAPI } from 'vitest';
@@ -37,9 +37,9 @@ import {
   createBridgeTemplate,
   type PGliteTestContext,
   type SetupPGliteBridgeOptions,
-} from '../testing/core.ts';
+} from './core.ts';
 
-export type { PGliteTestContext, SetupPGliteBridgeOptions } from '../testing/core.ts';
+export type { PGliteTestContext, SetupPGliteBridgeOptions } from './core.ts';
 
 /**
  * Create a seeded, snapshot-backed PGlite test context and (by default)

@@ -40,9 +40,9 @@ import {
   createBridgeContext,
   type PGliteTestContext,
   type SetupPGliteBridgeOptions,
-} from '../testing/core.ts';
+} from './core.ts';
 
-export type { PGliteTestContext, SetupPGliteBridgeOptions } from '../testing/core.ts';
+export type { PGliteTestContext, SetupPGliteBridgeOptions } from './core.ts';
 
 /**
  * Create a seeded, snapshot-backed PGlite test context and (by default)

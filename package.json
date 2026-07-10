@@ -41,32 +41,32 @@
     },
     "./vitest": {
       "import": {
-        "types": "./dist/vitest/index.d.mts",
-        "default": "./dist/vitest/index.mjs"
+        "types": "./dist/testing/vitest.d.mts",
+        "default": "./dist/testing/vitest.mjs"
       },
       "require": {
-        "types": "./dist/vitest/index.d.cts",
-        "default": "./dist/vitest/index.cjs"
+        "types": "./dist/testing/vitest.d.cts",
+        "default": "./dist/testing/vitest.cjs"
       }
     },
     "./jest": {
       "import": {
-        "types": "./dist/jest/index.d.mts",
-        "default": "./dist/jest/index.mjs"
+        "types": "./dist/testing/jest.d.mts",
+        "default": "./dist/testing/jest.mjs"
       },
       "require": {
-        "types": "./dist/jest/index.d.cts",
-        "default": "./dist/jest/index.cjs"
+        "types": "./dist/testing/jest.d.cts",
+        "default": "./dist/testing/jest.cjs"
       }
     }
   },
   "typesVersions": {
     "*": {
       "vitest": [
-        "./dist/vitest/index.d.cts"
+        "./dist/testing/vitest.d.cts"
       ],
       "jest": [
-        "./dist/jest/index.d.cts"
+        "./dist/testing/jest.d.cts"
       ]
     }
   },
