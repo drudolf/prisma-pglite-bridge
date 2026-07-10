@@ -129,13 +129,28 @@ export class FastQuery {
       if (previous !== this.text) {
         connection.parse({ text: this.text, name: this.name, types: [] });
       }
-      connection.bind({
-        portal: '',
-        statement: this.name,
-        values: this.values,
-        binary: false,
-        valueMapper: pgUtils.prepareValue,
-      });
+      try {
+        connection.bind({
+          portal: '',
+          statement: this.name,
+          values: this.values,
+          binary: false,
+          valueMapper: pgUtils.prepareValue,
+        });
+      } catch (err) {
+        // prepareValue maps user-supplied values synchronously and throws on
+        // unserializable input (circular structures, a throwing toPostgres).
+        // Without a catch the throw escapes pg's _pulseQueryQueue with
+        // readyForQuery still false — wedging the client forever. Recover
+        // with a bare Sync: the backend answers ReadyForQuery and pg pulses
+        // the queue. Unlike stock pg, no Close for the just-parsed statement:
+        // ParseComplete still records it in parsedStatements, so closing it
+        // server-side would desync the parse-skip cache (26000 on the next
+        // execution); keeping it is exactly the cache's normal warm state.
+        connection.sync();
+        this.settle(err instanceof Error ? err : new Error(String(err)));
+        return null;
+      }
       if (cachedFields === undefined) {
         this.describeSent = true;
         connection.describe({ type: 'P', name: '' });

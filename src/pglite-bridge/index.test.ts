@@ -255,12 +255,94 @@ describe('PGliteBridge — adapter construction failure', () => {
 
       expect(() => new module.PGliteBridge({ pglite: mockPglite })).toThrow('adapter boom');
 
+      // Caller-supplied instance: the failure path releases the pool slot
+      // but must never close a PGlite the bridge does not own. Flush the
+      // best-effort async cleanup chain before asserting.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(vi.mocked(mockPglite.close)).not.toHaveBeenCalled();
+
       const bridge = new module.PGliteBridge({ pglite: mockPglite });
       await new Promise((resolve) => setImmediate(resolve));
       expect(warnings).toHaveLength(0);
       await bridge.close();
     } finally {
       process.removeListener('warning', onWarning);
+      vi.doUnmock('@prisma/adapter-pg');
+      vi.resetModules();
+    }
+  });
+
+  it('closes the bridge-owned PGlite when PrismaPg construction throws', async () => {
+    // Owned path: no `pglite` option, so the bridge constructs its own
+    // instance through the mocked module. After the constructor throws, the
+    // half-built bridge is unreachable — nothing else can ever close that
+    // instance, so the failure path itself must.
+    vi.resetModules();
+    const ownedInstance = createMockPGlite();
+    const pgliteCtor = vi.fn().mockImplementation(function MockPGlite() {
+      return ownedInstance;
+    });
+    vi.doMock('@electric-sql/pglite', () => ({ PGlite: pgliteCtor }));
+    vi.doMock('@prisma/adapter-pg', () => ({
+      PrismaPg: vi.fn().mockImplementation(function MockPrismaPg() {
+        throw new Error('adapter boom');
+      }),
+    }));
+    try {
+      const module = await import('./index.ts');
+
+      expect(() => new module.PGliteBridge()).toThrow('adapter boom');
+
+      // The cleanup (pool.end() → pglite.close()) is an async best-effort
+      // chain — flush it before asserting.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(pgliteCtor).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(ownedInstance.close)).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.doUnmock('@electric-sql/pglite');
+      vi.doUnmock('@prisma/adapter-pg');
+      vi.resetModules();
+    }
+  });
+
+  it('swallows a rejecting close() of the owned PGlite on the failure path', async () => {
+    vi.resetModules();
+    const ownedInstance = createMockPGlite({
+      close: vi.fn().mockRejectedValue(new Error('close boom')),
+    });
+    vi.doMock('@electric-sql/pglite', () => ({
+      PGlite: vi.fn().mockImplementation(function MockPGlite() {
+        return ownedInstance;
+      }),
+    }));
+    vi.doMock('@prisma/adapter-pg', () => ({
+      PrismaPg: vi.fn().mockImplementation(function MockPrismaPg() {
+        throw new Error('adapter boom');
+      }),
+    }));
+    // A passive "no unhandled rejection" is runner-sensitive (condition):
+    // trap explicitly, flush, assert the trap never fired, remove in finally.
+    const unhandled: unknown[] = [];
+    const trap = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', trap);
+    try {
+      const module = await import('./index.ts');
+
+      expect(() => new module.PGliteBridge()).toThrow('adapter boom');
+
+      // Two turns: the first lets the pool-end chain reach close(), the
+      // second lets an unswallowed close rejection surface to the trap.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(vi.mocked(ownedInstance.close)).toHaveBeenCalledTimes(1);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.removeListener('unhandledRejection', trap);
+      vi.doUnmock('@electric-sql/pglite');
       vi.doUnmock('@prisma/adapter-pg');
       vi.resetModules();
     }

@@ -81,7 +81,7 @@ and every query shape — and ahead of a *native local* PostgreSQL
 server on both Apple Silicon and x86 with the 1.7 defaults
 (prepared-statement caching plus the fast query path; opt out with
 `preparedStatements: false`). Prisma `findMany({ take: 100 })`, 1000
-iterations, PGlite 0.5.3, measured 2026-07-06:
+iterations, PGlite 0.5.3 (reproduced on 0.5.4), measured 2026-07-06:
 
 | Machine | bridge (p50 / p99) | direct adapter (p50 / p99) | native Postgres (p50 / p99) |
 | ------- | ------------------ | -------------------------- | --------------------------- |

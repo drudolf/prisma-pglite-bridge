@@ -42,12 +42,12 @@ on the two Apple machines.
   operation on the M3 Max and Linux, and within ±20% on individual
   i9 operations, without a single ranking change.
 - **Versions:** bridge 1.7.0 (measured pre-release at `a35e971`:
-  prepared-statement caching and the lean fast-query path are on by
-  default for `max: 1` pools — no opt-in flags in the harness beyond
-  the statement-name generator), `@electric-sql/pglite` 0.5.4 (both
-  PGlite adapters resolve the same copy — the tables below were first
-  measured on 0.5.3 and reproduced within noise, no ranking changes,
-  in a 2026-07-08 three-machine re-run on 0.5.4), `pglite-prisma-adapter`
+  prepared-statement caching and the lean fast-query path on — the
+  1.7 defaults; the harness sets no opt-in flags),
+  `@electric-sql/pglite` 0.5.4 (both PGlite adapters resolve the same
+  copy — the tables below were measured on 0.5.3 and are published
+  unchanged; a 2026-07-08 three-machine re-run on 0.5.4 reproduced
+  them within noise with no ranking changes), `pglite-prisma-adapter`
   0.7.2, `@prisma/adapter-pg` 7.8.0, `pg` 8.22.0, Prisma 7.8.0.
   Native Postgres appears twice — default configuration and with
   `BENCH_POSTGRES_PREPARED=1` giving it the same statement-caching
@@ -132,7 +132,7 @@ asymmetry still holds: statement caching buys the bridge ~0.1–0.4ms
 per query (WASM parse/plan is expensive) but is also worth ~0.1–0.3ms
 to native Postgres — and unlike many production setups
 (transaction-mode poolers break named statements), the bridge can
-always run with it on (the default for `max: 1` pools since 1.7).
+always run with it on (the default since 1.7).
 
 ### Operation breadth — `micro` (p50, ratio vs bridge)
 

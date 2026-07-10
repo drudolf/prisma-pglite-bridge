@@ -27,7 +27,7 @@ export class FrontendMessageBuffer {
     this.totalLength = 0;
   }
 
-  readInt32BE(offset: number): number | undefined {
+  readUInt32BE(offset: number): number | undefined {
     if (offset < 0 || offset + 4 > this.totalLength) return undefined;
 
     const head = this.chunks[this.headIndex];

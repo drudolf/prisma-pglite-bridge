@@ -318,6 +318,40 @@ describe('PgBridgePool — shared-PGlite warning', () => {
       await local.close();
     }
   });
+
+  it('releases the live slot exactly once across a double end() — a later pool pair still warns', async () => {
+    // Pins the #releaseLiveSlot guard end-to-end. end() decrements the
+    // shared-instance counter synchronously BEFORE pg-pool rejects a
+    // repeated end(), so without the guard pool A's second end() would
+    // drive the count to -1: pool B would then land on 0, pool C on 1, and
+    // the legitimate shared-instance warning below would never fire.
+    // Fresh PGlite instance so no other test's counts bleed in (condition).
+    const local = new PGlite();
+    await local.waitReady;
+    const { warnings, stop } = captureSharedWarnings();
+    let b: PgBridgePool | undefined;
+    let c: PgBridgePool | undefined;
+    try {
+      const a = new PgBridgePool({ pglite: local }); // count → 1
+      await a.end(); // count → 0
+      // pg-pool rejects the repeated end(); the guard must keep the count
+      // at 0 instead of double-decrementing.
+      await expect(a.end()).rejects.toThrow();
+
+      b = new PgBridgePool({ pglite: local }); // count → 1, no warning
+      c = new PgBridgePool({ pglite: local }); // count → 2 → warning
+      // process.emitWarning delivers async — flush before asserting.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.message ?? '').toMatch(/WASM mutex/i);
+    } finally {
+      stop();
+      await b?.end();
+      await c?.end();
+      await local.close();
+    }
+  });
 });
 
 describe('PgBridgePool — rollback on forced client release', () => {

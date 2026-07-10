@@ -64,6 +64,40 @@ describe('snapshot manager', () => {
     await pglite.exec(`DROP TABLE "odd""name"`);
   });
 
+  it('resetDb leaves a leftover staging schema untouched (crash-recovery state)', async () => {
+    // Defended-against state: a hard crash mid-snapshotDb on a persisted
+    // dataDir leaves `_pglite_snapshot_new` behind (the next snapshotDb
+    // pre-drops it). Until then, resetDb must not treat the staging tables
+    // as user data — truncating them would destroy the very state the
+    // pre-drop defense exists for.
+    await pglite.exec(
+      `CREATE SCHEMA "_pglite_snapshot_new";
+       CREATE TABLE "_pglite_snapshot_new".staged (id int);
+       INSERT INTO "_pglite_snapshot_new".staged VALUES (1);
+       CREATE TABLE staging_user_t (id int);
+       INSERT INTO staging_user_t VALUES (1)`,
+    );
+    const snapshot = new SnapshotManager(pglite);
+    try {
+      await snapshot.resetDb();
+
+      const { rows: user } = await pglite.query<{ count: string }>(
+        'SELECT count(*)::text AS count FROM staging_user_t',
+      );
+      expect(user[0]?.count).toBe('0');
+
+      const { rows: staged } = await pglite.query<{ count: string }>(
+        'SELECT count(*)::text AS count FROM "_pglite_snapshot_new".staged',
+      );
+      expect(staged[0]?.count).toBe('1');
+    } finally {
+      await pglite.exec(
+        `DROP SCHEMA IF EXISTS "_pglite_snapshot_new" CASCADE;
+         DROP TABLE IF EXISTS staging_user_t`,
+      );
+    }
+  });
+
   it('drops the stored snapshot so resetDb truncates to empty again', async () => {
     await pglite.exec(
       "CREATE TABLE users (id serial PRIMARY KEY, name text NOT NULL); INSERT INTO users (name) VALUES ('alice')",
@@ -130,7 +164,7 @@ describe('snapshot manager', () => {
     afterEach(async () => {
       await pglite.exec(
         `DROP SCHEMA IF EXISTS "_pglite_snapshot" CASCADE;
-         DROP TABLE IF EXISTS ident_always, gen_stored, ident_default, zc, mixed_ident, snap_dropped, snap_kept, col_dropped`,
+         DROP TABLE IF EXISTS ident_always, gen_stored, ident_default, zc, mixed_ident, snap_dropped, snap_kept, col_dropped, quoted_col_dropped`,
       );
     });
 
@@ -325,8 +359,33 @@ describe('snapshot manager', () => {
         (e: unknown) => e,
       );
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toContain('public.col_dropped');
-      expect((error as Error).message).toContain('"b"');
+      // quote_ident semantics: a plain lowercase column name renders
+      // UNQUOTED in the drift message (no decorative quotes).
+      expect((error as Error).message).toContain('Snapshot columns b of public.col_dropped');
+      expect((error as Error).message).toContain('no longer exist');
+    });
+
+    it('escapes a double-quote in a dropped column name in the drift error (quote_ident)', async () => {
+      // Column literally named `he"said` — quote_ident renders it with the
+      // embedded quote doubled: "he""said". The manual '"' || name || '"'
+      // concatenation would emit the unescaped "he"said" instead.
+      await pglite.exec(
+        `CREATE TABLE quoted_col_dropped (a int, "he""said" text);
+         INSERT INTO quoted_col_dropped VALUES (1, 'x')`,
+      );
+
+      const snapshot = new SnapshotManager(pglite);
+      await snapshot.snapshotDb();
+
+      await pglite.exec(`ALTER TABLE quoted_col_dropped DROP COLUMN "he""said"`);
+
+      const error = await snapshot.resetDb().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('public.quoted_col_dropped');
+      expect((error as Error).message).toContain('"he""said"');
       expect((error as Error).message).toContain('no longer exist');
     });
   });

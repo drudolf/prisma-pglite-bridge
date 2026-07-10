@@ -323,11 +323,11 @@ export class PgBridgePool extends pg.Pool {
   #liveSlotReleased = false;
 
   /** Decrement this pool's slot in the shared-instance counter exactly once.
-   *  pg.Pool rejects a second `end()`, so cleanup normally runs once — the
-   *  guard covers the callback form, where pg surfaces the double-end error
-   *  through the callback and our wrapper would otherwise run cleanup again. */
+   *  end() calls this synchronously before pg-pool rejects a repeated end()
+   *  — promise and callback form alike — so without the guard a double
+   *  end() would double-decrement the counter and understate later
+   *  concurrent-pool overlap. */
   #releaseLiveSlot(): void {
-    /* v8 ignore next — double-end guard; second end() rejects before cleanup */
     if (this.#liveSlotReleased) return;
     this.#liveSlotReleased = true;
     const count = livePoolCounts.get(this.pglite) as number;

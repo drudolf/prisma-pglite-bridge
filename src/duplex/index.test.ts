@@ -1441,9 +1441,10 @@ describe('PGliteDuplex malformed frontend message lengths', () => {
   const QUERY = 0x51; // 'Q'
   const SYNC = 0x53; // 'S'
 
-  // Above the 1 GiB sanity cap but deliberately still positive under signed
-  // readInt32BE — 2 GiB would read negative and belongs to the
-  // malformed-length case, not the cap case.
+  // Above the 1 GiB sanity cap. Declared lengths are read unsigned, so even
+  // high-bit values (≥ 2 GiB) stay positive and belong to the cap branch —
+  // pinned by the 0x8000_0000 tests below — never to the malformed-length
+  // (negative) case.
   const OVERSIZED_LENGTH = 1_100_000_000;
 
   const startupBytes = (): Buffer => {
@@ -1457,14 +1458,16 @@ describe('PGliteDuplex malformed frontend message lengths', () => {
   const frameWithDeclaredLength = (type: number, declaredLength: number): Buffer => {
     const buf = Buffer.alloc(5);
     buf[0] = type;
-    buf.writeInt32BE(declaredLength, 1);
+    // Unsigned write: identical bytes for the existing sub-2 GiB values,
+    // and it permits high-bit declared lengths without a RangeError.
+    buf.writeUInt32BE(declaredLength, 1);
     return buf;
   };
 
   /** Startup frame header: [4-byte BE declared length incl. itself] — no type byte. */
   const startupWithDeclaredLength = (declaredLength: number): Buffer => {
     const buf = Buffer.alloc(4);
-    buf.writeInt32BE(declaredLength, 0);
+    buf.writeUInt32BE(declaredLength, 0);
     return buf;
   };
 
@@ -1502,6 +1505,19 @@ describe('PGliteDuplex malformed frontend message lengths', () => {
     // Today the duplex "waits" for a gigabyte that never arrives, buffering
     // unboundedly while every write callback reports success.
     const err = await writeAndAwait(duplex, frameWithDeclaredLength(QUERY, OVERSIZED_LENGTH));
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toMatch(/exceeds sanity cap/);
+
+    duplex.destroy();
+  });
+
+  it('fails the write when a post-startup frame declares a high-bit length (2 GiB, read unsigned)', async () => {
+    const duplex = await createReadyDuplex();
+
+    // 0x8000_0000 arrives as 2 147 483 648 through the unsigned length
+    // reader — far above the sanity cap. It must never read negative into
+    // the malformed-length branch.
+    const err = await writeAndAwait(duplex, frameWithDeclaredLength(QUERY, 0x80_00_00_00));
     expect(err).toBeInstanceOf(Error);
     expect(err?.message).toMatch(/exceeds sanity cap/);
 
@@ -1547,6 +1563,19 @@ describe('PGliteDuplex malformed frontend message lengths', () => {
     // Today the pre-startup framer stalls buffering toward a length no sane
     // startup message reaches, with success write callbacks throughout.
     const err = await writeAndAwait(duplex, startupWithDeclaredLength(OVERSIZED_LENGTH));
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toMatch(/exceeds sanity cap/);
+
+    duplex.destroy();
+  });
+
+  it('fails the write when the startup frame declares a high-bit length (2 GiB, read unsigned)', async () => {
+    const duplex = new PGliteDuplex(createMockPGlite());
+    duplex.on('error', () => {});
+
+    // Same unsigned-read contract as the post-startup framer: 2 GiB lands
+    // in the sanity-cap branch, not the malformed (< 8) branch.
+    const err = await writeAndAwait(duplex, startupWithDeclaredLength(0x80_00_00_00));
     expect(err).toBeInstanceOf(Error);
     expect(err?.message).toMatch(/exceeds sanity cap/);
 

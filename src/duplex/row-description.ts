@@ -61,6 +61,10 @@ export const rowDescriptionNeedsRewrite = (
  * callers that already hold an owned buffer just call this.
  */
 export const rewriteRowDescriptionInPlace = (buf: Buffer): void => {
+  // A complete RowDescription is at least 7 bytes (type byte, int32 length,
+  // int16 field count); pass a shorter, protocol-invalid frame through
+  // untouched instead of throwing RangeError on the field-count read.
+  if (buf.length < 7) return;
   const fieldCount = buf.readInt16BE(5);
   let p = 7;
   for (let i = 0; i < fieldCount; i++) {

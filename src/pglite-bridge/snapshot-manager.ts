@@ -6,7 +6,8 @@ const SNAPSHOT_SCHEMA = '_pglite_snapshot';
 const SNAPSHOT_SCHEMA_NEW = '_pglite_snapshot_new';
 
 const SYSTEM_SCHEMA_EXCLUSION = `schemaname NOT IN ('pg_catalog', 'information_schema')
-       AND schemaname != '${SNAPSHOT_SCHEMA}'`;
+       AND schemaname != '${SNAPSHOT_SCHEMA}'
+       AND schemaname != '${SNAPSHOT_SCHEMA_NEW}'`;
 
 const USER_TABLES_WHERE = `${SYSTEM_SCHEMA_EXCLUSION}
        AND tablename NOT LIKE '_prisma%'`;
@@ -244,7 +245,7 @@ export class SnapshotManager {
               string_agg(quote_ident(c.column_name), ', ' ORDER BY c.ordinal_position)
                 FILTER (WHERE c.is_generated = 'NEVER') AS cols,
               COALESCE(bool_or(c.is_identity = 'YES' AND c.identity_generation = 'ALWAYS'), false) AS needs_overriding,
-              (SELECT string_agg('"' || sc.column_name || '"', ', ' ORDER BY sc.ordinal_position)
+              (SELECT string_agg(quote_ident(sc.column_name), ', ' ORDER BY sc.ordinal_position)
                  FROM information_schema.columns sc
                 WHERE sc.table_schema = ${SNAPSHOT_SCHEMA_LITERAL}
                   AND sc.table_name = t.snap_name
@@ -288,9 +289,10 @@ export class SnapshotManager {
   }
 
   /**
-   * Self-heal: someone (e.g. `resetSchema`) may drop `_pglite_snapshot`
-   * out from under us. Returns whether the schema actually exists right now,
-   * and clears `#hasSnapshot` if it doesn't.
+   * Self-heal: external SQL (a caller's raw `DROP SCHEMA`, a
+   * `prisma migrate reset`) may drop `_pglite_snapshot` out from under us.
+   * Returns whether the schema actually exists right now, and clears
+   * `#hasSnapshot` if it doesn't.
    */
   async #snapshotSchemaExists(): Promise<boolean> {
     const { rows } = await this.#pglite.query<{ exists: boolean }>(

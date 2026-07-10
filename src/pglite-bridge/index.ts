@@ -183,13 +183,13 @@ export class PGliteBridge {
   #closing: Promise<void> | undefined;
 
   constructor(options: PGliteBridgeOptions = {}) {
+    // Validate before any PGlite is created so a rejected configuration
+    // cannot leak an unclosed WASM instance.
     const statsLevel = options.statsLevel ?? 'off';
     if (statsLevel !== 'off' && statsLevel !== 'basic' && statsLevel !== 'full') {
       throw new Error(`statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`);
     }
 
-    // Validate before any PGlite is created so a rejected configuration
-    // cannot leak an unclosed WASM instance.
     const preparedStatements = options.preparedStatements ?? true;
 
     this.#ownsPglite = !options.pglite;
@@ -224,12 +224,17 @@ export class PGliteBridge {
     } catch (err) {
       // The half-constructed bridge is unreachable after a throw, so nothing
       // would ever call close() — release the pool (whose end() frees its
-      // shared-instance slot synchronously) before rethrowing. Constructors
-      // cannot await; the async remainder of end() is best-effort.
-      void this.#pool.end().catch(
-        /* v8 ignore next — end() on a never-used pool does not reject */
-        () => {},
-      );
+      // shared-instance slot synchronously) and, when the bridge created its
+      // own PGlite, close that instance too before rethrowing. Constructors
+      // cannot await; the async remainder is best-effort.
+      void this.#pool
+        .end()
+        .catch(
+          /* v8 ignore next — end() on a never-used pool does not reject */
+          () => {},
+        )
+        .then(() => (this.#ownsPglite ? this.pglite.close() : undefined))
+        .catch(() => {});
       throw err;
     }
 

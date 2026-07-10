@@ -21,9 +21,9 @@ describe('FrontendMessageBuffer', () => {
     const buffer = new FrontendMessageBuffer();
     const startup = new Uint8Array([0x00, 0x00, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00]);
     buffer.push(startup.subarray(0, 2));
-    expect(buffer.readInt32BE(0)).toBeUndefined();
+    expect(buffer.readUInt32BE(0)).toBeUndefined();
     buffer.push(startup.subarray(2));
-    expect(buffer.readInt32BE(0)).toBe(8);
+    expect(buffer.readUInt32BE(0)).toBe(8);
     expect(buffer.consume(8)).toEqual(startup);
     expect(buffer.length).toBe(0);
   });
@@ -35,11 +35,11 @@ describe('FrontendMessageBuffer', () => {
       new Uint8Array([0x73, 0x65, 0x6c, 0x65, 0x63, 0x74, 0x00]),
     );
     buffer.push(message.subarray(0, 1));
-    expect(buffer.readInt32BE(1)).toBeUndefined();
+    expect(buffer.readUInt32BE(1)).toBeUndefined();
     buffer.push(message.subarray(1, 4));
-    expect(buffer.readInt32BE(1)).toBeUndefined();
+    expect(buffer.readUInt32BE(1)).toBeUndefined();
     buffer.push(message.subarray(4));
-    expect(buffer.readInt32BE(1)).toBe(11);
+    expect(buffer.readUInt32BE(1)).toBe(11);
     expect(buffer.consume(message.length)).toEqual(message);
   });
 
@@ -85,7 +85,7 @@ describe('FrontendMessageBuffer', () => {
     buffer.push(first);
     buffer.push(second);
     expect(buffer.consume(first.length)).toEqual(first);
-    expect(buffer.readInt32BE(1)).toBe(4);
+    expect(buffer.readUInt32BE(1)).toBe(4);
     expect(buffer.consume(second.length)).toEqual(second);
   });
 
@@ -119,7 +119,7 @@ describe('FrontendMessageBuffer', () => {
 
     const last = messages.at(-1);
     expect(last).toBeDefined();
-    expect(buffer.readInt32BE(1)).toBe(last ? last.length - 1 : undefined);
+    expect(buffer.readUInt32BE(1)).toBe(last ? last.length - 1 : undefined);
     expect(buffer.consume(last?.length ?? 0)).toEqual(last);
     expect(buffer.length).toBe(0);
   });

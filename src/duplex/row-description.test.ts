@@ -76,6 +76,18 @@ describe('rowDescriptionNeedsRewrite', () => {
 });
 
 describe('rewriteRowDescriptionInPlace', () => {
+  it('passes a degenerate 6-byte frame through untouched instead of throwing', () => {
+    // Protocol-invalid RowDescription with declared length 5: too short to
+    // hold the int16 field count at offset 5. A frame the rewrite cannot
+    // even inspect must pass through byte-identical — not throw RangeError
+    // mid-framer on the field-count read.
+    const frame = Buffer.from([0x54, 0, 0, 0, 5, 0]);
+    const before = Buffer.from(frame);
+
+    expect(() => rewriteRowDescriptionInPlace(frame)).not.toThrow();
+    expect(frame.equals(before)).toBe(true);
+  });
+
   it('leaves the frame byte-identical when no field needs a rewrite', () => {
     const frame = Buffer.from(
       encodeRowDescription([

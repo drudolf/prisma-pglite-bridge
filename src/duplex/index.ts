@@ -417,14 +417,15 @@ export class PGliteDuplex extends Duplex {
    */
   private async processPreStartup(): Promise<void> {
     if (this.input.length < 4) return;
-    const len = this.input.readInt32BE(0);
+    const len = this.input.readUInt32BE(0);
     /* c8 ignore next — len === undefined unreachable once length ≥ 4 */
     if (len === undefined) return;
     // Minimum valid pre-startup frame is the 8-byte SSL/GSSENC probe (the
-    // length includes itself); a smaller declared length can never complete,
-    // and readInt32BE is signed, so hostile lengths read negative and land
-    // here too. Throwing propagates through the drain loop's catch: session
-    // lock released, queued write callbacks failed, socket torn down.
+    // length includes itself); a smaller declared length can never complete.
+    // Lengths are read unsigned, so a high-bit declared length (≥ 2 GiB)
+    // lands in the sanity-cap branch below, not here. Throwing propagates
+    // through the drain loop's catch: session lock released, queued write
+    // callbacks failed, socket torn down.
     if (len < 8) {
       throw new Error(`Malformed startup message length: ${len}`);
     }
@@ -495,7 +496,7 @@ export class PGliteDuplex extends Duplex {
    */
   private async processMessages(): Promise<void> {
     while (this.input.length >= 5) {
-      const msgLen = this.input.readInt32BE(1);
+      const msgLen = this.input.readUInt32BE(1);
       /* c8 ignore next — input.length ≥ 5 guarantees readable int32 */
       if (msgLen === undefined) break;
       // A declared length below 4 (the length field itself) can never
