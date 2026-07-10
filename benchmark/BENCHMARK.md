@@ -596,7 +596,20 @@ per call):
 | join | 4.63ms | **3.34ms** | 9.30ms | **7.82ms** |
 | tx (r+w) | 1.86ms | **1.01ms** | 3.67ms | **2.39ms** |
 
-The wire path wins every operation for all four ORMs despite the extra
+**typeorm** (`typeorm` 1.0.0 — native: community `typeorm-pglite` 0.3.4,
+harness instance injected into its module-level singleton; wire: a
+hand-rolled `driver` shim whose `Pool` constructor returns the existing
+bridge pool, since TypeORM has no external-pool option):
+
+| Operation | native p50 | wire p50 | native p99 | wire p99 |
+| ------------- | ------ | ---------- | ------ | ---------- |
+| single insert | 0.47ms | **0.27ms** | 0.88ms | **0.50ms** |
+| findMany | 1.32ms | **0.52ms** | 2.40ms | **1.20ms** |
+| select where | 0.51ms | **0.30ms** | 1.37ms | **0.83ms** |
+| join | 2.21ms | **0.98ms** | 3.97ms | **2.32ms** |
+| tx (r+w) | 1.47ms | **0.73ms** | 2.61ms | **1.41ms** |
+
+The wire path wins every operation for all five ORMs despite the extra
 protocol layer — even against Kysely's first-party dialect and
 MikroORM's official driver: the pool's client-level statement-name
 injection parse-skips repeat shapes, while the native drivers re-parse
@@ -605,9 +618,10 @@ stock named path, not the FastQuery fast path — the win is the statement
 cache and the protocol path, and it transfers to any ORM that issues
 object-form queries through a pg `Pool`. The margin tracks how much of
 an operation is driver time: 2.2–3.9× at p50 for the query builders,
-1.4–1.9× for MikroORM, whose entity hydration and identity map dilute
-the driver share. Knex additionally exercises the bridge's callback-form
-dispatch (its pg dialect passes a positional callback).
+1.7–2.5× for TypeORM and 1.4–1.9× for MikroORM, whose entity hydration
+and unit-of-work bookkeeping dilute the driver share. Knex additionally
+exercises the bridge's callback-form dispatch (its pg dialect passes a
+positional callback).
 
 ## Environment
 

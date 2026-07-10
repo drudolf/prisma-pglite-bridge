@@ -21,6 +21,7 @@ const ORMS: Record<string, () => Promise<OrmDefinition>> = {
   knex: async () => (await import('./knex.ts')).knex,
   kysely: async () => (await import('./kysely.ts')).kysely,
   'mikro-orm': async () => (await import('./mikro-orm.ts')).mikroOrm,
+  typeorm: async () => (await import('./typeorm.ts')).typeorm,
 };
 
 const DDL = `
