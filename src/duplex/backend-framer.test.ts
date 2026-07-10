@@ -176,7 +176,7 @@ describe('BackendMessageFramer', () => {
     expect(outputs.length).toBeGreaterThan(4);
   });
 
-  it('coalesces contiguous in-chunk messages into one zero-copy slice', () => {
+  it('coalesces contiguous in-chunk messages into one copied slice', () => {
     const combined = collect([DATA, encodeMessage(0x43, new Uint8Array([0xaa]))]);
     const outputs: Uint8Array[] = [];
     const framer = new BackendMessageFramer({
@@ -188,7 +188,25 @@ describe('BackendMessageFramer', () => {
 
     expect(collect(outputs)).toEqual(combined);
     expect(outputs).toHaveLength(1);
-    expect(outputs[0]?.buffer).toBe(combined.buffer);
+    expect(outputs[0]?.buffer).not.toBe(combined.buffer);
+  });
+
+  it('emitted output survives producer reuse of the source buffer', () => {
+    // The corruption scenario the mandatory copy prevents: a producer that
+    // hands a chunk owning its full backing store, then overwrites that
+    // memory after write() returns (PGlite reuses its flush buffer this way).
+    const source = new Uint8Array(DATA.length);
+    source.set(DATA);
+    const outputs: Uint8Array[] = [];
+    const framer = new BackendMessageFramer({
+      onChunk: (chunk) => outputs.push(chunk),
+    });
+
+    framer.write(source);
+    framer.flush();
+    source.fill(0xff);
+
+    expect(collect(outputs)).toEqual(DATA);
   });
 
   it('copies whole-message slices when the chunk is a view into a larger buffer', () => {
@@ -377,7 +395,7 @@ describe('BackendMessageFramer', () => {
     expect(collect(outputs)).toEqual(frame);
   });
 
-  it('passes through a RowDescription without catalog char rewrites as a zero-copy slice', () => {
+  it('passes through a RowDescription without catalog char rewrites as a single copied slice', () => {
     const frame = encodeRowDescription([
       { name: 'id', tableOID: 16384, oid: 23, size: 4 },
       { name: 'name', tableOID: 16384, oid: 25, size: -1 },
@@ -392,7 +410,7 @@ describe('BackendMessageFramer', () => {
 
     expect(collect(outputs)).toEqual(frame);
     expect(outputs).toHaveLength(1);
-    expect(outputs[0]?.buffer).toBe(frame.buffer);
+    expect(outputs[0]?.buffer).not.toBe(frame.buffer);
   });
 
   it('coalesces a no-rewrite RowDescription with adjacent pass-through messages', () => {
@@ -408,7 +426,7 @@ describe('BackendMessageFramer', () => {
 
     expect(collect(outputs)).toEqual(combined);
     expect(outputs).toHaveLength(1);
-    expect(outputs[0]?.buffer).toBe(combined.buffer);
+    expect(outputs[0]?.buffer).not.toBe(combined.buffer);
   });
 
   it('preserves frame length when rewriting (no length header changes)', () => {

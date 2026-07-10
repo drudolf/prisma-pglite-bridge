@@ -303,23 +303,13 @@ export class BackendMessageFramer {
     /* c8 ignore next — callers pass end > start */
     if (length <= 0) return;
 
-    // PGlite already hands us standalone Uint8Array chunks copied out of the
-    // WASM heap, so when this chunk owns its full backing store we can hand pg
-    // zero-copy Buffer views for arbitrary subranges. We still copy when the
-    // chunk is a view into a larger backing buffer (to avoid pinning unrelated
-    // trailing bytes) or when the backing store is shared (to prevent the WASM
-    // runtime from mutating bytes pg is still consuming).
-    if (
-      chunk.byteOffset === 0 &&
-      chunk.byteLength === chunk.buffer.byteLength &&
-      !(chunk.buffer instanceof SharedArrayBuffer)
-    ) {
-      this.onChunk(Buffer.from(chunk.buffer, start, length));
-      return;
-    }
-
-    const exact = Buffer.from(chunk.subarray(start, end));
-    this.onChunk(exact);
+    // Always copy. No shape check on the incoming view can prove the producer
+    // won't reuse the underlying memory, and pg parses pushed chunks on a
+    // later tick — so a zero-copy view is never safe here. PGlite in fact
+    // reuses its flush buffer: on 0.5.3 raw-stream chunks are views into the
+    // WASM heap and consecutive flushes arrive at the same byteOffset,
+    // overwriting earlier bytes after onRawData returns.
+    this.onChunk(Buffer.from(chunk.subarray(start, end)));
   }
 
   private finishMessage(): void {
