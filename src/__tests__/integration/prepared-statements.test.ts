@@ -1,14 +1,13 @@
 // Integration coverage for prepared-statement caching, running against a real
 // PGlite and the real generated PrismaClient.
 //
-// Caching is ON by default at `max: 1` (the default pool size): the bridge
-// caches Prisma queries as named prepared statements (`ppb_<n>`). Opt out
-// with `preparedStatements: false`; at `max > 1` caching stays off because
-// PGlite's single shared session would collide names across clients, and
-// forcing `preparedStatements: true` together with `max > 1` throws. resetDb
-// keeps cached statements alive — tables are truncated, never dropped, so
-// cached statements replan transparently — while still clearing the rest of
-// the session state.
+// Caching is ON by default for every pool size: each pool client caches
+// Prisma queries as named prepared statements (`ppb_<namespace>_<n>`, one
+// process-unique namespace per client, so names never collide across clients
+// or pools sharing the PGlite session). Opt out with
+// `preparedStatements: false`. resetDb keeps cached statements alive —
+// tables are truncated, never dropped, so cached statements replan
+// transparently — while still clearing the rest of the session state.
 import { PrismaClient } from '@prisma/client';
 import { describe, expect, it } from 'vitest';
 
@@ -80,13 +79,13 @@ describe('prepared-statement caching', () => {
     }
   });
 
-  it('caches nothing at max > 1', async () => {
+  it('caches by default at max > 1 — per-client names make wider pools safe', async () => {
     const { bridge, prisma } = await setupSuite({ max: 2 });
     try {
       await prisma.tenant.findMany();
       await prisma.tenant.findMany();
 
-      expect(hasBridgeStatement(await listPreparedStatementNames(bridge))).toBe(false);
+      expect(hasBridgeStatement(await listPreparedStatementNames(bridge))).toBe(true);
     } finally {
       await prisma.$disconnect();
       await bridge.close();
@@ -106,13 +105,20 @@ describe('prepared-statement caching', () => {
     }
   });
 
-  it('rejects preparedStatements: true combined with max > 1', () => {
-    // The validation throws synchronously before any PGlite instance is
-    // created, so there is nothing to clean up.
-    const construct = () => new PGliteBridge({ preparedStatements: true, max: 2 });
+  it('constructs and caches with preparedStatements: true and max: 2', async () => {
+    // Per-client statement names removed the max: 1 restriction — each
+    // client caches under its own namespace, so wider pools cache safely
+    // and the former constructor TypeError is gone.
+    const { bridge, prisma } = await setupSuite({ preparedStatements: true, max: 2 });
+    try {
+      await prisma.tenant.findMany();
+      await prisma.tenant.findMany();
 
-    expect(construct).toThrow(TypeError);
-    expect(construct).toThrow(/max/);
+      expect(hasBridgeStatement(await listPreparedStatementNames(bridge))).toBe(true);
+    } finally {
+      await prisma.$disconnect();
+      await bridge.close();
+    }
   });
 
   it('caches every runtime Prisma SQL shape and never transaction control', async () => {

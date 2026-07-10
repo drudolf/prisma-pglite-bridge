@@ -3,6 +3,7 @@ import pg from 'pg';
 import { PGliteDuplex } from '../duplex';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import type { SessionLock } from '../utils/session-lock.ts';
+import { createStatementNameGenerator } from '../utils/statement-names.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 import { FastQuery, type FastQueryField, type FastQueryResult } from './fast-query.ts';
 
@@ -17,6 +18,17 @@ export interface PgBridgeClientOptions {
   protocolCleanupNeeded?: boolean;
   /** See PgBridgePoolOptions.fastQueryPath. Default `true`. */
   fastQueryPath?: boolean;
+  /**
+   * Cache query plans by injecting a stable name into unnamed cacheable DML
+   * queries so PGlite caches the plan via the Extended Query Protocol. pg
+   * skips the Parse message on repeat calls once the statement name is in
+   * `connection.parsedStatements`. The client creates its own bounded
+   * generator — names are `ppb_<namespace>_<n>` with a process-unique
+   * namespace per client, so names from different clients (or client
+   * generations) never collide in the shared PGlite session. See
+   * PgBridgePoolOptions.statementCaching.
+   */
+  statementCaching?: boolean;
 }
 
 type PgBridgeClientConfig = pg.ClientConfig & {
@@ -29,12 +41,27 @@ type PgBridgeClientConfig = pg.ClientConfig & {
 const isSubmittable = (value: unknown): value is pg.Submittable =>
   typeof (value as { submit?: unknown }).submit === 'function';
 
+// Live clients per PGlite instance. PGlite is one shared session: a
+// DEALLOCATE / DISCARD ALL issued through ANY client wipes server-side
+// statements that every client's pg parse-skip cache may still reference.
+// The registry lets the dealloc intercept in query() evict from all live
+// clients, not just the issuer. Clients register at construction and
+// deregister on their own 'end' event plus a belt-and-suspenders hook in
+// PgBridgePool's 'remove' listener; a stale entry is harmless — evicting a
+// dead client's caches is a no-op.
+const liveClients = new WeakMap<object, Set<PgBridgeClient>>();
+
 export class PgBridgeClient extends pg.Client {
   private querySubmissionChain?: Promise<void>;
   /** Result-field metadata per statement name, mirroring the lifetime of
    *  `connection.parsedStatements`: a recycled client starts both empty. */
   readonly #fieldsCache = new Map<string, FastQueryField[]>();
   readonly #fastQueryPath: boolean;
+  /** This client's own name generator (client-unique namespace), or
+   *  undefined when statement caching is off. */
+  readonly #stmtNameGen?: (query: { sql: string }) => string | undefined;
+  /** The backing PGlite instance — the key into the liveClients registry. */
+  readonly #pglite: object;
   /** Latest duplex from the stream factory. Boxed because the factory
    *  closure is created inside the `super()` arguments, where `this` is
    *  not yet accessible. */
@@ -62,6 +89,31 @@ export class PgBridgeClient extends pg.Client {
 
     this.#duplexBox = duplexBox;
     this.#fastQueryPath = bridge.fastQueryPath ?? true;
+    this.#pglite = bridge.pglite;
+    this.#stmtNameGen = bridge.statementCaching ? createStatementNameGenerator() : undefined;
+
+    // Register unconditionally — even a statementCaching: false client can
+    // hold user-named statements in parsedStatements that need eviction when
+    // a sibling issues a session-wide DEALLOCATE / DISCARD ALL.
+    let clients = liveClients.get(bridge.pglite);
+    if (clients === undefined) {
+      clients = new Set();
+      liveClients.set(bridge.pglite, clients);
+    }
+    clients.add(this);
+    this.once('end', () => this.deregisterLiveClient());
+  }
+
+  /** Remove this client from the session-wide live-client registry. Invoked
+   *  from the client's own 'end' event and, belt-and-suspenders, by
+   *  `PgBridgePool`'s 'remove' listener — pg-pool can destroy a client
+   *  without a graceful 'end' on exotic paths. Idempotent; the Set is
+   *  dropped from the registry when it empties so it can be collected. */
+  deregisterLiveClient(): void {
+    const clients = liveClients.get(this.#pglite);
+    if (clients === undefined) return;
+    clients.delete(this);
+    if (clients.size === 0) liveClients.delete(this.#pglite);
   }
 
   /** See {@link PGliteDuplex.releaseAbandonedPortalHold} — invoked by
@@ -144,6 +196,23 @@ export class PgBridgeClient extends pg.Client {
       };
     }
 
+    // Inject a stable name into unnamed cacheable DML so PGlite caches the
+    // query plan via EQP. pg skips Parse on repeat calls for named statements
+    // (connection.parsedStatements guard in Query.prepare). Submittable queries
+    // are already dispatched above; string-form queries are excluded by the
+    // isObject guard below.
+    if (this.#stmtNameGen && isObject(args[0])) {
+      const c = args[0] as Record<string, unknown>;
+      if (typeof c.text === 'string' && c.name == null) {
+        const name = this.#stmtNameGen({ sql: c.text });
+        if (name !== undefined) args[0] = { ...c, name };
+      }
+    }
+
+    // Detect DEALLOCATE before submitting so we can sync pg's plan cache
+    // with PGlite after the statement resolves.
+    const dealloc = this.#detectDeallocate(args);
+
     // The fast path rides the SAME submission chain as stock object-form
     // queries — a FastQuery must never jump ahead of a chained pending
     // stock query, or mixed-path call order would invert.
@@ -160,6 +229,24 @@ export class PgBridgeClient extends pg.Client {
     } else {
       p = prior.then(doSubmit);
     }
+
+    if (dealloc !== null) {
+      // After PGlite confirms the DEALLOCATE / DISCARD ALL, evict matching
+      // entries from pg's parsedStatements (the skip-Parse guard) and
+      // #fieldsCache on EVERY live client of this PGlite instance — the
+      // session-wide wipe invalidates names any of them may hold, not just
+      // the issuer's. Without this, a sibling would skip Parse for a name
+      // PGlite forgot and fail its next Bind with Postgres error 26000.
+      p = p.then((result: unknown) => {
+        const clients = liveClients.get(this.#pglite);
+        /* v8 ignore next — the issuer stays registered until 'end'; a dealloc resolving after teardown is unreachable through the pool */
+        if (clients !== undefined) {
+          for (const client of clients) client.#clearStatementCaches(dealloc);
+        }
+        return result;
+      });
+    }
+
     let done: Promise<void>;
     const clearChain = () => {
       if (this.querySubmissionChain === done) {
@@ -169,6 +256,57 @@ export class PgBridgeClient extends pg.Client {
     done = p.then(clearChain, clearChain);
     this.querySubmissionChain = done;
     return p;
+  }
+
+  /** Returns the eviction scope if args describe a DEALLOCATE or DISCARD ALL
+   *  statement, `null` otherwise. Handles both string form
+   *  (`query('DEALLOCATE ALL')`) and object form
+   *  (`query({ text: 'DEALLOCATE ALL' })`). */
+  #detectDeallocate(args: unknown[]): { all: true } | { name: string } | null {
+    const first = args[0];
+    const text =
+      typeof first === 'string'
+        ? first
+        : isObject(first) && typeof (first as Record<string, unknown>).text === 'string'
+          ? ((first as Record<string, unknown>).text as string)
+          : null;
+    if (!text) return null;
+    // DISCARD ALL includes DEALLOCATE ALL semantics — the same session-wide
+    // statement wipe. (DISCARD PLANS/SEQUENCES/TEMP leave statements intact.)
+    if (/^\s*DISCARD\s+ALL\s*;?\s*$/i.test(text)) return { all: true };
+    // Quoted identifiers keep their exact spelling; unquoted ones are folded
+    // to lowercase, matching how PostgreSQL resolves the DEALLOCATE target —
+    // without the fold, `DEALLOCATE FOO` would deallocate `foo` server-side
+    // while the eviction missed pg's cache entry for it (26000 on next use).
+    const m = /^\s*DEALLOCATE(?:\s+PREPARE)?\s+(?:(ALL)|"([^"]+)"|(\w+))\s*;?\s*$/i.exec(text);
+    if (!m) return null;
+    if (m[1] !== undefined) return { all: true };
+    if (m[2] !== undefined) return { name: m[2] };
+    return { name: (m[3] as string).toLowerCase() };
+  }
+
+  /** Evict statement entries from pg's internal parsedStatements map and from
+   *  #fieldsCache after a confirmed DEALLOCATE / DISCARD ALL. pg uses
+   *  parsedStatements to skip the Parse message on repeat named-statement
+   *  calls; if PGlite's copy is gone but pg's is not, the next Bind fails with
+   *  Postgres error 26000. #fieldsCache mirrors parsedStatements' lifetime per
+   *  its own comment. Scope: this client only — session-wide propagation is
+   *  the caller's job (the dealloc intercept in query() iterates the
+   *  liveClients registry). */
+  #clearStatementCaches(scope: { all: true } | { name: string }): void {
+    const ps = (this as unknown as { connection?: { parsedStatements?: Record<string, string> } })
+      .connection?.parsedStatements;
+    if ('all' in scope) {
+      /* v8 ignore next — ps exists on every pg Connection; guard covers pg internals drift */
+      if (ps) {
+        for (const key of Object.keys(ps)) delete ps[key];
+      }
+      this.#fieldsCache.clear();
+    } else {
+      /* v8 ignore next — ps exists on every pg Connection; guard covers pg internals drift */
+      if (ps) delete ps[scope.name];
+      this.#fieldsCache.delete(scope.name);
+    }
   }
 
   /**

@@ -375,36 +375,21 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     await created.close();
   });
 
-  it('passes a ppb_ statementNameGenerator to PrismaPg when opted in', async () => {
+  it.each([
+    {},
+    { preparedStatements: true },
+    { preparedStatements: false },
+    { max: 2 },
+    { max: 2, preparedStatements: true },
+  ])('never passes a statementNameGenerator to PrismaPg (options: %o)', async (extra) => {
+    // Statement names are injected per client inside PgBridgeClient.query()
+    // — that covers the adapter path with full client context. A pool-level
+    // generator handed to PrismaPg would wrongly share one namespace across
+    // clients (ADR 002 / per-client statement-name scoping).
     const mockPglite = createMockPGlite();
     const { module, prismaPg } = await loadClassWithMocks();
 
-    const created = new module.PGliteBridge({ pglite: mockPglite, preparedStatements: true });
-
-    const generator = prismaPgOptions(prismaPg)?.statementNameGenerator;
-    expect(generator).toBeTypeOf('function');
-    expect(generator?.({ sql: 'SELECT 1' })).toMatch(/^ppb_\d+$/);
-
-    await created.close();
-  });
-
-  it('passes a statementNameGenerator by default at max 1', async () => {
-    const mockPglite = createMockPGlite();
-    const { module, prismaPg } = await loadClassWithMocks();
-
-    const created = new module.PGliteBridge({ pglite: mockPglite });
-
-    expect(prismaPg).toHaveBeenCalledTimes(1);
-    expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeTypeOf('function');
-
-    await created.close();
-  });
-
-  it('passes no statementNameGenerator when max > 1 and preparedStatements is unset', async () => {
-    const mockPglite = createMockPGlite();
-    const { module, prismaPg } = await loadClassWithMocks();
-
-    const created = new module.PGliteBridge({ pglite: mockPglite, max: 2 });
+    const created = new module.PGliteBridge({ pglite: mockPglite, ...extra });
 
     expect(prismaPg).toHaveBeenCalledTimes(1);
     expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeUndefined();
@@ -412,20 +397,20 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     await created.close();
   });
 
-  it('rejects preparedStatements: true when max > 1 before creating anything', async () => {
+  it('constructs with preparedStatements: true and max > 1 — per-client names make caching safe at any max', async () => {
     const mockPglite = createMockPGlite();
     const { module, prismaPg } = await loadClassWithMocks();
 
-    expect(
-      () =>
-        new module.PGliteBridge({
-          pglite: mockPglite,
-          max: 2,
-          preparedStatements: true,
-        }),
-    ).toThrow(TypeError);
+    const created = new module.PGliteBridge({
+      pglite: mockPglite,
+      max: 2,
+      preparedStatements: true,
+    });
 
-    expect(prismaPg).not.toHaveBeenCalled();
+    expect(prismaPg).toHaveBeenCalledTimes(1);
+    expect(created.adapter).toEqual({ mocked: true });
+
+    await created.close();
   });
 
   it('forwards schema to PrismaPg when set', async () => {
@@ -439,8 +424,6 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     });
 
     expect(prismaPgOptions(prismaPg)?.schema).toBe('tenant_a');
-    // schema forwards independently of statement caching.
-    expect(prismaPgOptions(prismaPg)?.statementNameGenerator).toBeUndefined();
 
     await created.close();
   });
@@ -456,7 +439,7 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     await created.close();
   });
 
-  it('forwards both schema and the statement generator together', async () => {
+  it('forwards schema alongside preparedStatements: true — still no generator', async () => {
     const mockPglite = createMockPGlite();
     const { module, prismaPg } = await loadClassWithMocks();
 
@@ -468,7 +451,7 @@ describe('PGliteBridge — mocked pg.Pool', () => {
 
     const options = prismaPgOptions(prismaPg);
     expect(options?.schema).toBe('tenant_b');
-    expect(options?.statementNameGenerator).toBeTypeOf('function');
+    expect(options?.statementNameGenerator).toBeUndefined();
 
     await created.close();
   });

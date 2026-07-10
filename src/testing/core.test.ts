@@ -28,12 +28,13 @@ vi.mock('../pglite-bridge', () => ({
     snapshotDb = () => Promise.resolve();
     close = closeSpy;
 
-    // Mirror the real constructor's synchronous guard (see
-    // src/pglite-bridge/index.ts): prepared statements demand max: 1, so a
-    // wider pool throws before any resource is acquired.
-    constructor(options?: { preparedStatements?: boolean; max?: number }) {
-      if (options?.preparedStatements && (options.max ?? 1) > 1) {
-        throw new TypeError(`preparedStatements: true requires max: 1 (got max: ${options.max})`);
+    // Mirror the real constructor's synchronous statsLevel guard (see
+    // src/pglite-bridge/index.ts) — the remaining synchronous constructor
+    // throw now that per-client statement names allow caching at any max.
+    constructor(options?: { statsLevel?: string }) {
+      const statsLevel = options?.statsLevel ?? 'off';
+      if (statsLevel !== 'off' && statsLevel !== 'basic' && statsLevel !== 'full') {
+        throw new Error(`statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`);
       }
     }
   },
@@ -87,9 +88,9 @@ describe('createBridgeContextFromDump failure handling', () => {
     await expect(
       createBridgeContextFromDump(dump, {
         client: () => ({}),
-        bridge: { preparedStatements: true, max: 2 },
+        bridge: { statsLevel: 'invalid' as 'basic' },
       }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(/statsLevel/);
 
     expect(pgliteCloseSpy).toHaveBeenCalledOnce();
     // No bridge was ever constructed, so there is nothing to close there.

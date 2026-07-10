@@ -137,6 +137,12 @@ describe('PgBridgePool — connect-time statement cleanup', () => {
       pool.emit('connect', { query } as never);
       await new Promise((resolve) => setImmediate(resolve));
       expect(query).toHaveBeenCalledWith('DEALLOCATE ALL');
+      // Balance the liveClientCounts increment from the synthetic 'connect' above;
+      // without this a subsequent real connect on the same PGlite would see
+      // prevClientCount > 0 and skip DEALLOCATE ALL, breaking test isolation.
+      // The 'remove' listener also runs the belt-and-suspenders live-client
+      // registry deregistration (ADR 002) — stub it on the synthetic client.
+      pool.emit('remove', { deregisterLiveClient: () => {} } as never);
     } finally {
       await pool.end();
     }
@@ -256,7 +262,13 @@ describe('PgBridgePool — shared-PGlite warning', () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(warnings.length).toBeGreaterThanOrEqual(1);
-      expect(warnings[0]?.message).toMatch(/prepared statement/i);
+      const message = warnings[0]?.message ?? '';
+      // The warning still advises about WASM-mutex serialization and
+      // cross-pool transaction interleaving — but no longer claims caching
+      // is suspended (per-client names keep caching active during overlap).
+      expect(message).toMatch(/WASM mutex/i);
+      expect(message).toMatch(/interleave/i);
+      expect(message).not.toMatch(/caching/i);
     } finally {
       stop();
       await second?.end();
@@ -436,14 +448,16 @@ describe('PgBridgePool — fastQueryPath', () => {
     }
   });
 
-  it('routes unnamed queries through the stock path (describe on every execution)', async () => {
+  it('injects a name into unnamed DML and routes it through the fast path', async () => {
     const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
     const pool = new PgBridgePool({ pglite });
     try {
       const client = await pool.connect();
       try {
         describeSpy.mockClear();
-        // No `name` → stock path even on a default (fast-path-enabled) pool.
+        // No `name` on a statementCaching pool → name injected → fast path for
+        // queries that also carry rowMode:'array' + types. First call sends Describe
+        // to populate #fieldsCache; second call skips it (cache hit).
         const unnamed = {
           text: 'SELECT $1::int AS n',
           values: [7],
@@ -453,14 +467,290 @@ describe('PgBridgePool — fastQueryPath', () => {
         const first = await client.query(unnamed);
         const second = await client.query(unnamed);
 
-        expect(describeSpy).toHaveBeenCalledTimes(2);
-        expect(first.constructor.name).toBe('Result');
-        expect(second.constructor.name).toBe('Result');
+        expect(describeSpy).toHaveBeenCalledTimes(1);
+        expect(first.rows).toEqual([[7]]);
+        expect(second.rows).toEqual([[7]]);
+        expect(first.constructor.name).not.toBe('Result');
+        expect(second.constructor.name).not.toBe('Result');
       } finally {
         client.release();
       }
     } finally {
       await pool.end();
+    }
+  });
+
+  it('re-sends Parse after DEALLOCATE ALL and succeeds (guards parsedStatements coupling)', async () => {
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const pool = new PgBridgePool({ pglite });
+    try {
+      const client = await pool.connect();
+      try {
+        // Cold execution — Parse is sent, statement lands in parsedStatements.
+        await client.query(fastShapeQuery());
+        parseSpy.mockClear();
+
+        // Warm execution — pg skips Parse (parsedStatements guard).
+        await client.query(fastShapeQuery());
+        expect(parseSpy).not.toHaveBeenCalled();
+
+        // Invalidate PGlite's copy of all named statements.
+        await client.query('DEALLOCATE ALL');
+        parseSpy.mockClear();
+
+        // Next execution must re-Parse. If #clearStatementCaches failed to
+        // evict from pg's parsedStatements (e.g. due to a pg internal rename),
+        // pg would skip Parse and PGlite would return error 26000.
+        const result = await client.query(fastShapeQuery());
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(result.rows).toEqual([[7]]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('re-sends Parse only for the named statement after DEALLOCATE <name>', async () => {
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const pool = new PgBridgePool({ pglite });
+    try {
+      const client = await pool.connect();
+      try {
+        const other = { ...fastShapeQuery(), name: 'fastq_keep' };
+        // Prepare both statements, then warm them so Parse is skipped.
+        await client.query(fastShapeQuery());
+        await client.query(other);
+        parseSpy.mockClear();
+
+        // Deallocate one by name: PGlite forgets it, and #clearStatementCaches
+        // must evict exactly that entry from parsedStatements/#fieldsCache.
+        await client.query(`DEALLOCATE ${fastShapeQuery().name}`);
+
+        // The deallocated statement re-Parses; the untouched one stays warm.
+        const rePrepared = await client.query(fastShapeQuery());
+        const stillWarm = await client.query(other);
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(rePrepared.rows).toEqual([[7]]);
+        expect(stillWarm.rows).toEqual([[7]]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('evicts a statement deallocated with different unquoted case (PG identifier folding)', async () => {
+    // PostgreSQL folds unquoted identifiers to lowercase, so DEALLOCATE
+    // FQ_FOLD deallocates fq_fold server-side. The eviction must fold the
+    // captured name the same way, or pg's cache would keep fq_fold and the
+    // next execution would skip Parse into a 26000.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const pool = new PgBridgePool({ pglite });
+    try {
+      const client = await pool.connect();
+      try {
+        const named = { ...fastShapeQuery(), name: 'fq_fold' };
+        await client.query(named);
+
+        await client.query('DEALLOCATE FQ_FOLD');
+
+        parseSpy.mockClear();
+        const result = await client.query(named);
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(result.rows).toEqual([[7]]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('evicts a quoted statement name containing non-word characters', async () => {
+    // Protocol-level statement names are byte-exact and may contain hyphens;
+    // only a quoted identifier can DEALLOCATE them. The detection regex must
+    // match the quoted form, or the eviction is skipped entirely and the
+    // next execution skips Parse into a 26000.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const pool = new PgBridgePool({ pglite });
+    try {
+      const client = await pool.connect();
+      try {
+        const named = { ...fastShapeQuery(), name: 'fq-hyphen' };
+        await client.query(named);
+
+        await client.query('DEALLOCATE "fq-hyphen"');
+
+        parseSpy.mockClear();
+        const result = await client.query(named);
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(result.rows).toEqual([[7]]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('cache survives a transient sibling — zero Parse after a sibling pool joins and leaves', async () => {
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const local = new PGlite();
+    const poolA = new PgBridgePool({ pglite: local });
+
+    // Swallow the expected shared-instance warning emitted when poolB joins.
+    const swallowSharedWarning = (w: Error): void => {
+      if (w.name === 'PGliteBridgeSharedInstanceWarning') return;
+    };
+    process.on('warning', swallowSharedWarning);
+
+    try {
+      // Warm pool A — its client Parses the SQL once under its own
+      // client-unique name.
+      await poolA.query({ text: 'SELECT 7 AS n', values: [] });
+
+      // Sibling joins, queries, and leaves. Per-client names need no
+      // coordination: pool B's connect must not fire DEALLOCATE ALL
+      // (liveClientCounts was already 1), and its departure must not evict
+      // or invalidate pool A's cache — no suspension, no epoch, no re-Parse.
+      const poolB = new PgBridgePool({ pglite: local });
+      try {
+        await poolB.query('SELECT 1');
+      } finally {
+        await poolB.end();
+      }
+
+      parseSpy.mockClear();
+      // Pool A's cache stayed warm through the sibling churn: the repeat
+      // query sends ZERO Parse and succeeds.
+      const result = await poolA.query({ text: 'SELECT 7 AS n', values: [] });
+      expect(parseSpy).not.toHaveBeenCalled();
+      expect(result.rows).toEqual([{ n: 7 }]);
+    } finally {
+      process.off('warning', swallowSharedWarning);
+      await poolA.end();
+      await local.close();
+    }
+  });
+
+  it('sequential multi-pool: second pool re-Parses cleanly after first pool ends', async () => {
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const local = new PGlite();
+    const swallow = (w: Error): void => {
+      if (w.name === 'PGliteBridgeSharedInstanceWarning') return;
+    };
+    process.on('warning', swallow);
+    try {
+      // Pool A Parses the SQL under its own client-unique name while it is
+      // the sole pool.
+      const poolA = new PgBridgePool({ pglite: local });
+      try {
+        await poolA.query({ text: 'SELECT 9 AS n', values: [] });
+      } finally {
+        await poolA.end(); // client removed → liveClientCounts 1→0
+      }
+      parseSpy.mockClear();
+
+      // Pool B starts fresh: connect fires liveClientCounts 0→1 → DEALLOCATE ALL.
+      const poolB = new PgBridgePool({ pglite: local });
+      try {
+        const result = await poolB.query({ text: 'SELECT 9 AS n', values: [] });
+        // Fresh Parse under pool B's own name (PGlite was clean after the
+        // genuine 0→1 DEALLOCATE ALL on pool B's connect).
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(result.rows).toEqual([{ n: 9 }]);
+      } finally {
+        await poolB.end();
+      }
+    } finally {
+      process.off('warning', swallow);
+      await local.close();
+    }
+  });
+
+  it('concurrent multi-pool: both pools cache during the overlap under distinct client-unique names', async () => {
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const local = new PGlite();
+    const swallow = (w: Error): void => {
+      if (w.name === 'PGliteBridgeSharedInstanceWarning') return;
+    };
+    process.on('warning', swallow);
+    const shape = { text: 'SELECT 11 AS n', values: [] };
+    try {
+      const poolA = new PgBridgePool({ pglite: local });
+      const poolB = new PgBridgePool({ pglite: local });
+      try {
+        // Cold phase DURING the overlap: each pool's client Parses the same
+        // SQL under its own client-unique name — two Parses, no 42P05, no
+        // caching suspension.
+        parseSpy.mockClear();
+        const coldA = await poolA.query(shape);
+        const coldB = await poolB.query(shape);
+        expect(coldA.rows).toEqual([{ n: 11 }]);
+        expect(coldB.rows).toEqual([{ n: 11 }]);
+        expect(parseSpy).toHaveBeenCalledTimes(2);
+
+        // Both statements coexist in the shared session under distinct names.
+        const { rows } = await local.query<{ name: string }>(
+          'SELECT name FROM pg_prepared_statements',
+        );
+        const names = rows.map((row) => row.name).filter((name) => name.startsWith('ppb_'));
+        expect(names).toHaveLength(2);
+        expect(new Set(names).size).toBe(2);
+        for (const name of names) expect(name).toMatch(/^ppb_\d+_\d+$/);
+
+        // Warm phase: both caches stay active while the pools overlap —
+        // zero Parse, no 26000.
+        parseSpy.mockClear();
+        const warmA = await poolA.query(shape);
+        const warmB = await poolB.query(shape);
+        expect(warmA.rows).toEqual([{ n: 11 }]);
+        expect(warmB.rows).toEqual([{ n: 11 }]);
+        expect(parseSpy).not.toHaveBeenCalled();
+      } finally {
+        await poolA.end();
+        await poolB.end();
+      }
+    } finally {
+      process.off('warning', swallow);
+      await local.close();
+    }
+  });
+
+  it('liveClientCounts returns to zero after all pools end (DEALLOCATE ALL fires again)', async () => {
+    const local = new PGlite();
+    const swallow = (w: Error): void => {
+      if (w.name === 'PGliteBridgeSharedInstanceWarning') return;
+    };
+    process.on('warning', swallow);
+    try {
+      const poolA = new PgBridgePool({ pglite: local });
+      const poolB = new PgBridgePool({ pglite: local });
+      // Trigger connects on both pools.
+      await poolA.query('SELECT 1');
+      await poolB.query('SELECT 1');
+
+      // Both pools end → two 'remove' events → liveClientCounts 2→1→0.
+      await poolA.end();
+      await poolB.end();
+
+      // A new pool should see liveClientCounts = 0 → DEALLOCATE ALL fires on connect.
+      // Verify through a Parse spy: after the cleanup, pool C's client sends
+      // a fresh Parse under its own client-unique name.
+      const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+      const poolC = new PgBridgePool({ pglite: local });
+      try {
+        await poolC.query({ text: 'SELECT 13 AS n', values: [] });
+        expect(parseSpy).toHaveBeenCalledTimes(1); // fresh Parse after DEALLOCATE ALL
+      } finally {
+        await poolC.end();
+      }
+    } finally {
+      process.off('warning', swallow);
+      await local.close();
     }
   });
 
@@ -614,6 +904,299 @@ describe('PgBridgePool — fastQueryPath', () => {
         await pool.end();
       }
     });
+  });
+});
+
+// Per-client statement-name scoping (ADR 002): every PgBridgeClient names
+// statements in its own process-unique namespace (`ppb_<namespace>_<n>`), so
+// bridge-injected Parses can never collide across clients, pools, or client
+// generations — no epoch, no suspension, no coordination. Session-wide
+// DEALLOCATE/DISCARD through any pool client evicts matching entries from
+// EVERY live client's pg parse cache via the live-client registry.
+describe('PgBridgePool — per-client statement names', () => {
+  const swallowSharedWarning = (w: Error): void => {
+    if (w.name === 'PGliteBridgeSharedInstanceWarning') return;
+  };
+
+  it('two unawaited queries after a sibling departs stay cached — reusing the first shape succeeds', async () => {
+    // Defect 1 regression: the removed #prefixDeallocAll machinery wrapped
+    // BOTH queries of one synchronous tick with a DEALLOCATE ALL after a
+    // sibling pool departed; the second wipe destroyed the first query's
+    // just-Parsed statement, so a third query reusing that shape failed
+    // with 26000. Per-client names need no post-departure cleanup at all.
+    const local = new PGlite();
+    process.on('warning', swallowSharedWarning);
+    const poolA = new PgBridgePool({ pglite: local });
+    let a: pg.PoolClient | undefined;
+    try {
+      a = await poolA.connect();
+      // Establish the client and its cache before the sibling churn.
+      await a.query({ text: 'SELECT 1 AS one', values: [] });
+
+      const poolB = new PgBridgePool({ pglite: local });
+      try {
+        await poolB.query('SELECT 1');
+      } finally {
+        await poolB.end();
+      }
+
+      // Two queries in one synchronous tick, unawaited — in-contract usage:
+      // the submission chain keeps same-client queries ordered.
+      const first = a.query({ text: 'SELECT 21 AS x', values: [] });
+      const second = a.query({ text: 'SELECT 22 AS y', values: [] });
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+      expect(firstResult.rows).toEqual([{ x: 21 }]);
+      expect(secondResult.rows).toEqual([{ y: 22 }]);
+
+      // Reuse the FIRST query's shape: its cached statement must still exist.
+      const third = await a.query({ text: 'SELECT 21 AS x', values: [] });
+      expect(third.rows).toEqual([{ x: 21 }]);
+    } finally {
+      a?.release();
+      process.off('warning', swallowSharedWarning);
+      await poolA.end();
+      await local.close();
+    }
+  });
+
+  it('DISCARD ALL through the pool evicts the cache — the repeat query re-Parses and succeeds', async () => {
+    // Defect 2 regression: DISCARD ALL includes DEALLOCATE-ALL semantics,
+    // but the old detection matched only DEALLOCATE — PGlite forgot the
+    // statements while pg's parse-skip cache kept them, permanently
+    // poisoning the client (every warm shape failed 26000 thereafter).
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local });
+    try {
+      const client = await pool.connect();
+      try {
+        const shape = { text: 'SELECT 32 AS n', values: [] };
+        await client.query(shape);
+        parseSpy.mockClear();
+        await client.query(shape);
+        expect(parseSpy).not.toHaveBeenCalled(); // warm — cache active
+
+        await client.query('DISCARD ALL');
+
+        parseSpy.mockClear();
+        const result = await client.query(shape);
+        expect(parseSpy).toHaveBeenCalledTimes(1); // re-Parse, not skip → 26000
+        expect(result.rows).toEqual([{ n: 32 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it('zombie-client connect race: a successor pool queries the same SQL while the old client is still ending', async () => {
+    // Defect 3 regression: pg-pool resolves pool.end()'s promise BEFORE
+    // client.end()'s callback fires, so a successor pool's first client can
+    // connect while liveClientCounts still counts the zombie — the 0→1
+    // DEALLOCATE ALL is skipped. Under the removed shared generator the same
+    // SQL mapped to a name PGlite still held → 42P05. Per-client names make
+    // the skipped cleanup benign (a bounded leak, not an error). Reproduced
+    // deterministically by delaying the dying client's end() by 300 ms.
+    const local = new PGlite();
+    const poolA = new PgBridgePool({ pglite: local });
+    const clients: pg.Client[] = [];
+    poolA.on('connect', (client) => {
+      clients.push(client as unknown as pg.Client);
+    });
+    try {
+      const shape = { text: 'SELECT 31 AS n', values: [] };
+      await poolA.query(shape); // pool A Parses its name into the session
+
+      const dying = clients[0];
+      if (dying === undefined) throw new Error('pool A client was not captured');
+      // Delay the client's teardown. pg-pool calls client.end(cb) — keep the
+      // callback (and promise form) working, just 300 ms later.
+      const originalEnd = dying.end.bind(dying) as (...endArgs: unknown[]) => unknown;
+      dying.end = ((...endArgs: unknown[]) =>
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            void Promise.resolve(originalEnd(...endArgs)).then(() => resolve());
+          }, 300);
+        })) as pg.Client['end'];
+      const removed = new Promise<void>((resolve) => {
+        poolA.once('remove', () => resolve());
+      });
+
+      const endP = poolA.end();
+
+      // Successor pool queries the SAME SQL immediately, while the zombie
+      // client's delayed end() is still pending.
+      const poolB = new PgBridgePool({ pglite: local });
+      try {
+        const result = await poolB.query(shape);
+        expect(result.rows).toEqual([{ n: 31 }]); // no 42P05
+      } finally {
+        await endP;
+        await removed; // zombie fully torn down before PGlite closes
+        await poolB.end();
+      }
+    } finally {
+      await local.close();
+    }
+  });
+
+  it('a racing warm query hit by a concurrent DEALLOCATE ALL fails clean (26000 at worst) and self-heals', async () => {
+    // Design test 8 (tribunal-mandated; gates the preparedStatements default
+    // flip): client B's warm named query already in flight when client A's
+    // DEALLOCATE ALL lands may fail — but only with a clean, transient
+    // 26000. Registry eviction runs when the DEALLOCATE resolves, so B's
+    // NEXT repeat query re-Parses and succeeds.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local, max: 2 });
+    let a: pg.PoolClient | undefined;
+    let b: pg.PoolClient | undefined;
+    try {
+      a = await pool.connect();
+      b = await pool.connect();
+      const shape = { text: 'SELECT 51 AS n', values: [] };
+      await b.query(shape); // warm B's cache — Parse is skipped from here on
+
+      // Fire the dealloc first, then B's warm query in the same tick, so
+      // the DEALLOCATE has the best chance to land before B's Bind.
+      const deallocP = a.query('DEALLOCATE ALL');
+      const racingSettled = Promise.allSettled([b.query(shape)]);
+      await deallocP;
+      const [outcome] = await racingSettled;
+
+      if (outcome.status === 'fulfilled') {
+        // B's Bind won the race — the query simply succeeds.
+        expect(outcome.value.rows).toEqual([{ n: 51 }]);
+      } else {
+        // The ONLY acceptable failure: a clean 26000 — no corruption, no hang.
+        expect((outcome.reason as { code?: string }).code).toBe('26000');
+      }
+
+      // Self-healing: eviction already propagated to B, so its next repeat
+      // query re-Parses and succeeds.
+      parseSpy.mockClear();
+      const healed = await b.query(shape);
+      expect(parseSpy).toHaveBeenCalledTimes(1);
+      expect(healed.rows).toEqual([{ n: 51 }]);
+    } finally {
+      a?.release();
+      b?.release();
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it("evicts a statementCaching: false client's user-named statements on a sibling's DEALLOCATE ALL", async () => {
+    // Design test 9 (tribunal-mandated): clients register in the live-client
+    // registry regardless of statementCaching — a non-caching client still
+    // holds user-named entries in pg's parse-skip cache that must be evicted
+    // when a sibling wipes the shared session.
+    const local = new PGlite();
+    process.on('warning', swallowSharedWarning);
+    const nonCaching = new PgBridgePool({ pglite: local, statementCaching: false });
+    const caching = new PgBridgePool({ pglite: local });
+    let nc: pg.PoolClient | undefined;
+    let c: pg.PoolClient | undefined;
+    try {
+      nc = await nonCaching.connect();
+      c = await caching.connect();
+
+      const named = { name: 'user_stmt', text: 'SELECT 61 AS n' };
+      const cold = await nc.query(named);
+      expect(cold.rows).toEqual([{ n: 61 }]);
+
+      await c.query('DEALLOCATE ALL');
+
+      // Without registry propagation pg would skip Parse for user_stmt and
+      // PGlite would answer 26000. Eviction forces a clean re-Parse.
+      const repeat = await nc.query(named);
+      expect(repeat.rows).toEqual([{ n: 61 }]);
+    } finally {
+      nc?.release();
+      c?.release();
+      process.off('warning', swallowSharedWarning);
+      await nonCaching.end();
+      await caching.end();
+      await local.close();
+    }
+  });
+
+  it('DISCARD ALL under max: 2 evicts both clients — both repeat queries re-Parse and succeed', async () => {
+    // Design test 10 (tribunal-mandated): session-wide invalidation reaches
+    // every live client of the pool, not only the issuer.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local, max: 2 });
+    let a: pg.PoolClient | undefined;
+    let b: pg.PoolClient | undefined;
+    try {
+      a = await pool.connect();
+      b = await pool.connect();
+      const shape = { text: 'SELECT 71 AS n', values: [] };
+      await a.query(shape);
+      await b.query(shape); // both clients warm, distinct names
+
+      await a.query('DISCARD ALL');
+
+      parseSpy.mockClear();
+      const repeatA = await a.query(shape);
+      const repeatB = await b.query(shape);
+      expect(repeatA.rows).toEqual([{ n: 71 }]);
+      expect(repeatB.rows).toEqual([{ n: 71 }]);
+      // Both clients re-Parsed their own name — the eviction reached the
+      // non-issuing client too.
+      expect(parseSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      a?.release();
+      b?.release();
+      await pool.end();
+      await local.close();
+    }
+  });
+
+  it('max: 2 caching — both clients cache the same SQL under distinct names: 2 cold Parses, 0 warm', async () => {
+    // Design test 5: with per-client namespaces, multiple clients in one
+    // pool cache the same SQL safely — no 42P05, no silent disable.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const local = new PGlite();
+    const pool = new PgBridgePool({ pglite: local, max: 2 });
+    let a: pg.PoolClient | undefined;
+    let b: pg.PoolClient | undefined;
+    try {
+      a = await pool.connect();
+      b = await pool.connect();
+      const shape = { text: 'SELECT 81 AS n', values: [] };
+
+      parseSpy.mockClear();
+      const coldA = await a.query(shape);
+      const coldB = await b.query(shape);
+      expect(coldA.rows).toEqual([{ n: 81 }]);
+      expect(coldB.rows).toEqual([{ n: 81 }]);
+      expect(parseSpy).toHaveBeenCalledTimes(2);
+
+      // The same SQL landed under two distinct client-unique names.
+      const { rows } = await local.query<{ name: string }>(
+        'SELECT name FROM pg_prepared_statements',
+      );
+      const names = rows.map((row) => row.name).filter((name) => name.startsWith('ppb_'));
+      expect(names).toHaveLength(2);
+      expect(new Set(names).size).toBe(2);
+      for (const name of names) expect(name).toMatch(/^ppb_\d+_\d+$/);
+
+      parseSpy.mockClear();
+      const warmA = await a.query(shape);
+      const warmB = await b.query(shape);
+      expect(warmA.rows).toEqual([{ n: 81 }]);
+      expect(warmB.rows).toEqual([{ n: 81 }]);
+      expect(parseSpy).not.toHaveBeenCalled();
+    } finally {
+      a?.release();
+      b?.release();
+      await pool.end();
+      await local.close();
+    }
   });
 });
 

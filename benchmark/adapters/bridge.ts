@@ -10,7 +10,6 @@
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
-import { createStatementNameGenerator } from '../../src/pglite-bridge/statement-names.ts';
 import { PgBridgePool } from '../../src/pool';
 import { stackProbe } from '../attribution.ts';
 import type { AdapterHarness } from './types.ts';
@@ -25,12 +24,9 @@ export const bridge: AdapterHarness = {
     const pool = new PgBridgePool({ pglite });
     stackProbe.instrumentBridgePGlite(pglite);
     await pglite.exec(schemaSql);
-    const adapterFactory = new PrismaPg(pool, {
-      // Prepared-statement caching on, matching the bridge's default for
-      // max: 1 pools (opt-out via `preparedStatements: false`) and fair
-      // against Postgres run with prepared statements.
-      statementNameGenerator: createStatementNameGenerator() as (query: { sql: string }) => string,
-    });
+    // No statementNameGenerator: name injection happens at the pool-client
+    // layer, covering adapter traffic and direct pool queries alike.
+    const adapterFactory = new PrismaPg(pool);
     const driverAdapter = await adapterFactory.connect();
     stackProbe.instrumentDriverAdapter(driverAdapter);
     const prisma = new PrismaClient({ adapter: adapterFactory });

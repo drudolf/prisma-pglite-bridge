@@ -19,20 +19,29 @@ import { PgBridgeClient, type PgBridgeClientOptions } from './pg-bridge-client.t
 export interface PgBridgePoolOptions
   extends Omit<
     PgBridgeClientOptions,
-    // sessionLock and protocolCleanupNeeded are pool-managed: the pool
-    // always builds its own SessionLock and probes PGlite's cleanup needs.
-    'pglite' | 'bridgeId' | 'syncToFs' | 'telemetry' | 'sessionLock' | 'protocolCleanupNeeded'
+    // Pool-managed: the pool builds its own SessionLock, probes PGlite's
+    // cleanup needs, and resolves the statementCaching default (redeclared
+    // below with pool-level docs).
+    | 'pglite'
+    | 'bridgeId'
+    | 'syncToFs'
+    | 'telemetry'
+    | 'sessionLock'
+    | 'protocolCleanupNeeded'
+    | 'statementCaching'
   > {
   /**
    * PGlite instance to back the pool. When omitted the pool creates its own
    * in-memory `PGlite` and owns its lifecycle — `end()` shuts it down. When
    * provided the caller owns the lifecycle — `end()` leaves it open.
    *
-   * One live pool per instance: a second concurrent pool on the same PGlite
-   * is unsupported and emits `PGliteBridgeSharedInstanceWarning` —
-   * transactions from different pools can interleave, and each new pool's
-   * connect-time cleanup deallocates the others' cached prepared statements
-   * (queries then fail with Postgres error 26000).
+   * Multiple concurrent pools on one PGlite instance are supported but emit
+   * `PGliteBridgeSharedInstanceWarning` as an advisory: queries from all
+   * pools serialize through PGlite's WASM mutex (no added throughput), and
+   * transactions from different pools can interleave — coordinate explicitly
+   * if isolation across pools matters. Named-statement caching stays active
+   * across pools — statement names are client-unique, so pools never collide
+   * (see {@link statementCaching}).
    */
   pglite?: PGlite | PGliteInterface;
 
@@ -88,6 +97,30 @@ export interface PgBridgePoolOptions
   idleTimeoutMillis?: number;
 
   /**
+   * Cache query plans via named prepared statements for all queries issued
+   * through this pool (default: enabled). Each pool client injects a stable
+   * `ppb_<namespace>_<n>` name into unnamed DML queries so PostgreSQL parses
+   * and plans each query shape once per client and skips Parse on repeat
+   * executions. Only DML (SELECT / INSERT / UPDATE / DELETE / WITH / MERGE /
+   * VALUES) is named; DDL, SET, and transaction control always run unnamed.
+   * Bounded at 500 distinct texts per client; shapes beyond that run unnamed
+   * (correct, just uncached).
+   *
+   * Names are unique per client (`<namespace>` draws from a process-wide
+   * counter), so multiple pool clients (`max > 1`) and multiple pools on one
+   * PGlite instance cache safely and concurrently — bridge-injected names
+   * never collide in the shared session. *User-supplied* statement names
+   * (`query({ name: ... })`) are the exception: they bypass injection and
+   * remain single-client-only — two clients Parsing the same user-chosen
+   * name still collide (Postgres error 42P05), as on any shared session.
+   *
+   * `DEALLOCATE` and `DISCARD ALL` issued through any pool client evict the
+   * affected names from every live client's plan cache on this instance, so
+   * repeat executions re-Parse instead of failing with error 26000.
+   */
+  statementCaching?: boolean;
+
+  /**
    * Route queries matching the adapter-pg shape — named statement,
    * `rowMode: 'array'`, caller-supplied `types` — through a lean pg
    * Submittable that caches result-field metadata per statement and skips
@@ -103,11 +136,15 @@ export interface PgBridgePoolOptions
   fastQueryPath?: boolean;
 }
 
-// Live pools per PGlite instance. Concurrent pools on one instance are
-// unsupported: their SessionLocks don't coordinate (transactions can
-// interleave), and each pool's connect-time DEALLOCATE ALL destroys the
-// others' cached prepared statements (queries then fail with 26000).
+// Live pools per PGlite instance. Drives the PGliteBridgeSharedInstanceWarning.
 const livePoolCounts = new WeakMap<object, number>();
+
+// Total pg.Client instances across ALL pools per PGlite instance.
+// Incremented in 'connect', decremented in 'remove'. The connect-time
+// DEALLOCATE ALL guard checks this instead of per-pool totalCount so that
+// a new pool's first client never wipes a sibling pool's server-side named
+// statements mid-flight (would cause 26000 on the sibling's next Bind).
+const liveClientCounts = new WeakMap<object, number>();
 
 /**
  * A pg.Pool where every connection is an in-process PGlite bridge.
@@ -167,6 +204,7 @@ export class PgBridgePool extends pg.Pool {
     syncToFs,
     idleTimeoutMillis = 0,
     fastQueryPath,
+    statementCaching,
   }: PgBridgePoolOptions & { telemetry?: TelemetrySink } = {}) {
     const resolvedPglite = pglite ?? new PGlite();
 
@@ -186,6 +224,7 @@ export class PgBridgePool extends pg.Pool {
         timeout,
         protocolCleanupNeeded: pgliteNeedsProtocolCleanup(),
         fastQueryPath,
+        statementCaching: statementCaching !== false,
       },
     };
 
@@ -199,32 +238,47 @@ export class PgBridgePool extends pg.Pool {
     livePoolCounts.set(resolvedPglite, liveCount);
     if (liveCount > 1) {
       process.emitWarning(
-        'Multiple live PgBridgePools share one PGlite instance. This is unsupported: ' +
-          'transactions from different pools can interleave, and each new pool ' +
-          "deallocates the others' cached prepared statements (subsequent queries " +
-          'fail with Postgres error 26000). Use one pool per PGlite instance; when ' +
-          'the pools come from PGliteBridge, prepared-statement caching can be ' +
-          'disabled with preparedStatements: false.',
+        'Multiple live PgBridgePools share one PGlite instance. Queries from all ' +
+          "pools serialize through PGlite's WASM mutex — adding pools does not " +
+          'increase throughput. Concurrent transactions from different pools ' +
+          'may interleave; for transaction isolation across pools coordinate ' +
+          "explicitly (await one pool's transaction before starting another's).",
         { type: 'PGliteBridgeSharedInstanceWarning' },
       );
     }
 
-    // A fresh connection must see an empty prepared-statement namespace,
-    // as it would on a real server. PGlite is one shared session, so
-    // statements prepared through an earlier (since destroyed) client
-    // would otherwise collide with a new client re-preparing the same
-    // names (42P05 "prepared statement already exists"). pg serializes
-    // queries per client, so this runs before the client's first query.
+    // A fresh session (no live clients on this PGlite across ALL pools) must
+    // start with an empty prepared-statement namespace: earlier, since-
+    // destroyed clients may have left named statements behind, and reclaiming
+    // them keeps the shared session from accumulating dead generations. pg
+    // serializes queries per client, so this runs before the client's first
+    // query. prevClientCount > 0 means another live client holds server-side
+    // named statements — wiping them would cause 26000 on its next Bind, so
+    // the cleanup fires only on the 0→1 transition. The count can only
+    // overcount (increment here is synchronous; decrement in 'remove' is
+    // async), so at worst the cleanup is *skipped* because a dead client has
+    // not been removed yet — benign: client-unique statement names cannot
+    // collide with the leftovers, which persist only until the session next
+    // quiesces to zero live clients.
     this.on('connect', (client) => {
-      // pg-pool pushes the client into _clients before emitting 'connect',
-      // so totalCount includes it: > 1 means a live sibling shares the
-      // session and DEALLOCATE ALL would destroy its named statements
-      // mid-flight. With a sibling there is no safe cleanup — named
-      // statements at max > 1 are unsupported (see docs/api.md).
-      if (this.totalCount > 1) return;
+      const prevClientCount = liveClientCounts.get(resolvedPglite) ?? 0;
+      liveClientCounts.set(resolvedPglite, prevClientCount + 1);
+      if (prevClientCount > 0) return;
       void client.query('DEALLOCATE ALL').catch(() => {
         // Best-effort: a broken session surfaces errors on real queries.
       });
+    });
+
+    // Decrement the cross-pool client count when a client is destroyed, so the
+    // next 0→1 connect re-runs the session cleanup, and drop the client from
+    // the live-client eviction registry (belt-and-suspenders next to the
+    // client's own 'end' hook — pg-pool can destroy a client without a
+    // graceful 'end' on exotic paths).
+    this.on('remove', (client) => {
+      /* v8 ignore next — every client pg removes fired 'connect' first, which wrote the entry; ?? 1 is a defensive default */
+      const count = liveClientCounts.get(resolvedPglite) ?? 1;
+      liveClientCounts.set(resolvedPglite, Math.max(0, count - 1));
+      (client as unknown as PgBridgeClient).deregisterLiveClient();
     });
 
     // A client released with a suspended portal still open (an unclosed

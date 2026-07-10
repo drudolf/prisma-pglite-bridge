@@ -149,7 +149,9 @@ export class SnapshotManager {
 
   /**
    * Truncate all user tables. If a snapshot exists, restore its contents and
-   * sequence values afterwards; otherwise just truncate and `DISCARD ALL`.
+   * sequence values afterwards. Either way, finish with the session reset
+   * below — everything `DISCARD ALL` covers except `DEALLOCATE ALL`, so
+   * named prepared statements survive.
    *
    * Requires the live schema to still structurally match the snapshot:
    * a source table or column dropped since `snapshotDb()` fails fast

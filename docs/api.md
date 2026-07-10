@@ -86,7 +86,7 @@ const bridge = new PGliteBridge({
   max: 1,                     // pool connections (default: 1)
   statsLevel: 'off',          // 'off' | 'basic' | 'full' (default: 'off')
   syncToFs: 'auto',           // 'auto' | true | false (default: 'auto')
-  preparedStatements: true,   // cache queries as named statements (default: on at max 1)
+  preparedStatements: true,   // cache queries as named statements (default: on)
 });
 
 // Caller-supplied PGlite (custom dataDir, extensions, …) — caller owns lifecycle:
@@ -97,12 +97,13 @@ const bridge = new PGliteBridge({ pglite });
 ```
 
 The constructor takes a `PGliteBridgeOptions` (also exported).
-Prepared-statement caching is on by default at `max: 1` — each Prisma
-query shape is parsed and planned once per session; statements
-survive `resetDb`. Pass `preparedStatements: false` when other
-pools/bridges share this bridge's live PGlite instance, or when you
-run result-type-changing DDL mid-session — see
-[troubleshooting](./troubleshooting.md) for both symptoms. To
+Prepared-statement caching is on by default — each Prisma query
+shape is parsed and planned once per pool client; statements
+survive `resetDb`. Statement names are unique per client, so any
+`max` and any number of pools/bridges sharing one PGlite instance
+cache safely and concurrently, no opt-out needed. Pass
+`preparedStatements: false` when you run result-type-changing DDL
+mid-session — see [troubleshooting](./troubleshooting.md). To
 apply schema SQL, pass `bridge.pglite` to
 [`pushMigrations`](#pushmigrationspglite-options) or `bridge.adapter`
 to [`pushSchema`](#pushschemaadapter-options) — see
@@ -121,9 +122,11 @@ Instance members:
   [diagnostics channels](./stats.md#diagnostics-channels) when multiple
   bridges share a process.
 - `resetDb()` — truncates all user tables and discards
-  session-local state via `DISCARD ALL` (for example `SET`
-  variables, prepared statements, temp tables, and `LISTEN`
-  registrations). Call in `beforeEach` for per-test isolation.
+  session-local state (`SET` variables, temp tables, `LISTEN`
+  registrations, cached plans — everything `DISCARD ALL` covers
+  *except* named prepared statements, which are deliberately kept
+  so the warm statement cache survives the reset).
+  Call in `beforeEach` for per-test isolation.
   Note: this clears all data including seed data — re-seed after
   reset (or use `snapshotDb()` first) if needed.
 - `snapshotDb()` — captures the current DB contents into an internal
@@ -340,14 +343,30 @@ the PGlite session the way an open transaction does — in a
 `max > 1` pool, other clients queue until the cursor is exhausted,
 closed, or its client is released back to the pool.
 
-A second shared-session caveat: named prepared statements
-(`query({ name, text })`) within a `max > 1` pool are unsupported.
+A second shared-session caveat: *user-supplied* named prepared
+statements (`query({ name, text })`) are single-client-only.
 All clients share one PGlite session and therefore one statement
-namespace — two clients preparing the same name collide with
-Postgres error 42P05 ("prepared statement already exists"). The
-pool's connect-time namespace cleanup only runs for a client with
-no live siblings, so it never destroys statements another client
-is still using. Use `max: 1` (the default) with named statements.
+namespace — two clients preparing the same user-chosen name collide
+with Postgres error 42P05 ("prepared statement already exists").
+Automatic statement caching is not affected: the pool injects
+client-unique `ppb_<namespace>_<n>` names, so bridge-cached
+statements never collide, at any `max`. The pool's connect-time
+namespace cleanup only runs for a client with no live siblings, so
+it never destroys statements another client is still using.
+
+Multiple pools on one PGlite instance are supported: automatic
+statement caching (`statementCaching`, default on) stays active
+across pools — each client names its own statements, so pools never
+contend for names — and a `DEALLOCATE`/`DISCARD ALL` issued through
+any pool client evicts the affected names from every live client's
+plan cache. Statements left by departed clients linger in the shared
+session (bounded at 500 per client) until it next quiesces to zero
+live clients, when the connect-time cleanup reclaims them — memory
+overhead only, never a name collision. The pool still emits
+`PGliteBridgeSharedInstanceWarning` as an advisory — pools add no
+throughput (queries serialize through PGlite's WASM mutex), and
+transactions from different pools can interleave; coordinate
+explicitly if cross-pool isolation matters.
 
 Most users should prefer [`PGliteBridge`](#pglitebridge), which
 wraps this class and adds schema/reset/snapshot lifecycle.

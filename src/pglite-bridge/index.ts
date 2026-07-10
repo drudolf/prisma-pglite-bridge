@@ -48,7 +48,6 @@ import { PgBridgePool } from '../pool';
 import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
 import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SnapshotManager } from './snapshot-manager.ts';
-import { createStatementNameGenerator } from './statement-names.ts';
 
 /** @internal Exported for testing. */
 export const emitBridgeLeakWarning = (): void => {
@@ -121,29 +120,26 @@ export interface PGliteBridgeOptions {
 
   /**
    * Cache Prisma queries as named prepared statements, so PGlite parses
-   * and plans each query shape once per session instead of on every
+   * and plans each query shape once per client session instead of on every
    * execution (~7% lower read p50, ~18% lower p99 in the reference
    * benchmark). Statements survive {@link PGliteBridge.resetDb} — tables
    * are truncated, never dropped, so retained statements revalidate
    * transparently and the cache stays warm across per-test resets.
    *
-   * Default: enabled when `max` is 1 (the default), disabled otherwise.
-   * Explicit `true` with `max > 1` throws: PGlite is a single session
-   * shared by every pool client, so named statements prepared through
-   * different clients would collide.
+   * Default: enabled. Statement names are unique per pool client, so any
+   * `max` and any number of pools or bridges sharing one PGlite instance
+   * cache safely and concurrently — no opt-out or coordination needed.
+   * *User-supplied* statement names (`query({ name: ... })` on the pool)
+   * are the exception: they bypass name injection and remain
+   * single-client-only on the shared session.
    *
-   * Set `false` when:
-   * - additional pools or bridges run against this bridge's PGlite
-   *   instance while it is live — their connect-time session cleanup
-   *   deallocates this bridge's cached statements, and subsequent
-   *   queries fail with Postgres error 26000; or
-   * - you issue DDL mid-session that changes the result type of an
-   *   already-cached query shape (fails with "cached plan must not
-   *   change result type" — see docs/troubleshooting.md). Applying
-   *   schema before Prisma traffic, as the setup helpers do, is safe.
+   * Set `false` when you issue DDL mid-session that changes the result
+   * type of an already-cached query shape (fails with "cached plan must
+   * not change result type" — see docs/troubleshooting.md). Applying
+   * schema before Prisma traffic, as the setup helpers do, is safe.
    *
-   * The cache names the first 500 distinct query texts (bounded and
-   * frozen, not LRU); later shapes run unnamed. Only SELECT / INSERT /
+   * The cache names the first 500 distinct query texts per client (bounded
+   * and frozen, not LRU); later shapes run unnamed. Only SELECT / INSERT /
    * UPDATE / DELETE / WITH / MERGE / VALUES statements are named — DDL
    * and transaction control never consume cache slots.
    */
@@ -194,15 +190,7 @@ export class PGliteBridge {
 
     // Validate before any PGlite is created so a rejected configuration
     // cannot leak an unclosed WASM instance.
-    const max = options.max ?? 1;
-    const preparedStatements = options.preparedStatements ?? max === 1;
-    if (preparedStatements && max > 1) {
-      throw new TypeError(
-        `preparedStatements: true requires max: 1 (got max: ${max}) — PGlite is a single ` +
-          'session shared by every pool client, so named statements prepared through ' +
-          'different clients would collide',
-      );
-    }
+    const preparedStatements = options.preparedStatements ?? true;
 
     this.#ownsPglite = !options.pglite;
     this.pglite = options.pglite ?? new PGlite();
@@ -214,25 +202,19 @@ export class PGliteBridge {
       pglite: this.pglite,
       bridgeId: this.bridgeId,
       telemetry: this.#stats,
+      // Mirror preparedStatements into the pool: name injection happens at
+      // the pool-client layer, which covers the adapter path and direct pool
+      // queries (e.g. Drizzle) alike — no adapter-side generator needed.
+      statementCaching: preparedStatements,
     });
     this.#snapshot = new SnapshotManager(this.pglite);
 
-    // adapter-pg types the generator as `=> string`, but it forwards the
-    // result straight into pg's `QueryConfig.name`, where `undefined` is
-    // the documented "unnamed statement" path — which is exactly the
-    // bounded generator's over-limit fallback.
-    const statementNameGenerator = createStatementNameGenerator() as (query: {
-      sql: string;
-    }) => string;
     // Forward only the adapter-pg options the caller actually set, so the
     // adapter keeps its own defaults otherwise: `schema` targets a
-    // non-public search_path; the generator enables statement caching.
+    // non-public search_path.
     const adapterOptions: NonNullable<ConstructorParameters<typeof PrismaPg>[1]> = {};
     if (options.schema !== undefined) {
       adapterOptions.schema = options.schema;
-    }
-    if (preparedStatements) {
-      adapterOptions.statementNameGenerator = statementNameGenerator;
     }
     try {
       this.adapter = new PrismaPg(

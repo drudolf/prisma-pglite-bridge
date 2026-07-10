@@ -1,8 +1,8 @@
 // Integration parity for the FastQuery fast path: the same operation
 // sequence must produce identical results whether queries travel the fast
 // path (the default — adapter-pg emits the fast shape when statement
-// caching names the query, and preparedStatements defaults on at max 1)
-// or the stock pg path (`fastQueryPath: false`).
+// caching names the query, and preparedStatements defaults on) or the
+// stock pg path (`fastQueryPath: false`).
 //
 // NOTE (red phase): until the fast path lands in PgBridgePool,
 // `fastQueryPath: false` is ignored at runtime — BOTH bridges run the

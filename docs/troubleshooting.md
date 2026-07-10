@@ -14,7 +14,9 @@
   cursor (`pg-cursor`, `rows: N`) holds the session the same way an
   open transaction does — read or close it promptly, or other
   clients queue behind it. `resetDb()`
-  clears more of this between tests via `DISCARD ALL`. The default
+  clears more of this between tests (everything `DISCARD ALL`
+  covers except named prepared statements, which are kept so the
+  statement cache stays warm). The default
   `max: 1` avoids extra bridge connections and session-lock overhead.
 - **Schema source required** — pick one of
   [`pushMigrations`](./api.md#pushmigrationspglite-options) (run
@@ -56,7 +58,7 @@ Then `pnpm install`.
 ## `cached plan must not change result type`
 
 The bridge caches Prisma queries as named prepared statements by
-default (for `max: 1` pools). PostgreSQL revalidates those plans after
+default. PostgreSQL revalidates those plans after
 DDL, and revalidation fails with this error when the DDL changed the
 *result type* of an already-cached query shape — typically
 `ALTER TABLE ... ALTER COLUMN ... TYPE` on a column the query selects.
@@ -71,15 +73,19 @@ Fix one of:
 
 ## `prepared statement "ppb_..." does not exist` (error 26000)
 
-Another pool or bridge connected to the same live PGlite instance:
-each new pool clears the session's prepared-statement namespace on
-connect, destroying the first bridge's cache. Concurrent pools on one
-instance are unsupported (their transactions can also interleave) —
-the bridge emits `PGliteBridgeSharedInstanceWarning` when it detects this.
+Something outside the bridge's pools deallocated statements on the
+shared session — e.g. raw `DEALLOCATE ALL` / `DISCARD ALL` issued
+directly through `pglite.exec(...)`, or a hand-rolled `pg.Client` on a
+`PGliteDuplex` running its own connect-time cleanup while a bridge's
+cache was live.
 
-Use one pool/bridge per PGlite instance, or pass
-`preparedStatements: false` to the bridges sharing it. Sequential
-sharing (close the first bridge before creating the second) is fine.
+Concurrent pools/bridges on one PGlite instance do not cause this
+(since 1.7): statement names are unique per pool client, connect-time
+cleanup runs only when no other client is live, and a `DEALLOCATE` /
+`DISCARD ALL` issued through any pool client evicts the affected names
+from every live client's plan cache. If the error appears anyway,
+avoid session-wide deallocation outside the pools, or pass
+`preparedStatements: false` to the bridge.
 
 ## `ExperimentalWarning: Importing WebAssembly module instances is an experimental feature`
 
