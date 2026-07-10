@@ -17,7 +17,12 @@ import { SessionLock } from '../utils/session-lock.ts';
 import { PgBridgeClient, type PgBridgeClientOptions } from './pg-bridge-client.ts';
 
 export interface PgBridgePoolOptions
-  extends Omit<PgBridgeClientOptions, 'pglite' | 'bridgeId' | 'syncToFs' | 'telemetry'> {
+  extends Omit<
+    PgBridgeClientOptions,
+    // sessionLock and protocolCleanupNeeded are pool-managed: the pool
+    // always builds its own SessionLock and probes PGlite's cleanup needs.
+    'pglite' | 'bridgeId' | 'syncToFs' | 'telemetry' | 'sessionLock' | 'protocolCleanupNeeded'
+  > {
   /**
    * PGlite instance to back the pool. When omitted the pool creates its own
    * in-memory `PGlite` and owns its lifecycle — `end()` shuts it down. When
