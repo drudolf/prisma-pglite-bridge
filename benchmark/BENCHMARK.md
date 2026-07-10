@@ -106,6 +106,17 @@ prepared-native included.
 | `postgres-pg` (default) | 1.03ms | 1.29ms | 2.80ms | 5.17ms | 0.99–1.13 |
 | `postgres-pg` (prepared) | **0.81ms** | 1.15ms | 2.52ms | **4.39ms** | 0.80–0.83 |
 
+**i9 native-prepared drift (re-checked 2026-07-10):** two
+back-to-back runs put `postgres-pg` (prepared) at
+0.64–0.66ms p50 (spreads 0.63–0.73), well under the 0.81ms
+tabled above, while the bridge (0.75–0.84ms) and the other
+adapters reproduced their tabled p50s within spread. Native
+latency drifts faster on the i9 — the run-to-run variance
+machine — so prepared-native's read lead over the bridge is
+wider at that snapshot. Environmental drift in the native
+baseline, not a bridge change; the bridge's own read numbers
+are unmoved.
+
 **Linux i7-8700:**
 
 | Adapter | p50 | p95 | p99 | max | p50 spread |
