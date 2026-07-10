@@ -1,4 +1,5 @@
 {
   "ignoreBinaries": ["wasm-bindgen", "numfmt", "psql", "pgrep", "ps"],
-  "ignoreUnresolved": ["./build.sh"]
+  "ignoreUnresolved": ["./build.sh"],
+  "ignore": ["benchmark/compat/fixtures/**"]
 }
