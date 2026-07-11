@@ -1,5 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTempDir, createTempFile, removeTempDir } from '../__tests__/file-system.ts';
 import { PGliteBridge } from '../pglite-bridge';
@@ -206,7 +206,38 @@ describe('migrations utilities', () => {
   });
 });
 
+// One shared PGlite for the whole pushMigrations describe instead of a fresh
+// ~1s cold boot per test. Top-level await is valid at module scope (ESM).
+// Each test that needs a bridge creates its own PGliteBridge (caller-owned:
+// bridge.close() leaves the shared pglite open). The beforeEach inside the
+// describe wipes all user objects so each test starts from a truly empty schema.
+const sharedPglite = new PGlite();
+await sharedPglite.waitReady;
+
 describe('pushMigrations', () => {
+  afterAll(async () => {
+    await sharedPglite.close();
+  });
+
+  // Drop public and any user-created schemas, then recreate public. This
+  // handles tables, types, sequences, functions, and schemas that individual
+  // tests create. Fail loud on errors — dirty state must not silently corrupt
+  // the next test's starting conditions.
+  beforeEach(async () => {
+    const { rows } = await sharedPglite.query<{ nspname: string }>(
+      `SELECT nspname FROM pg_namespace
+       WHERE nspname NOT IN ('pg_catalog', 'information_schema')
+         AND nspname NOT LIKE 'pg_%'`,
+    );
+    for (const { nspname } of rows) {
+      await sharedPglite.exec(`DROP SCHEMA IF EXISTS "${nspname}" CASCADE`);
+    }
+    await sharedPglite.exec('CREATE SCHEMA public');
+    await sharedPglite.exec('GRANT ALL ON SCHEMA public TO public');
+    await sharedPglite.exec('DISCARD ALL');
+  });
+
+  // Bridges backed by the shared pglite — bridge.close() leaves sharedPglite open.
   const cleanups: Array<() => Promise<void>> = [];
   afterEach(async () => {
     while (cleanups.length) {
@@ -215,25 +246,23 @@ describe('pushMigrations', () => {
     }
   });
 
-  const makeBridge = async (dataDir?: string) => {
-    const pglite = new PGlite(dataDir);
-    await pglite.waitReady;
-    const bridge = new PGliteBridge({ pglite });
+  const makeBridge = async () => {
+    const bridge = new PGliteBridge({ pglite: sharedPglite });
     cleanups.push(async () => {
       await bridge.close();
     });
-    return { pglite, bridge };
+    return { pglite: sharedPglite, bridge };
   };
 
   it('applies inline SQL and returns durationMs', async () => {
-    const { pglite } = await makeBridge();
-    const result = await pushMigrations(pglite, {
+    const { pglite: db } = await makeBridge();
+    const result = await pushMigrations(db, {
       sql: 'CREATE TABLE "Demo" ("id" TEXT PRIMARY KEY);',
     });
 
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
 
-    const { rows } = await pglite.query<{ count: string }>(
+    const { rows } = await db.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM information_schema.tables WHERE table_name = 'Demo'`,
     );
     expect(rows[0]?.count).toBe('1');
@@ -248,10 +277,10 @@ describe('pushMigrations', () => {
         createTempDir('0001_init', migrationsPath).path,
       );
 
-      const { pglite } = await makeBridge();
-      await pushMigrations(pglite, { migrationsPath });
+      const { pglite: db } = await makeBridge();
+      await pushMigrations(db, { migrationsPath });
 
-      const { rows } = await pglite.query<{ count: string }>(
+      const { rows } = await db.query<{ count: string }>(
         `SELECT COUNT(*)::text AS count FROM information_schema.tables WHERE table_name = 'FromPath'`,
       );
       expect(rows[0]?.count).toBe('1');
@@ -261,32 +290,39 @@ describe('pushMigrations', () => {
   });
 
   it('wraps PGlite exec failures with a descriptive error (in-memory)', async () => {
-    const { pglite } = await makeBridge();
-    await expect(pushMigrations(pglite, { sql: 'NOT VALID SQL' })).rejects.toThrow(
+    const { pglite: db } = await makeBridge();
+    await expect(pushMigrations(db, { sql: 'NOT VALID SQL' })).rejects.toThrow(
       'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
     );
   });
 
   it('includes the dataDir path in failures for persistent instances', async () => {
+    // Uses its own PGlite with a dataDir — the error message embeds the path,
+    // so this test cannot use the shared in-memory instance.
     const { parent, path: dataDir } = createTempDir('persist');
-    cleanups.push(async () => {
+    const dataDirPglite = new PGlite(dataDir);
+    await dataDirPglite.waitReady;
+    const dataDirBridge = new PGliteBridge({ pglite: dataDirPglite });
+    try {
+      await expect(pushMigrations(dataDirPglite, { sql: 'NOT VALID SQL' })).rejects.toThrow(
+        `Failed to apply schema SQL to PGlite(dataDir=${dataDir}). Check your schema or migration files.`,
+      );
+    } finally {
+      await dataDirBridge.close();
+      await dataDirPglite.close();
       removeTempDir(parent);
-    });
-    const { pglite } = await makeBridge(dataDir);
-    await expect(pushMigrations(pglite, { sql: 'NOT VALID SQL' })).rejects.toThrow(
-      `Failed to apply schema SQL to PGlite(dataDir=${dataDir}). Check your schema or migration files.`,
-    );
+    }
   });
 
   it('preserves the PGlite cause when a multi-statement migration fails partway', async () => {
-    const { pglite } = await makeBridge();
+    const { pglite: db } = await makeBridge();
     const sql = [
       'CREATE TABLE "Ok" ("id" TEXT PRIMARY KEY);',
       'CREATE TABLE "Broken" ("id" TEXT REFERENCES "Missing"("id"));',
       'CREATE TABLE "Unreached" ("id" TEXT PRIMARY KEY);',
     ].join('\n');
 
-    const error = await pushMigrations(pglite, { sql }).then(
+    const error = await pushMigrations(db, { sql }).then(
       () => undefined,
       (err: unknown) => err,
     );
@@ -301,58 +337,43 @@ describe('pushMigrations', () => {
   });
 
   it('hasMigrations returns false when _prisma_migrations table is absent', async () => {
-    const pglite = new PGlite();
-    try {
-      await expect(hasMigrations(pglite)).resolves.toBe(false);
-    } finally {
-      await pglite.close();
-    }
+    await expect(hasMigrations(sharedPglite)).resolves.toBe(false);
   });
 
   it('hasMigrations returns false when _prisma_migrations exists but no rows are finished', async () => {
-    const pglite = new PGlite();
-    try {
-      await pglite.exec(`
-        CREATE TABLE _prisma_migrations (
-          id text PRIMARY KEY,
-          checksum text NOT NULL,
-          finished_at timestamptz,
-          migration_name text NOT NULL,
-          logs text,
-          rolled_back_at timestamptz,
-          started_at timestamptz NOT NULL DEFAULT now(),
-          applied_steps_count int NOT NULL DEFAULT 0
-        );
-        INSERT INTO _prisma_migrations (id, checksum, migration_name)
-        VALUES ('p', 'c', '0001_pending');
-      `);
-      await expect(hasMigrations(pglite)).resolves.toBe(false);
-    } finally {
-      await pglite.close();
-    }
+    await sharedPglite.exec(`
+      CREATE TABLE _prisma_migrations (
+        id text PRIMARY KEY,
+        checksum text NOT NULL,
+        finished_at timestamptz,
+        migration_name text NOT NULL,
+        logs text,
+        rolled_back_at timestamptz,
+        started_at timestamptz NOT NULL DEFAULT now(),
+        applied_steps_count int NOT NULL DEFAULT 0
+      );
+      INSERT INTO _prisma_migrations (id, checksum, migration_name)
+      VALUES ('p', 'c', '0001_pending');
+    `);
+    await expect(hasMigrations(sharedPglite)).resolves.toBe(false);
   });
 
   it('hasMigrations returns true when _prisma_migrations has at least one finished row', async () => {
-    const pglite = new PGlite();
-    try {
-      await pglite.exec(`
-        CREATE TABLE _prisma_migrations (
-          id text PRIMARY KEY,
-          checksum text NOT NULL,
-          finished_at timestamptz,
-          migration_name text NOT NULL,
-          logs text,
-          rolled_back_at timestamptz,
-          started_at timestamptz NOT NULL DEFAULT now(),
-          applied_steps_count int NOT NULL DEFAULT 0
-        );
-        INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at)
-        VALUES ('a', 'c', '0001_init', now());
-      `);
-      await expect(hasMigrations(pglite)).resolves.toBe(true);
-    } finally {
-      await pglite.close();
-    }
+    await sharedPglite.exec(`
+      CREATE TABLE _prisma_migrations (
+        id text PRIMARY KEY,
+        checksum text NOT NULL,
+        finished_at timestamptz,
+        migration_name text NOT NULL,
+        logs text,
+        rolled_back_at timestamptz,
+        started_at timestamptz NOT NULL DEFAULT now(),
+        applied_steps_count int NOT NULL DEFAULT 0
+      );
+      INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at)
+      VALUES ('a', 'c', '0001_init', now());
+    `);
+    await expect(hasMigrations(sharedPglite)).resolves.toBe(true);
   });
 
   it('hasMigrations returns false when the finished-count query returns no rows', async () => {
@@ -360,40 +381,25 @@ describe('pushMigrations', () => {
       .fn()
       .mockResolvedValueOnce({ rows: [{ exists: true }] })
       .mockResolvedValueOnce({ rows: [] });
-    const pglite = { query } as unknown as PGlite;
+    const mockPglite = { query } as unknown as PGlite;
 
-    await expect(hasMigrations(pglite)).resolves.toBe(false);
+    await expect(hasMigrations(mockPglite)).resolves.toBe(false);
   });
 
   it('hasSchema returns false on an empty database', async () => {
-    const pglite = new PGlite();
-    try {
-      await expect(hasSchema(pglite)).resolves.toBe(false);
-    } finally {
-      await pglite.close();
-    }
+    await expect(hasSchema(sharedPglite)).resolves.toBe(false);
   });
 
   it('hasSchema returns true when public has at least one user table', async () => {
-    const pglite = new PGlite();
-    try {
-      await pglite.exec('CREATE TABLE "User" (id text PRIMARY KEY)');
-      await expect(hasSchema(pglite)).resolves.toBe(true);
-    } finally {
-      await pglite.close();
-    }
+    await sharedPglite.exec('CREATE TABLE "User" (id text PRIMARY KEY)');
+    await expect(hasSchema(sharedPglite)).resolves.toBe(true);
   });
 
   it('hasSchema ignores tables outside the public schema', async () => {
-    const pglite = new PGlite();
-    try {
-      await pglite.exec(`
-        CREATE SCHEMA other;
-        CREATE TABLE other.t (id int PRIMARY KEY);
-      `);
-      await expect(hasSchema(pglite)).resolves.toBe(false);
-    } finally {
-      await pglite.close();
-    }
+    await sharedPglite.exec(`
+      CREATE SCHEMA other;
+      CREATE TABLE other.t (id int PRIMARY KEY);
+    `);
+    await expect(hasSchema(sharedPglite)).resolves.toBe(false);
   });
 });

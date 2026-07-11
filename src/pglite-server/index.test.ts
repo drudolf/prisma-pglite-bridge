@@ -7,7 +7,17 @@ import pg from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockPGlite } from '../__tests__/mocks.ts';
+import { setupPGlite } from '../__tests__/pglite.ts';
 import { PGliteServer, type PGliteServerOptions } from './index.ts';
+
+// One shared PGlite for the ~19 tests that only need a caller-supplied instance
+// with no special dataDir/fs/ownership semantics. Saves ~1s WASM cold-boot per
+// test; the server lifecycle (cheap) is still created+closed per test.
+// Tests that assert ownership, use a custom dataDir/URI, need mocks, or test
+// bind-in-use / IPv6 / Unix socket keep their own dedicated instances below.
+// reset: false — this file resets in the afterEach below (after the server
+// cleanups drain), not in setupPGlite's default beforeEach.
+const sharedDb = await setupPGlite({ reset: false });
 
 const SSL_REQUEST_CODE = 80877103;
 const GSSENC_REQUEST_CODE = 80877104;
@@ -48,6 +58,18 @@ describe('PGliteServer', () => {
       const fn = cleanups.pop();
       await fn?.();
     }
+    // Reset the shared PGlite between tests. The server is already closed by
+    // the time cleanups drain, so this query serializes cleanly. ROLLBACK is a
+    // no-op when idle; DROP TABLE errors are NOT swallowed — a failure here
+    // means the prior test left the shared instance dirty.
+    await sharedDb.query('ROLLBACK').catch(() => {});
+    const { rows } = await sharedDb.query<{ t: string }>(
+      "SELECT tablename AS t FROM pg_tables WHERE schemaname = 'public'",
+    );
+    for (const { t } of rows) {
+      await sharedDb.exec(`DROP TABLE IF EXISTS "${t}" CASCADE`);
+    }
+    await sharedDb.exec('DISCARD ALL');
   });
 
   const db = new PGlite();
@@ -77,23 +99,23 @@ describe('PGliteServer', () => {
   });
 
   it('listen() is idempotent and returns the same address', async () => {
-    const { server, connectionString } = await startServer();
+    const { server, connectionString } = await startServer({ pglite: sharedDb });
     expect(await server.listen()).toBe(connectionString);
     expect(await server.listen()).toBe(connectionString);
   });
 
   it('binds with custom user in connection string', async () => {
-    const { connectionString: url } = await startServer({ user: 'test' });
+    const { connectionString: url } = await startServer({ pglite: sharedDb, user: 'test' });
     expect(url).toMatch(/postgres:\/\/test@127\.0\.0\.1:[0-9]+\/postgres/);
   });
 
   it('binds to an ephemeral port on loopback', async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
     expect(url).toMatch(/postgres:\/\/postgres@127\.0\.0\.1:[0-9]+\/postgres/);
   });
 
   it('answers SELECT 1 over TCP via pg.Client', async () => {
-    const { connectionString } = await startServer();
+    const { connectionString } = await startServer({ pglite: sharedDb });
     const client = new pg.Client({ connectionString });
     await client.connect();
     try {
@@ -105,7 +127,7 @@ describe('PGliteServer', () => {
   });
 
   it('supports CREATE TABLE + INSERT + SELECT roundtrip', async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
     const client = new pg.Client(url);
     await client.connect();
     try {
@@ -128,7 +150,7 @@ describe('PGliteServer', () => {
     // the 18→25 widening exists only for @prisma/adapter-pg. The server path
     // must create its duplexes with the rewrite disabled — on PostgreSQL 18
     // a rewritten oid breaks `prisma db pull`.
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
     const client = new pg.Client(url);
     await client.connect();
     try {
@@ -141,7 +163,7 @@ describe('PGliteServer', () => {
   });
 
   it('serializes transactions across two concurrent clients', async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
     const a = new pg.Client(url);
     const b = new pg.Client(url);
     await a.connect();
@@ -173,7 +195,7 @@ describe('PGliteServer', () => {
   });
 
   it('rejects chained GSS+SSL preludes (coalesced and sequential) before StartupMessage', async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
 
     const coalescedSocket = tcpConnect(url);
     const coalescedBytes = readFirstNBytes(coalescedSocket, 2);
@@ -199,7 +221,7 @@ describe('PGliteServer', () => {
   });
 
   it("rejects SSLRequest with single 'N' byte then accepts plaintext", async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
 
     const reply = await new Promise<Buffer>((resolve, reject) => {
       const socket = tcpConnect(url);
@@ -224,7 +246,7 @@ describe('PGliteServer', () => {
   });
 
   it('exposes a usable libpq query-form URL for IPv6 binds', async () => {
-    const { connectionString: url } = await startServer({ host: '::1' });
+    const { connectionString: url } = await startServer({ pglite: sharedDb, host: '::1' });
     expect(url).toMatch(
       new RegExp(`^postgres://postgres@/postgres\\?host=${encodeURIComponent('::1')}&port=\\d+$`),
     );
@@ -268,7 +290,7 @@ describe('PGliteServer', () => {
   });
 
   it('drops a CancelRequest by closing the socket cleanly', async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
 
     await new Promise<void>((resolve, reject) => {
       const socket = tcpConnect(url);
@@ -282,7 +304,7 @@ describe('PGliteServer', () => {
   });
 
   it('rolls back when client sends Terminate mid-transaction', async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
     const a = new pg.Client(url);
     await a.connect();
     await a.query('CREATE TABLE t (id int)');
@@ -301,7 +323,7 @@ describe('PGliteServer', () => {
   });
 
   it('rolls back on forced TCP disconnect mid-transaction', async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
     const a = new pg.Client(url);
     await a.connect();
     await a.query('CREATE TABLE t (id int)');
@@ -326,7 +348,7 @@ describe('PGliteServer', () => {
   });
 
   it('drops queued queries from a forcibly disconnected waiter', async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
     const a = new pg.Client(url);
     const b = new pg.Client(url);
     await a.connect();
@@ -371,7 +393,7 @@ describe('PGliteServer', () => {
   });
 
   it('honors an explicit syncToFs override (true)', async () => {
-    const { connectionString: url } = await startServer({ syncToFs: true });
+    const { connectionString: url } = await startServer({ pglite: sharedDb, syncToFs: true });
     const client = new pg.Client(url);
     await client.connect();
     try {
@@ -383,7 +405,7 @@ describe('PGliteServer', () => {
   });
 
   it('honors an explicit syncToFs override (false)', async () => {
-    const { connectionString: url } = await startServer({ syncToFs: false });
+    const { connectionString: url } = await startServer({ pglite: sharedDb, syncToFs: false });
     const client = new pg.Client(url);
     await client.connect();
     try {
@@ -425,7 +447,7 @@ describe('PGliteServer', () => {
   });
 
   it('drops a CancelRequest delivered as two partial chunks', async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
 
     await new Promise<void>((resolve, reject) => {
       const socket = tcpConnect(url);
@@ -442,7 +464,7 @@ describe('PGliteServer', () => {
   });
 
   it('handles an SSLRequest split across two TCP chunks', async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
 
     const reply = await new Promise<Buffer>((resolve, reject) => {
       const socket = tcpConnect(url);
@@ -477,7 +499,7 @@ describe('PGliteServer', () => {
   });
 
   it('keeps serving after a forced client RST (server-side ECONNRESET)', async () => {
-    const { connectionString: url } = await startServer();
+    const { connectionString: url } = await startServer({ pglite: sharedDb });
     const a = new pg.Client(url);
     await a.connect();
     a.on('error', () => {});

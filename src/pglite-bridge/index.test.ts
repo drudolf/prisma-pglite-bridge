@@ -54,7 +54,8 @@ describe('PGliteBridge', () => {
   });
 
   it(`returns undefined stats when statsLevel is 'off'`, async () => {
-    const localBridge = new PGliteBridge();
+    // Reuse the shared pglite (caller-supplied) to avoid a redundant WASM boot.
+    const localBridge = new PGliteBridge({ pglite: bridge.pglite });
     try {
       await expect(localBridge.stats()).resolves.toBeUndefined();
     } finally {
@@ -156,15 +157,10 @@ describe('PGliteBridge', () => {
   });
 
   it('close() leaves a caller-supplied PGlite open (caller owns it)', async () => {
-    const pglite = new PGlite();
-    await pglite.waitReady;
-    const localBridge = new PGliteBridge({ pglite });
-    try {
-      await localBridge.close();
-      expect(pglite.closed).toBe(false);
-    } finally {
-      await pglite.close();
-    }
+    // Reuse the shared pglite — close() on a non-owning bridge must not close it.
+    const localBridge = new PGliteBridge({ pglite: bridge.pglite });
+    await localBridge.close();
+    expect(bridge.pglite.closed).toBe(false);
   });
 
   it('snapshotDb / resetDb / resetSnapshot reject when pool clients are in flight', async () => {
@@ -214,7 +210,8 @@ describe('PGliteBridge', () => {
     const registerSpy = vi.spyOn(FinalizationRegistry.prototype, 'register');
     const unregisterSpy = vi.spyOn(FinalizationRegistry.prototype, 'unregister');
 
-    const created = new PGliteBridge();
+    // Reuse the shared pglite (caller-supplied) to avoid a redundant WASM boot.
+    const created = new PGliteBridge({ pglite: bridge.pglite });
 
     expect(registerSpy).toHaveBeenCalled();
     const registeredToken = registerSpy.mock.calls.at(-1)?.[2];
