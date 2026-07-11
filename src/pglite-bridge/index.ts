@@ -138,10 +138,11 @@ export interface PGliteBridgeOptions {
    * not change result type" — see docs/troubleshooting.md). Applying
    * schema before Prisma traffic, as the setup helpers do, is safe.
    *
-   * The cache names the first 500 distinct query texts per client (bounded
-   * and frozen, not LRU); later shapes run unnamed. Only SELECT / INSERT /
-   * UPDATE / DELETE / WITH / MERGE / VALUES statements are named — DDL
-   * and transaction control never consume cache slots.
+   * The cache names a query text on its second sighting (one-shot shapes
+   * never consume slots) and holds 500 shapes per client; past that the
+   * least-recently-used statement is evicted and freed on the wire. Only
+   * SELECT / INSERT / UPDATE / DELETE / WITH / MERGE / VALUES statements
+   * are named — DDL and transaction control never consume cache slots.
    */
   preparedStatements?: boolean;
 

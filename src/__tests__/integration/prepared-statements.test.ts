@@ -4,7 +4,9 @@
 // Caching is ON by default for every pool size: each pool client caches
 // Prisma queries as named prepared statements (`ppb_<namespace>_<n>`, one
 // process-unique namespace per client, so names never collide across clients
-// or pools sharing the PGlite session). Opt out with
+// or pools sharing the PGlite session). A shape is named only on its second
+// sighting (K=2 admission gate), so every probe below runs its query shape
+// at least twice before asserting on the cache. Opt out with
 // `preparedStatements: false`. resetDb keeps cached statements alive —
 // tables are truncated, never dropped, so cached statements replan
 // transparently — while still clearing the rest of the session state.
@@ -124,8 +126,13 @@ describe('prepared-statement caching', () => {
   it('caches every runtime Prisma SQL shape and never transaction control', async () => {
     const { bridge, prisma } = await setupSuite();
     try {
+      // Every DML shape runs twice (same SQL text, different data) so it
+      // passes the K=2 admission gate and lands in the statement cache.
       await prisma.tenant.create({
         data: { id: 'tenant-corpus-1', name: 'Corpus One', slug: 'corpus-1' },
+      });
+      await prisma.tenant.create({
+        data: { id: 'tenant-corpus-1b', name: 'Corpus One B', slug: 'corpus-1b' },
       });
       await prisma.tenant.createMany({
         data: [
@@ -133,18 +140,35 @@ describe('prepared-statement caching', () => {
           { id: 'tenant-corpus-3', name: 'Corpus Three', slug: 'corpus-3' },
         ],
       });
+      await prisma.tenant.createMany({
+        data: [
+          { id: 'tenant-corpus-4', name: 'Corpus Four', slug: 'corpus-4' },
+          { id: 'tenant-corpus-5', name: 'Corpus Five', slug: 'corpus-5' },
+        ],
+      });
       await prisma.tenant.findMany({ take: 10 });
+      await prisma.tenant.findMany({ take: 10 });
+      await prisma.tenant.findUnique({ where: { id: 'tenant-corpus-1' } });
       await prisma.tenant.findUnique({ where: { id: 'tenant-corpus-1' } });
       await prisma.tenant.update({
         where: { id: 'tenant-corpus-1' },
         data: { name: 'Corpus One Updated' },
       });
+      await prisma.tenant.update({
+        where: { id: 'tenant-corpus-1' },
+        data: { name: 'Corpus One Updated Again' },
+      });
+      await prisma.tenant.count();
       await prisma.tenant.count();
       await prisma.tenant.groupBy({ by: ['slug'] });
+      await prisma.tenant.groupBy({ by: ['slug'] });
+      await prisma.tenant.findMany({ include: { workspaces: true } });
       await prisma.tenant.findMany({ include: { workspaces: true } });
       await prisma.tenant.delete({ where: { id: 'tenant-corpus-3' } });
+      await prisma.tenant.delete({ where: { id: 'tenant-corpus-5' } });
       await prisma.$transaction(async (tx) => {
         await tx.tenant.count();
+        await tx.tenant.findMany();
         await tx.tenant.findMany();
       });
 
@@ -178,7 +202,9 @@ describe('prepared-statement caching', () => {
       });
       await bridge.snapshotDb();
 
-      // Populate the statement cache with the query under test.
+      // Populate the statement cache with the query under test — two
+      // sightings carry the shape past the K=2 admission gate.
+      await expect(prisma.tenant.findMany()).resolves.toMatchObject([{ id: 'tenant-seeded' }]);
       await expect(prisma.tenant.findMany()).resolves.toMatchObject([{ id: 'tenant-seeded' }]);
 
       await prisma.tenant.create({
@@ -223,6 +249,9 @@ describe('prepared-statement caching', () => {
       const first = new PGliteBridge({ pglite, preparedStatements: true });
       await pushMigrations(pglite, { configRoot: process.cwd() });
       const prismaA = new PrismaClient({ adapter: first.adapter });
+      // Two sightings pass the K=2 gate, so the first bridge really leaves
+      // a named statement behind in the shared session.
+      await prismaA.tenant.findMany();
       await prismaA.tenant.findMany();
       await prismaA.$disconnect();
       await first.close();

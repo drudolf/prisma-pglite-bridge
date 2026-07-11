@@ -103,8 +103,10 @@ export interface PgBridgePoolOptions
    * and plans each query shape once per client and skips Parse on repeat
    * executions. Only DML (SELECT / INSERT / UPDATE / DELETE / WITH / MERGE /
    * VALUES) is named; DDL, SET, and transaction control always run unnamed.
-   * Bounded at 500 distinct texts per client; shapes beyond that run unnamed
-   * (correct, just uncached).
+   * A shape earns its name on its second sighting (one-shot statements never
+   * consume cache slots) and the cache holds 500 shapes per client; past
+   * that the least-recently-used statement is evicted and freed with a wire
+   * `Close` riding the next query's batch — no extra round trip.
    *
    * Names are unique per client (`<namespace>` draws from a process-wide
    * counter), so multiple pool clients (`max > 1`) and multiple pools on one

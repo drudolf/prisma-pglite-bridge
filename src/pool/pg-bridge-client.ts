@@ -27,13 +27,17 @@ export interface PgBridgeClientOptions {
    * Cache query plans by injecting a stable name into unnamed cacheable DML
    * queries so PGlite caches the plan via the Extended Query Protocol. pg
    * skips the Parse message on repeat calls once the statement name is in
-   * `connection.parsedStatements`. The client creates its own bounded
-   * generator — names are `ppb_<namespace>_<n>` with a process-unique
-   * namespace per client, so names from different clients (or client
-   * generations) never collide in the shared PGlite session. See
+   * `connection.parsedStatements`. The client creates its own gated LRU
+   * generator — a text is named on its second sighting, the
+   * least-recently-used name is evicted at capacity and freed with a wire
+   * `Close('S')` piggybacked onto the next submission — with names
+   * `ppb_<namespace>_<seq>` under a process-unique namespace per client, so
+   * names from different clients (or client generations) never collide in
+   * the shared PGlite session. The object form overrides capacity/gate for
+   * tests; it is not surfaced on the pool options. See
    * PgBridgePoolOptions.statementCaching.
    */
-  statementCaching?: boolean;
+  statementCaching?: boolean | { capacity?: number; minUsages?: number };
 }
 
 type PgBridgeClientConfig = pg.ClientConfig & {
@@ -65,6 +69,12 @@ export class PgBridgeClient extends pg.Client {
   /** This client's own name generator (client-unique namespace), or
    *  undefined when statement caching is off. */
   readonly #stmtNameGen?: (query: { sql: string }) => string | undefined;
+  /** Names evicted by the generator's LRU, awaiting a wire `Close('S')`.
+   *  Drained at the next submission point — the Close rides as a prefix of
+   *  that query's message train (one PGlite call, zero dedicated round
+   *  trips). Names are monotonic and never reused, so a Close that never
+   *  drains (client ends first) only orphans one session-side statement. */
+  readonly #pendingCloses: string[] = [];
   /** The backing PGlite instance — the key into the liveClients registry. */
   readonly #pglite: object;
   /** Latest duplex from the stream factory. Boxed because the factory
@@ -95,7 +105,13 @@ export class PgBridgeClient extends pg.Client {
     this.#duplexBox = duplexBox;
     this.#fastQueryPath = bridge.fastQueryPath ?? true;
     this.#pglite = bridge.pglite;
-    this.#stmtNameGen = bridge.statementCaching ? createStatementNameGenerator() : undefined;
+    const caching = bridge.statementCaching;
+    this.#stmtNameGen = caching
+      ? createStatementNameGenerator({
+          ...(typeof caching === 'object' ? caching : undefined),
+          onEvict: (name) => this.#pendingCloses.push(name),
+        })
+      : undefined;
 
     // Register unconditionally — even a statementCaching: false client can
     // hold user-named statements in parsedStatements that need eviction when
@@ -248,7 +264,13 @@ export class PgBridgeClient extends pg.Client {
     // The fast path rides the SAME submission chain as stock object-form
     // queries — a FastQuery must never jump ahead of a chained pending
     // stock query, or mixed-path call order would invert.
-    const doSubmit = this.#fastSubmit(args) ?? submit;
+    const inner = this.#fastSubmit(args) ?? submit;
+    const doSubmit = () => {
+      // Drain evicted-name Closes as a prefix of this query's message
+      // train — including an eviction this very call's promotion queued.
+      if (this.#pendingCloses.length > 0) this.#flushPendingCloses();
+      return inner();
+    };
 
     const prior = this.querySubmissionChain;
     let p: Promise<unknown>;
@@ -338,6 +360,35 @@ export class PgBridgeClient extends pg.Client {
       /* v8 ignore next — ps exists on every pg Connection; guard covers pg internals drift */
       if (ps) delete ps[scope.name];
       this.#fieldsCache.delete(scope.name);
+    }
+  }
+
+  /** Drain queued evicted names: free each server-side statement with a
+   *  wire `Close('S', name)` written immediately before the imminent
+   *  query's message train — the duplex pipelines both into one
+   *  Sync-terminated batch, so eviction costs no dedicated round trip, and
+   *  pg parses the resulting CloseComplete but attaches no Client listener,
+   *  so it is dropped. Also drops pg's parse-skip entry and the fields
+   *  cache so client-side books can't accumulate names that no longer
+   *  exist server-side. Safe in a failed transaction: Close is
+   *  session-level, processed even while DML raises 25P02. Called only
+   *  from the submission point, where the submission chain guarantees
+   *  every query that could still reference an evicted name has settled
+   *  (a chained straggler that re-Parses a just-closed name self-heals —
+   *  same path as post-DEALLOCATE re-Parse). */
+  #flushPendingCloses(): void {
+    const connection = (
+      this as unknown as {
+        connection: {
+          close(msg: { type: 'S'; name: string }): void;
+          parsedStatements: PgParsedStatements;
+        };
+      }
+    ).connection;
+    for (const name of this.#pendingCloses.splice(0)) {
+      connection.close({ type: 'S', name });
+      delete connection.parsedStatements[name];
+      this.#fieldsCache.delete(name);
     }
   }
 

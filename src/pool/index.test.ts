@@ -482,16 +482,19 @@ describe('PgBridgePool — fastQueryPath', () => {
     }
   });
 
-  it('injects a name into unnamed DML and routes it through the fast path', async () => {
+  it('injects a name into unnamed DML once promoted and routes it through the fast path', async () => {
     const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
     const pool = new PgBridgePool({ pglite });
     try {
       const client = await pool.connect();
       try {
         describeSpy.mockClear();
-        // No `name` on a statementCaching pool → name injected → fast path for
-        // queries that also carry rowMode:'array' + types. First call sends Describe
-        // to populate #fieldsCache; second call skips it (cache hit).
+        // No `name` on a statementCaching pool → the generator names the
+        // shape on its SECOND sighting (K=2 admission gate). The first
+        // execution runs unnamed on the stock path (whose extended-protocol
+        // flow Describes), the second is named and rides the fast path
+        // (Describe populates #fieldsCache), the third is a warm fast query
+        // that skips Describe entirely.
         const unnamed = {
           text: 'SELECT $1::int AS n',
           values: [7],
@@ -500,12 +503,15 @@ describe('PgBridgePool — fastQueryPath', () => {
         };
         const first = await client.query(unnamed);
         const second = await client.query(unnamed);
+        const third = await client.query(unnamed);
 
-        expect(describeSpy).toHaveBeenCalledTimes(1);
+        expect(describeSpy).toHaveBeenCalledTimes(2);
         expect(first.rows).toEqual([[7]]);
         expect(second.rows).toEqual([[7]]);
-        expect(first.constructor.name).not.toBe('Result');
+        expect(third.rows).toEqual([[7]]);
+        expect(first.constructor.name).toBe('Result'); // below the gate — stock path
         expect(second.constructor.name).not.toBe('Result');
+        expect(third.constructor.name).not.toBe('Result');
       } finally {
         client.release();
       }
@@ -642,8 +648,9 @@ describe('PgBridgePool — fastQueryPath', () => {
     process.on('warning', swallowSharedWarning);
 
     try {
-      // Warm pool A — its client Parses the SQL once under its own
-      // client-unique name.
+      // Warm pool A past the K=2 admission gate — the second execution
+      // names and Parses the SQL under the client's own unique name.
+      await poolA.query({ text: 'SELECT 7 AS n', values: [] });
       await poolA.query({ text: 'SELECT 7 AS n', values: [] });
 
       // Sibling joins, queries, and leaves. Per-client names need no
@@ -678,10 +685,11 @@ describe('PgBridgePool — fastQueryPath', () => {
     };
     process.on('warning', swallow);
     try {
-      // Pool A Parses the SQL under its own client-unique name while it is
-      // the sole pool.
+      // Pool A promotes the SQL under its own client-unique name while it
+      // is the sole pool (two sightings past the K=2 gate).
       const poolA = new PgBridgePool({ pglite: local });
       try {
+        await poolA.query({ text: 'SELECT 9 AS n', values: [] });
         await poolA.query({ text: 'SELECT 9 AS n', values: [] });
       } finally {
         await poolA.end(); // client removed → liveClientCounts 1→0
@@ -691,9 +699,12 @@ describe('PgBridgePool — fastQueryPath', () => {
       // Pool B starts fresh: connect fires liveClientCounts 0→1 → DEALLOCATE ALL.
       const poolB = new PgBridgePool({ pglite: local });
       try {
+        await poolB.query({ text: 'SELECT 9 AS n', values: [] });
         const result = await poolB.query({ text: 'SELECT 9 AS n', values: [] });
-        // Fresh Parse under pool B's own name (PGlite was clean after the
-        // genuine 0→1 DEALLOCATE ALL on pool B's connect).
+        // One fresh Parse under pool B's own name at promotion (PGlite was
+        // clean after the genuine 0→1 DEALLOCATE ALL on pool B's connect;
+        // the below-gate zero-values sighting runs the simple protocol —
+        // no Parse at all).
         expect(parseSpy).toHaveBeenCalledTimes(1);
         expect(result.rows).toEqual([{ n: 9 }]);
       } finally {
@@ -717,14 +728,20 @@ describe('PgBridgePool — fastQueryPath', () => {
       const poolA = new PgBridgePool({ pglite: local });
       const poolB = new PgBridgePool({ pglite: local });
       try {
-        // Cold phase DURING the overlap: each pool's client Parses the same
-        // SQL under its own client-unique name — two Parses, no 42P05, no
-        // caching suspension.
+        // Cold phase DURING the overlap: each pool's client sights the SQL
+        // twice — the below-gate zero-values sighting runs the simple
+        // protocol (no Parse), the second promotes and Parses under its own
+        // client-unique name. One Parse per pool, no 42P05, no caching
+        // suspension.
         parseSpy.mockClear();
         const coldA = await poolA.query(shape);
+        const coldA2 = await poolA.query(shape);
         const coldB = await poolB.query(shape);
+        const coldB2 = await poolB.query(shape);
         expect(coldA.rows).toEqual([{ n: 11 }]);
+        expect(coldA2.rows).toEqual([{ n: 11 }]);
         expect(coldB.rows).toEqual([{ n: 11 }]);
+        expect(coldB2.rows).toEqual([{ n: 11 }]);
         expect(parseSpy).toHaveBeenCalledTimes(2);
 
         // Both statements coexist in the shared session under distinct names.
@@ -777,8 +794,9 @@ describe('PgBridgePool — fastQueryPath', () => {
       const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
       const poolC = new PgBridgePool({ pglite: local });
       try {
+        await poolC.query({ text: 'SELECT 13 AS n', values: [] }); // below gate — simple protocol
         await poolC.query({ text: 'SELECT 13 AS n', values: [] });
-        expect(parseSpy).toHaveBeenCalledTimes(1); // fresh Parse after DEALLOCATE ALL
+        expect(parseSpy).toHaveBeenCalledTimes(1); // fresh promotion Parse after DEALLOCATE ALL
       } finally {
         await poolC.end();
       }
@@ -1022,7 +1040,8 @@ describe('PgBridgePool — per-client statement names', () => {
       const client = await pool.connect();
       try {
         const shape = { text: 'SELECT 32 AS n', values: [] };
-        await client.query(shape);
+        await client.query(shape); // below the K=2 gate — unnamed
+        await client.query(shape); // promoted — named + Parsed
         parseSpy.mockClear();
         await client.query(shape);
         expect(parseSpy).not.toHaveBeenCalled(); // warm — cache active
@@ -1058,6 +1077,7 @@ describe('PgBridgePool — per-client statement names', () => {
     });
     try {
       const shape = { text: 'SELECT 31 AS n', values: [] };
+      await poolA.query(shape); // below the K=2 gate — unnamed
       await poolA.query(shape); // pool A Parses its name into the session
 
       const dying = clients[0];
@@ -1108,6 +1128,7 @@ describe('PgBridgePool — per-client statement names', () => {
       a = await pool.connect();
       b = await pool.connect();
       const shape = { text: 'SELECT 51 AS n', values: [] };
+      await b.query(shape); // below the K=2 gate — unnamed
       await b.query(shape); // warm B's cache — Parse is skipped from here on
 
       // Fire the dealloc first, then B's warm query in the same tick, so
@@ -1187,6 +1208,8 @@ describe('PgBridgePool — per-client statement names', () => {
       b = await pool.connect();
       const shape = { text: 'SELECT 71 AS n', values: [] };
       await a.query(shape);
+      await a.query(shape); // past the K=2 gate — named + Parsed
+      await b.query(shape);
       await b.query(shape); // both clients warm, distinct names
 
       await a.query('DISCARD ALL');
@@ -1222,9 +1245,16 @@ describe('PgBridgePool — per-client statement names', () => {
 
       parseSpy.mockClear();
       const coldA = await a.query(shape);
+      const coldA2 = await a.query(shape);
       const coldB = await b.query(shape);
+      const coldB2 = await b.query(shape);
       expect(coldA.rows).toEqual([{ n: 81 }]);
+      expect(coldA2.rows).toEqual([{ n: 81 }]);
       expect(coldB.rows).toEqual([{ n: 81 }]);
+      expect(coldB2.rows).toEqual([{ n: 81 }]);
+      // One Parse per client: the below-gate zero-values execution runs the
+      // simple protocol (no Parse), the promoting execution Parses the
+      // client-unique name.
       expect(parseSpy).toHaveBeenCalledTimes(2);
 
       // The same SQL landed under two distinct client-unique names.
@@ -1253,8 +1283,9 @@ describe('PgBridgePool — per-client statement names', () => {
 
 // String-form parameterized queries — `query(text, values)` with a NON-EMPTY
 // values array — get the same per-client statement-name injection as the
-// object form when statement caching is on: pg then skips Parse on repeat
-// executions via its parsedStatements guard. The rest of the string-form
+// object form when statement caching is on: sightings across both forms
+// count toward one K=2 admission gate, and once promoted pg skips Parse on
+// repeat executions via its parsedStatements guard. The rest of the string-form
 // dispatch is deliberately untouched: `query(text)` and `query(text, [])`
 // stay unnamed on the simple protocol, non-cacheable text is never named,
 // and a statementCaching: false pool sees no normalization at all.
@@ -1277,15 +1308,18 @@ describe('PgBridgePool — string-form parameterized statement caching', () => {
       const client = await pool.connect();
       try {
         parseSpy.mockClear();
+        const belowGate = await client.query('SELECT $1::int AS n', [7]);
         const cold = await client.query('SELECT $1::int AS n', [7]);
         const warm = await client.query('SELECT $1::int AS n', [7]);
 
+        expect(belowGate.rows).toEqual([{ n: 7 }]);
         expect(cold.rows).toEqual([{ n: 7 }]);
         expect(warm.rows).toEqual([{ n: 7 }]);
-        // One Parse total across both executions: the cold call named and
-        // parsed the statement, the warm call skipped Parse via pg's
+        // Two Parses total across three executions: the first sighting ran
+        // as an unnamed extended query (below the K=2 gate), the second
+        // named and parsed the statement, the third skipped Parse via pg's
         // parsedStatements guard — a cached plan, not a re-preparation.
-        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(parseSpy).toHaveBeenCalledTimes(2);
 
         // The statement is cached under a bridge-injected name.
         const names = await listBridgeStatements(client);
@@ -1309,14 +1343,19 @@ describe('PgBridgePool — string-form parameterized statement caching', () => {
       try {
         parseSpy.mockClear();
         // Same text, fresh values array per call: the name generator keys on
-        // the SQL text, so both forms must map to ONE statement name — one
-        // Parse total, and the second form rides the first form's cache.
+        // the SQL text, so both forms count toward ONE admission gate and
+        // map to ONE statement name — the string form is the below-gate
+        // sighting, the object form promotes and Parses, and a third call
+        // (back on the string form) rides the shared cache with zero
+        // further Parses.
         const viaString = await client.query('SELECT $1::int AS n', [8]);
         const viaObject = await client.query({ text: 'SELECT $1::int AS n', values: [8] });
+        const warm = await client.query('SELECT $1::int AS n', [8]);
 
         expect(viaString.rows).toEqual([{ n: 8 }]);
         expect(viaObject.rows).toEqual([{ n: 8 }]);
-        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(warm.rows).toEqual([{ n: 8 }]);
+        expect(parseSpy).toHaveBeenCalledTimes(2);
         expect(await listBridgeStatements(client)).toHaveLength(1);
       } finally {
         client.release();
@@ -1461,7 +1500,9 @@ describe('PgBridgePool — string-form parameterized statement caching', () => {
     try {
       const client = await pool.connect();
       try {
-        // Cold execution caches the statement under a bridge-injected name.
+        // Two cold executions carry the shape past the K=2 admission gate —
+        // the second caches the statement under a bridge-injected name.
+        await client.query('SELECT $1::int AS n', [7]);
         await client.query('SELECT $1::int AS n', [7]);
 
         // Session-wide wipe: PGlite forgets the statement. The eviction

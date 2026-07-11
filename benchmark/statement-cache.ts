@@ -1,15 +1,17 @@
 /**
- * Statement-name cache tradeoff benchmark: frozen cap (shipped) vs LRU
- * (parked on `draft/lru-statement-cache`, 2026-07-02).
+ * Statement-name cache tradeoff benchmark: gated LRU (shipped) vs frozen
+ * cap (pre-gate policy) vs pure LRU (parked on `draft/lru-statement-cache`,
+ * 2026-07-02).
  *
  * Port of the parked branch's benchmark to the per-client architecture,
- * with its Prisma section replaced by the measurement that decides the
+ * with its Prisma section replaced by the measurement that decided the
  * revival: WIRE-LEVEL EVICTION COST. The parked tribunal's blocking
  * finding was "LRU adds a serialized DEALLOCATE round-trip per miss —
  * under thrash that is pure overhead". The modern duplex offers a
  * cheaper eviction: a protocol `Close(statement)` message piggybacked
  * onto the next EQP batch. Section D measures all the primitive costs
- * so the tradeoff can be computed instead of argued.
+ * so the tradeoff can be computed instead of argued. That evidence (plus
+ * the 2026-07-11 driver survey) shipped the gated LRU.
  *
  * Usage: pnpm bench:statement-cache
  */
@@ -68,8 +70,8 @@ const shapes = Array.from({ length: 50 }, (_, i) => ({
 }));
 const M = 500_000;
 for (const [label, gen] of [
-  ['frozen cap (shipped)', createStatementNameGenerator() as Gen],
-  ['LRU (delete+set)', createLruGenerator()],
+  ['gated LRU (shipped)', createStatementNameGenerator() as Gen],
+  ['pure LRU (delete+set)', createLruGenerator()],
   ['hash (sha1)', hashGen],
 ] as [string, Gen][]) {
   for (let i = 0; i < 20_000; i++) gen(shapes[i % shapes.length] as { sql: string });
@@ -103,6 +105,36 @@ const countLru = (seq: string[], cap: number) => {
       continue;
     }
     miss++;
+    if (names.size >= cap) {
+      names.delete(names.keys().next().value as string);
+      evictions++;
+    }
+    names.set(sql, miss);
+  }
+  return { missRate: miss / seq.length, evictions };
+};
+// The shipped policy: usage-gated admission (K sightings before naming,
+// counters in an LRU map capped at capacity) in front of an LRU name cache.
+const countGated = (seq: string[], cap: number, minUsages = 2) => {
+  const counts = new Map<string, number>();
+  const names = new Map<string, number>();
+  let miss = 0;
+  let evictions = 0;
+  for (const sql of seq) {
+    const v = names.get(sql);
+    if (v !== undefined) {
+      names.delete(sql);
+      names.set(sql, v);
+      continue;
+    }
+    miss++;
+    const count = (counts.get(sql) ?? 0) + 1;
+    counts.delete(sql);
+    if (count < minUsages) {
+      counts.set(sql, count);
+      if (counts.size > cap) counts.delete(counts.keys().next().value as string);
+      continue;
+    }
     if (names.size >= cap) {
       names.delete(names.keys().next().value as string);
       evictions++;
@@ -151,7 +183,7 @@ const thrash = (() => {
 
 console.log(`\n=== C. parse rate (lower is better), capacity ${CAP} ===`);
 console.log(
-  `${'pattern'.padEnd(28)}${'frozen cap'.padStart(14)}${'LRU'.padStart(10)}${'LRU evictions'.padStart(16)}`,
+  `${'pattern'.padEnd(28)}${'frozen cap'.padStart(14)}${'pure LRU'.padStart(10)}${'gated LRU'.padStart(11)}${'LRU/gated evict'.padStart(18)}`,
 );
 const patternRows: Array<[string, number, number, number]> = [];
 for (const [label, seq] of [
@@ -161,9 +193,10 @@ for (const [label, seq] of [
 ] as [string, string[]][]) {
   const f = countFrozen(seq, CAP);
   const l = countLru(seq, CAP);
+  const g = countGated(seq, CAP);
   patternRows.push([label, f, l.missRate, l.evictions / seq.length]);
   console.log(
-    `${label.padEnd(28)}${`${(f * 100).toFixed(1)}%`.padStart(14)}${`${(l.missRate * 100).toFixed(1)}%`.padStart(10)}${`${(l.evictions / seq.length) * 100 < 0.05 ? '~0' : ((l.evictions / seq.length) * 100).toFixed(1)}%`.padStart(15)}`,
+    `${label.padEnd(28)}${`${(f * 100).toFixed(1)}%`.padStart(14)}${`${(l.missRate * 100).toFixed(1)}%`.padStart(10)}${`${(g.missRate * 100).toFixed(1)}%`.padStart(11)}${`${l.evictions}/${g.evictions}`.padStart(18)}`,
   );
 }
 

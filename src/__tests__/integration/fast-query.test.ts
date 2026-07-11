@@ -259,7 +259,9 @@ describe('fast-query path parity', () => {
       });
       await bridge.snapshotDb();
 
-      // Warm the fast path's fields cache with the query under test.
+      // Warm the fast path's fields cache with the query under test — the
+      // second sighting passes the K=2 admission gate and runs named.
+      await expect(prisma.tenant.findMany()).resolves.toMatchObject([{ id: 'tenant-seeded' }]);
       await expect(prisma.tenant.findMany()).resolves.toMatchObject([{ id: 'tenant-seeded' }]);
 
       await prisma.tenant.create({
