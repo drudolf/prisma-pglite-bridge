@@ -226,48 +226,11 @@ export class PgBridgeClient extends pg.Client {
       return submit();
     }
 
-    // pg's query(config, values, callback) never reads the first argument as
-    // a callback — normalizeQueryConfig collapses the positional functions
-    // after it and a config-embedded `callback` into one callback slot, the
-    // last positional winning over `config.callback`. Mirror that, re-enter
-    // as a promise, and return `undefined` like stock pg does in callback
-    // mode.
-    const promiseArgs: unknown[] = [first];
-    let origCb: ((err: unknown, res: unknown) => void) | undefined;
-    for (let i = 1; i < args.length; i++) {
-      const arg = args[i];
-      if (typeof arg === 'function') {
-        origCb = arg as (err: unknown, res: unknown) => void;
-      } else {
-        promiseArgs.push(arg);
-      }
-    }
-    if (origCb === undefined && isObject(first) && typeof first.callback === 'function') {
-      origCb = first.callback as (err: unknown, res: unknown) => void;
-    }
-    if (origCb !== undefined) {
-      const cb = origCb;
-      if (isObject(first) && 'callback' in first) {
-        // Strip even a non-function `callback` — pg would overwrite it with
-        // the positional one, so it must not resurface on re-entry.
-        const { callback: _callback, ...rest } = first;
-        promiseArgs[0] = rest;
-      }
-
-      try {
-        // Known deviation: a callback that throws surfaces as an unhandled
-        // rejection here, where stock pg propagates it synchronously from
-        // the connection's message handler (uncaughtException channel).
-        // adapter-pg never uses callback mode.
-        this.query(...promiseArgs).then(
-          (res: unknown) => cb(null, res),
-          (err: unknown) => cb(err, undefined),
-        );
-      } catch (err) {
-        cb(err, undefined);
-      }
-      return undefined;
-    }
+    // pg's query(config, values, callback) collapses positional functions and
+    // a config-embedded `callback` into one slot (last positional wins).
+    // Handle every callback form, then return `undefined` like stock pg does
+    // in callback mode.
+    if (this.#dispatchCallbackForm(args, first)) return undefined;
 
     if (isObject(first) && isTypesLike(first.types)) {
       args[0] = {
@@ -302,10 +265,10 @@ export class PgBridgeClient extends pg.Client {
     // regex (not this guard) is the layer keeping empty text unnamed like
     // stock pg runs it.
     if (this.#stmtNameGen && isObject(args[0])) {
-      const c = args[0] as Record<string, unknown>;
-      if (typeof c.text === 'string' && c.name == null) {
-        const name = this.#stmtNameGen({ sql: c.text });
-        if (name !== undefined) args[0] = { ...c, name };
+      const queryConfig = args[0] as Record<string, unknown>;
+      if (typeof queryConfig.text === 'string' && queryConfig.name == null) {
+        const name = this.#stmtNameGen({ sql: queryConfig.text });
+        if (name !== undefined) args[0] = { ...queryConfig, name };
       }
     }
 
@@ -316,52 +279,99 @@ export class PgBridgeClient extends pg.Client {
     // The fast path rides the SAME submission chain as stock object-form
     // queries — a FastQuery must never jump ahead of a chained pending
     // stock query, or mixed-path call order would invert.
-    const inner = this.#fastSubmit(args) ?? submit;
-    const doSubmit = () => {
+    const submitFn = this.#fastSubmit(args) ?? submit;
+    const submitWithCloses = () => {
       // Drain evicted-name Closes as a prefix of this query's message
       // train — including an eviction this very call's promotion queued.
       if (this.#pendingCloses.length > 0) this.#flushPendingCloses();
-      return inner();
+      return submitFn();
     };
 
     const prior = this.querySubmissionChain;
-    let p: Promise<unknown>;
+    let rawQueryPromise: Promise<unknown>;
     if (prior === undefined) {
       try {
-        p = doSubmit();
+        rawQueryPromise = submitWithCloses();
       } catch (err) {
         return Promise.reject(err);
       }
     } else {
-      p = prior.then(doSubmit);
+      rawQueryPromise = prior.then(submitWithCloses);
     }
 
-    if (dealloc !== null) {
-      // After PGlite confirms the DEALLOCATE / DISCARD ALL, evict matching
-      // entries from pg's parsedStatements (the skip-Parse guard) and
-      // #fieldsCache on EVERY live client of this PGlite instance — the
-      // session-wide wipe invalidates names any of them may hold, not just
-      // the issuer's. Without this, a sibling would skip Parse for a name
-      // PGlite forgot and fail its next Bind with Postgres error 26000.
-      p = p.then((result: unknown) => {
-        const clients = liveClients.get(this.#pglite);
-        /* v8 ignore next — the issuer stays registered until 'end'; a dealloc resolving after teardown is unreachable through the pool */
-        if (clients !== undefined) {
-          for (const client of clients) client.#clearStatementCaches(dealloc);
-        }
-        return result;
-      });
-    }
+    // After PGlite confirms a DEALLOCATE / DISCARD ALL, evict matching entries
+    // from pg's parsedStatements (the skip-Parse guard) and #fieldsCache on
+    // EVERY live client of this PGlite instance — the session-wide wipe
+    // invalidates names any of them may hold, not just the issuer's. Without
+    // this, a sibling would skip Parse for a name PGlite forgot and fail its
+    // next Bind with Postgres error 26000.
+    const queryPromise =
+      dealloc === null
+        ? rawQueryPromise
+        : rawQueryPromise.then((result: unknown) => {
+            const clients = liveClients.get(this.#pglite);
+            /* v8 ignore next — the issuer stays registered until 'end'; a dealloc resolving after teardown is unreachable through the pool */
+            if (clients !== undefined) {
+              for (const client of clients) client.#clearStatementCaches(dealloc);
+            }
+            return result;
+          });
 
-    let done: Promise<void>;
-    const clearChain = () => {
-      if (this.querySubmissionChain === done) {
+    // Register this query's tail on the submission chain; each query clears
+    // only its own slot (identity check) so concurrent queries never stomp.
+    let chainTail: Promise<void>;
+    const releaseChainTail = () => {
+      if (this.querySubmissionChain === chainTail) {
         this.querySubmissionChain = undefined;
       }
     };
-    done = p.then(clearChain, clearChain);
-    this.querySubmissionChain = done;
-    return p;
+    chainTail = queryPromise.then(releaseChainTail, releaseChainTail);
+    this.querySubmissionChain = chainTail;
+    return queryPromise;
+  }
+
+  /** Handle the callback forms of `query()`: positional functions after the
+   *  first argument and a config-embedded `callback`, last positional winning
+   *  like pg's normalizeQueryConfig. Re-enters as a promise and invokes the
+   *  callback; returns `true` when it fired (the caller returns `undefined`
+   *  like stock pg in callback mode), `false` when there is no callback. */
+  #dispatchCallbackForm(args: unknown[], first: unknown): boolean {
+    const promiseArgs: unknown[] = [first];
+    let origCb: ((err: unknown, res: unknown) => void) | undefined;
+    for (let i = 1; i < args.length; i++) {
+      const arg = args[i];
+      if (typeof arg === 'function') {
+        origCb = arg as (err: unknown, res: unknown) => void;
+      } else {
+        promiseArgs.push(arg);
+      }
+    }
+    if (origCb === undefined && isObject(first) && typeof first.callback === 'function') {
+      origCb = first.callback as (err: unknown, res: unknown) => void;
+    }
+    if (origCb === undefined) return false;
+
+    const cb = origCb;
+    if (isObject(first) && 'callback' in first) {
+      // Strip even a non-function `callback` — pg would overwrite it with the
+      // positional one, so it must not resurface on re-entry.
+      const { callback: _callback, ...rest } = first;
+      promiseArgs[0] = rest;
+    }
+
+    try {
+      // Known deviation: a callback that throws surfaces as an unhandled
+      // rejection here, where stock pg propagates it synchronously from the
+      // connection's message handler (uncaughtException channel). adapter-pg
+      // never uses callback mode.
+      this.query(...promiseArgs).then(
+        (res: unknown) => cb(null, res),
+        (err: unknown) => cb(err, undefined),
+      );
+    } catch (err) {
+      cb(err, undefined);
+    }
+    return true;
   }
 
   /** Returns the eviction scope if args describe a DEALLOCATE or DISCARD ALL
