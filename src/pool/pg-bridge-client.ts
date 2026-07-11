@@ -6,7 +6,7 @@ import type { SessionLock } from '../utils/session-lock.ts';
 import { createStatementNameGenerator } from '../utils/statement-names.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 import { FastQuery, type FastQueryField, type FastQueryResult } from './fast-query.ts';
-import { getPgActiveQuery, type PgParsedStatements } from './pg-internals.ts';
+import { getPgActiveQuery } from './pg-internals.ts';
 import { liveClients } from './session-registry.ts';
 
 export interface PgBridgeClientOptions {
@@ -401,17 +401,12 @@ export class PgBridgeClient extends pg.Client {
    *  the caller's job (the dealloc intercept in query() iterates the
    *  liveClients registry). */
   #clearStatementCaches(scope: { all: true } | { name: string }): void {
-    const ps = (this as unknown as { connection?: { parsedStatements?: PgParsedStatements } })
-      .connection?.parsedStatements;
+    const ps = this.connection.parsedStatements;
     if ('all' in scope) {
-      /* v8 ignore next — ps exists on every pg Connection; guard covers pg internals drift */
-      if (ps) {
-        for (const key of Object.keys(ps)) delete ps[key];
-      }
+      for (const key of Object.keys(ps)) delete ps[key];
       this.#fieldsCache.clear();
     } else {
-      /* v8 ignore next — ps exists on every pg Connection; guard covers pg internals drift */
-      if (ps) delete ps[scope.name];
+      delete ps[scope.name];
       this.#fieldsCache.delete(scope.name);
     }
   }
@@ -430,14 +425,7 @@ export class PgBridgeClient extends pg.Client {
    *  (a chained straggler that re-Parses a just-closed name self-heals —
    *  same path as post-DEALLOCATE re-Parse). */
   #flushPendingCloses(): void {
-    const connection = (
-      this as unknown as {
-        connection: {
-          close(msg: { type: 'S'; name: string }): void;
-          parsedStatements: PgParsedStatements;
-        };
-      }
-    ).connection;
+    const connection = this.connection;
     for (const name of this.#pendingCloses.splice(0)) {
       connection.close({ type: 'S', name });
       delete connection.parsedStatements[name];

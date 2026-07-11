@@ -5,6 +5,7 @@ import { describe, expect, it, type MockInstance, vi } from 'vitest';
 import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
 import { setupPGlite } from '../__tests__/pglite.ts';
 import { PgBridgePool } from './index.ts';
+import { PgBridgeClient } from './pg-bridge-client.ts';
 
 const pglite = await setupPGlite();
 
@@ -131,14 +132,26 @@ describe('PgBridgePool — connect-time statement cleanup', () => {
     const pool = new PgBridgePool({ pglite });
     try {
       const query = vi.fn().mockRejectedValue(new Error('session gone'));
+      // The listeners narrow with `instanceof PgBridgeClient`, so a synthetic
+      // client must share the prototype. Object.create skips the real
+      // (duplex-building) constructor; members are defined as own properties
+      // that shadow the prototype (teardown is a getter, hence defineProperty
+      // rather than assignment).
+      const fakeClient = (members: Record<string, unknown>): PgBridgeClient => {
+        const client = Object.create(PgBridgeClient.prototype);
+        for (const [key, value] of Object.entries(members)) {
+          Object.defineProperty(client, key, { value, configurable: true });
+        }
+        return client;
+      };
       // Emit the pool's own 'connect' event with a client whose cleanup
       // query rejects — the listener must swallow it (a broken session
       // surfaces on real queries instead). The teardown stub feeds the
       // end() close barrier, mirroring the deregisterLiveClient stub below.
-      pool.emit('connect', {
-        query,
-        teardown: { settled: Promise.resolve(), abort: () => {} },
-      } as never);
+      pool.emit(
+        'connect',
+        fakeClient({ query, teardown: { settled: Promise.resolve(), abort: () => {} } }),
+      );
       await new Promise((resolve) => setImmediate(resolve));
       expect(query).toHaveBeenCalledWith('DEALLOCATE ALL');
       // Balance the liveClientCounts increment from the synthetic 'connect' above;
@@ -146,7 +159,7 @@ describe('PgBridgePool — connect-time statement cleanup', () => {
       // prevClientCount > 0 and skip DEALLOCATE ALL, breaking test isolation.
       // The 'remove' listener also runs the belt-and-suspenders live-client
       // registry deregistration (ADR 002) — stub it on the synthetic client.
-      pool.emit('remove', { deregisterLiveClient: () => {} } as never);
+      pool.emit('remove', fakeClient({ deregisterLiveClient: () => {} }));
     } finally {
       await pool.end();
     }

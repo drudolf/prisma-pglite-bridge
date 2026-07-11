@@ -1,5 +1,5 @@
 import type pg from 'pg';
-import { type FastQueryConnection, prepareValue } from './pg-internals.ts';
+import { prepareValue } from './pg-internals.ts';
 
 export type FastQueryField = { name: string; dataTypeID: number; format?: string };
 
@@ -101,11 +101,11 @@ export class FastQuery implements pg.Submittable {
    * parity. A synchronous serialization failure inside Bind settles the
    * promise directly and returns null instead (see the catch below).
    */
-  submit(pgConnection: pg.Connection): Error | null {
-    // pg hands us its real Connection; the extended-protocol methods and
-    // parsedStatements the fast path drives are internals absent from the
-    // public type, so view it through FastQueryConnection (the one seam cast).
-    const connection = pgConnection as unknown as FastQueryConnection;
+  submit(connection: pg.Connection): Error | null {
+    // The extended-protocol methods, parsedStatements, and sendCopyFail this
+    // path drives are declared onto pg.Connection by pg-internals' module
+    // augmentation (pg omits them), so no cast is needed here; the `pg seam
+    // contract` tests pin the runtime shape.
     const previous = connection.parsedStatements[this.name];
     if (previous !== undefined && previous !== this.text) {
       return new Error(
@@ -208,7 +208,7 @@ export class FastQuery implements pg.Submittable {
   }
 
   /** Stock parity: refuse COPY; the backend then errors the statement. */
-  handleCopyInResponse(connection: Pick<FastQueryConnection, 'sendCopyFail'>): void {
+  handleCopyInResponse(connection: Pick<pg.Connection, 'sendCopyFail'>): void {
     connection.sendCopyFail('No source stream defined');
   }
 

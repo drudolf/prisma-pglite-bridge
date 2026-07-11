@@ -278,12 +278,14 @@ export class PgBridgePool extends pg.Pool {
     // collide with the leftovers, which persist only until the session next
     // quiesces to zero live clients.
     this.on('connect', (client) => {
+      /* v8 ignore next — the pool sets Client: PgBridgeClient, so every client it emits is one; instanceof narrows soundly where pg's PoolClient type cannot */
+      if (!(client instanceof PgBridgeClient)) return;
       // Track the client's duplex teardown for end()'s close barrier:
       // pg-pool's end() resolves without waiting for client teardown
       // (pg-pool 3.14.0 _pulseQueue removes idle clients with no callback
       // and fires _endCallback synchronously), so end() must not close an
       // owned PGlite while destroy-path rollbacks may still be in flight.
-      const teardown = (client as unknown as PgBridgeClient).teardown;
+      const teardown = client.teardown;
       this.#pendingTeardowns.add(teardown);
       void teardown.settled.then(() => this.#pendingTeardowns.delete(teardown));
 
@@ -301,10 +303,12 @@ export class PgBridgePool extends pg.Pool {
     // client's own 'end' hook — pg-pool can destroy a client without a
     // graceful 'end' on exotic paths).
     this.on('remove', (client) => {
+      /* v8 ignore next — pool sets Client: PgBridgeClient; instanceof narrows where PoolClient can't */
+      if (!(client instanceof PgBridgeClient)) return;
       /* v8 ignore next — every client pg removes fired 'connect' first, which wrote the entry; ?? 1 is a defensive default */
       const count = liveClientCounts.get(resolvedPglite) ?? 1;
       liveClientCounts.set(resolvedPglite, Math.max(0, count - 1));
-      (client as unknown as PgBridgeClient).deregisterLiveClient();
+      client.deregisterLiveClient();
     });
 
     // Release-time session cleanup for two abandonment bugs the caller left
@@ -319,14 +323,16 @@ export class PgBridgePool extends pg.Pool {
     // Only on a plain release: `err != null` makes pg-pool `_remove` the
     // client, whose `_destroy` `rollbackIfInTransaction` already handles it.
     this.on('release', (err, client) => {
-      (client as unknown as PgBridgeClient).releaseAbandonedPortalHold();
+      /* v8 ignore next — pool sets Client: PgBridgeClient; instanceof narrows where PoolClient can't */
+      if (!(client instanceof PgBridgeClient)) return;
+      client.releaseAbandonedPortalHold();
       // Ordering (pinned to pg-pool 3.14.0 `_release`, index.js 384-429):
       // 'release' is emitted synchronously BEFORE the client joins `_idle`
       // and `_pulseQueue()` runs, so the ROLLBACK enters the client's
       // submission chain ahead of any next-checkout user query and its RFQ
       // `I` releases the session lock, waking queued waiters.
       if (err == null) {
-        (client as unknown as PgBridgeClient).rollbackAbandonedTransaction();
+        client.rollbackAbandonedTransaction();
       }
     });
   }
