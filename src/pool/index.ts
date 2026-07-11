@@ -15,6 +15,7 @@ import { pgliteNeedsProtocolCleanup } from '../utils/pglite-capabilities.ts';
 import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SessionLock } from '../utils/session-lock.ts';
 import { PgBridgeClient, type PgBridgeClientOptions } from './pg-bridge-client.ts';
+import { liveClientCounts, livePoolCounts } from './session-registry.ts';
 
 /** Bound on `end()`'s wait for client duplex teardowns before it closes an
  *  owned PGlite. Generous against a teardown's single ROLLBACK round trip;
@@ -152,16 +153,6 @@ export interface PgBridgePoolOptions
    */
   fastQueryPath?: boolean;
 }
-
-// Live pools per PGlite instance. Drives the PGliteBridgeSharedInstanceWarning.
-const livePoolCounts = new WeakMap<object, number>();
-
-// Total pg.Client instances across ALL pools per PGlite instance.
-// Incremented in 'connect', decremented in 'remove'. The connect-time
-// DEALLOCATE ALL guard checks this instead of per-pool totalCount so that
-// a new pool's first client never wipes a sibling pool's server-side named
-// statements mid-flight (would cause 26000 on the sibling's next Bind).
-const liveClientCounts = new WeakMap<object, number>();
 
 /**
  * A pg.Pool where every connection is an in-process PGlite bridge.
@@ -359,7 +350,7 @@ export class PgBridgePool extends pg.Pool {
     // PGliteBridge's constructor-failure path free the slot before it
     // rethrows (it cannot await).
     this.#releaseLiveSlot();
-    const cleanup = async (): Promise<void> => {
+    const drainAndClose = async (): Promise<void> => {
       // Teardown barrier: pg-pool's end() resolves without waiting for
       // client teardown, but each duplex teardown ends with an awaited
       // ROLLBACK against PGlite — closing the shared WASM instance
@@ -387,11 +378,11 @@ export class PgBridgePool extends pg.Pool {
     };
     if (callback) {
       super.end(() => {
-        cleanup().then(callback, callback);
+        drainAndClose().then(callback, callback);
       });
       return;
     }
-    return super.end().then(cleanup);
+    return super.end().then(drainAndClose);
   }
 
   #liveSlotReleased = false;

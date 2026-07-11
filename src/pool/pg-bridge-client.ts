@@ -7,6 +7,7 @@ import { createStatementNameGenerator } from '../utils/statement-names.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 import { FastQuery, type FastQueryField, type FastQueryResult } from './fast-query.ts';
 import { getPgActiveQuery, type PgParsedStatements } from './pg-internals.ts';
+import { liveClients } from './session-registry.ts';
 
 export interface PgBridgeClientOptions {
   pglite: PGlite | PGliteInterface;
@@ -45,16 +46,6 @@ type PgBridgeClientConfig = pg.ClientConfig & {
  *  in {@link PgBridgeClient.query} returns those to pg first. */
 const isSubmittable = (value: unknown): value is pg.Submittable =>
   typeof (value as { submit?: unknown }).submit === 'function';
-
-// Live clients per PGlite instance. PGlite is one shared session: a
-// DEALLOCATE / DISCARD ALL issued through ANY client wipes server-side
-// statements that every client's pg parse-skip cache may still reference.
-// The registry lets the dealloc intercept in query() evict from all live
-// clients, not just the issuer. Clients register at construction and
-// deregister on their own 'end' event plus a belt-and-suspenders hook in
-// PgBridgePool's 'remove' listener; a stale entry is harmless — evicting a
-// dead client's caches is a no-op.
-const liveClients = new WeakMap<object, Set<PgBridgeClient>>();
 
 export class PgBridgeClient extends pg.Client {
   private querySubmissionChain?: Promise<void>;
