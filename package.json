@@ -98,6 +98,7 @@
     "bench:pg-server": "tsx benchmark/pg-server.ts",
     "bench:orm": "tsx benchmark/orm/run.ts",
     "bench:compat": "tsx benchmark/compat/run.ts",
+    "bench:statement-cache": "tsx benchmark/statement-cache.ts",
     "build:schema-engine": "tsx scripts/build-schema-engine.ts",
     "prepublishOnly": "pnpm test:unit && pnpm test:gc && pnpm build && pnpm check:exports",
     "prepare": "husky && prisma generate"
