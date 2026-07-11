@@ -580,4 +580,28 @@ describe('pg seam contract', () => {
       expect(typeof stream[method], `connection.stream.${method}`).toBe('function');
     }
   });
+
+  it('pg.Client exposes the active-query accessor rollbackAbandonedTransaction reads', () => {
+    // PgBridgeClient.#pgActiveQuery() reads _getActiveQuery() (pg 8.22
+    // lib/client.js), falling back to the _activeQuery field on older 8.x
+    // minors, to skip an undeliverable ROLLBACK on a wedged mid-flight client
+    // (rollbackAbandonedTransaction). A correctness seam: if a pg upgrade
+    // drops both, that guard silently degrades to a no-op — this is the alarm.
+    const client = new pg.Client({ host: 'localhost' });
+    const internals = client as unknown as { _getActiveQuery?: unknown };
+    expect(
+      typeof internals._getActiveQuery === 'function' || '_activeQuery' in client,
+      '_getActiveQuery() or the _activeQuery field',
+    ).toBe(true);
+  });
+
+  it('an unconnected pg.Client exposes the statement-Close seam', () => {
+    // PgBridgeClient.#flushPendingCloses() frees an evicted server-side
+    // prepared statement with connection.close({ type: 'S', name }). Drift
+    // here throws loudly from the submission point rather than degrading
+    // silently, but it is still an untracked pg-internals read — pin it.
+    const client = new pg.Client({ host: 'localhost' });
+    const connection = client.connection as unknown as Record<string, unknown>;
+    expect(typeof connection.close, 'connection.close').toBe('function');
+  });
 });
