@@ -1,4 +1,4 @@
-import pgUtils from 'pg/lib/utils.js';
+import { type FastQueryConnection, prepareValue } from './pg-internals.ts';
 
 export type FastQueryField = { name: string; dataTypeID: number; format?: string };
 
@@ -13,29 +13,6 @@ export type FastQueryResult = {
 type Parser = (raw: string) => unknown;
 
 export type FastQueryTypes = { getTypeParser: (oid: number, format?: string) => Parser };
-
-/** pg's internal per-connection map of named prepared statements. `pg` uses
- *  it to skip Parse on repeat named-statement calls; the `pg seam contract`
- *  test in fast-query.test.ts is the drift tripwire for both this class and
- *  `PgBridgeClient`'s DEALLOCATE eviction. */
-export type PgParsedStatements = Record<string, string | undefined>;
-
-type FastQueryConnection = {
-  stream: { cork?: () => void; uncork?: () => void };
-  parsedStatements: PgParsedStatements;
-  parse: (query: { text: string; name: string; types: number[] }) => void;
-  bind: (config: {
-    portal: string;
-    statement: string;
-    values: unknown[];
-    binary: boolean;
-    valueMapper: (value: unknown) => unknown;
-  }) => void;
-  describe: (msg: { type: string; name: string }) => void;
-  execute: (config: { portal: string; rows: number }) => void;
-  sync: () => void;
-  sendCopyFail: (msg: string) => void;
-};
 
 // Mirrors pg's Result command-tag regex: COMMAND [oid] [rows].
 const COMMAND_TAG = /^([A-Za-z]+)(?: (\d+))?(?: (\d+))?/;
@@ -143,7 +120,7 @@ export class FastQuery {
           statement: this.name,
           values: this.values,
           binary: false,
-          valueMapper: pgUtils.prepareValue,
+          valueMapper: prepareValue,
         });
       } catch (err) {
         // prepareValue maps user-supplied values synchronously and throws on

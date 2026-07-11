@@ -5,12 +5,8 @@ import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import type { SessionLock } from '../utils/session-lock.ts';
 import { createStatementNameGenerator } from '../utils/statement-names.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
-import {
-  FastQuery,
-  type FastQueryField,
-  type FastQueryResult,
-  type PgParsedStatements,
-} from './fast-query.ts';
+import { FastQuery, type FastQueryField, type FastQueryResult } from './fast-query.ts';
+import { getPgActiveQuery, type PgParsedStatements } from './pg-internals.ts';
 
 export interface PgBridgeClientOptions {
   pglite: PGlite | PGliteInterface;
@@ -164,7 +160,7 @@ export class PgBridgeClient extends pg.Client {
     // ReadyForQuery reports `I` (probe-verified; plan, second amendment),
     // and their dangling implicit transaction is closed by
     // releaseAbandonedPortalHold's recovery Sync.
-    if (this.#pgActiveQuery() != null) return;
+    if (getPgActiveQuery(this) != null) return;
     if (!this.#duplexBox.current?.inTransaction) return;
     process.emitWarning(
       'A pool client was released with an open transaction; attempting ROLLBACK. ' +
@@ -181,24 +177,6 @@ export class PgBridgeClient extends pg.Client {
       /* v8 ignore next — defensive arms: pg rejects with Error instances, and the duplex outlives its client */
       this.#duplexBox.current?.destroy(err instanceof Error ? err : new Error(String(err)));
     });
-  }
-
-  /** pg's in-flight query via the non-deprecated internal accessor: the
-   *  public `activeQuery` getter emits a deprecation warning on every read
-   *  (removed in pg@9). `_getActiveQuery()` is what that getter delegates
-   *  to (pg 8.22.0 lib/client.js); the `_activeQuery` field read covers
-   *  older 8.x minors that predate the helper. Isolated here so a pg
-   *  upgrade breaks in exactly one place — same pg-internals precedent as
-   *  the parsedStatements reads elsewhere in this file. */
-  #pgActiveQuery(): unknown {
-    const internals = this as unknown as {
-      _getActiveQuery?: () => unknown;
-      _activeQuery?: unknown;
-    };
-    /* v8 ignore next 3 — the field-read arm is for pre-_getActiveQuery pg 8.x minors */
-    return typeof internals._getActiveQuery === 'function'
-      ? internals._getActiveQuery()
-      : internals._activeQuery;
   }
 
   /** Duplex-teardown handle for `PgBridgePool.end()`'s close barrier:
