@@ -16,6 +16,16 @@ import { PgBridgePool } from './index.ts';
 
 type ProtocolCall = { method: string; arg: unknown };
 
+// The mock plays pg's Connection (so it satisfies FastQuery.submit's typed
+// param) plus the recording instrumentation the assertions read.
+type MockConnection = pg.Connection & {
+  calls: ProtocolCall[];
+  methods: () => string[];
+  argOf: (method: string) => unknown;
+  // Not on pg's public Connection type; handleCopyInResponse reads it.
+  sendCopyFail: (msg: string) => void;
+};
+
 // Plain-object connection recording protocol calls in order. `stream` has
 // no cork/uncork by default — submit's `?.()` must tolerate their absence;
 // `withCork: true` installs recording spies for the cork-ordering test.
@@ -54,7 +64,7 @@ const createMockConnection = ({
     execute: record('execute'),
     sync: record('sync'),
     sendCopyFail: record('sendCopyFail'),
-  };
+  } as unknown as MockConnection;
 };
 
 type Parser = (raw: string) => unknown;

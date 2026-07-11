@@ -1,3 +1,4 @@
+import type pg from 'pg';
 import { type FastQueryConnection, prepareValue } from './pg-internals.ts';
 
 export type FastQueryField = { name: string; dataTypeID: number; format?: string };
@@ -41,7 +42,7 @@ const COMMAND_TAG = /^([A-Za-z]+)(?: (\d+))?(?: (\d+))?/;
  *
  * @internal
  */
-export class FastQuery {
+export class FastQuery implements pg.Submittable {
   readonly name: string;
   readonly text: string;
   readonly promise: Promise<FastQueryResult>;
@@ -100,7 +101,11 @@ export class FastQuery {
    * parity. A synchronous serialization failure inside Bind settles the
    * promise directly and returns null instead (see the catch below).
    */
-  submit(connection: FastQueryConnection): Error | null {
+  submit(pgConnection: pg.Connection): Error | null {
+    // pg hands us its real Connection; the extended-protocol methods and
+    // parsedStatements the fast path drives are internals absent from the
+    // public type, so view it through FastQueryConnection (the one seam cast).
+    const connection = pgConnection as unknown as FastQueryConnection;
     const previous = connection.parsedStatements[this.name];
     if (previous !== undefined && previous !== this.text) {
       return new Error(

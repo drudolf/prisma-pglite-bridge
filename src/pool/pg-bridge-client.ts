@@ -478,7 +478,7 @@ export class PgBridgeClient extends pg.Client {
 
     const fastQuery = new FastQuery({ name, text, values, types }, this.#fieldsCache);
     return () => {
-      super.query(fastQuery as unknown as pg.Submittable);
+      super.query(fastQuery as pg.Submittable);
       return fastQuery.promise;
     };
   }
