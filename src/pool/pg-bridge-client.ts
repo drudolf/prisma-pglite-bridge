@@ -144,6 +144,80 @@ export class PgBridgeClient extends pg.Client {
     this.#duplexBox.current?.releaseAbandonedPortalHold();
   }
 
+  /** Roll back a transaction left open when this client plain-releases (no
+   *  COMMIT/ROLLBACK) — invoked by `PgBridgePool`'s `'release'` listener. On a
+   *  shared PGlite session an abandoned transaction would otherwise keep the
+   *  SessionLock owned (wedging every other pool client) and leak into the
+   *  recycled client's next checkout, so it is rolled back here. A no-op
+   *  unless the duplex reports an open transaction. */
+  rollbackAbandonedTransaction(): void {
+    // A client released mid-operation (an abandoned in-flight query or
+    // cursor Submittable) is wedged: pg's active query will never complete,
+    // so a chained ROLLBACK could never reach the wire — it would only sit
+    // queued until teardown and then arm a destroy-time race against a
+    // closing PGlite (the dead-WASM event-loop spin). That includes a real
+    // abandoned transaction with an operation still in flight (awaited
+    // BEGIN, unawaited query, release): skip silently — the destroy-time
+    // rollbackIfInTransaction goes through pglite.query directly, bypassing
+    // pg's queue, and remains the backstop. Abandoned-cursor releases never
+    // reach the status check below anyway: the forced mid-portal
+    // ReadyForQuery reports `I` (probe-verified; plan, second amendment),
+    // and their dangling implicit transaction is closed by
+    // releaseAbandonedPortalHold's recovery Sync.
+    if (this.#pgActiveQuery() != null) return;
+    if (!this.#duplexBox.current?.inTransaction) return;
+    process.emitWarning(
+      'A pool client was released with an open transaction; attempting ROLLBACK. ' +
+        'Commit or roll back before release().',
+      { type: 'PGliteBridgeAbandonedTransactionWarning' },
+    );
+    void (this.query('ROLLBACK') as Promise<unknown>).catch((err: unknown) => {
+      // The ROLLBACK failing means the connection itself is broken — a plain
+      // swallow would park a dirty client in pg-pool's idle set with the
+      // session lock possibly still held. Destroy the duplex instead: its
+      // _destroy path (rollbackIfInTransaction + lock cancel) is the
+      // authoritative backstop, and pg-pool's idle 'error' listener removes
+      // the dead client from the pool.
+      /* v8 ignore next — defensive arms: pg rejects with Error instances, and the duplex outlives its client */
+      this.#duplexBox.current?.destroy(err instanceof Error ? err : new Error(String(err)));
+    });
+  }
+
+  /** pg's in-flight query via the non-deprecated internal accessor: the
+   *  public `activeQuery` getter emits a deprecation warning on every read
+   *  (removed in pg@9). `_getActiveQuery()` is what that getter delegates
+   *  to (pg 8.22.0 lib/client.js); the `_activeQuery` field read covers
+   *  older 8.x minors that predate the helper. Isolated here so a pg
+   *  upgrade breaks in exactly one place — same pg-internals precedent as
+   *  the parsedStatements reads elsewhere in this file. */
+  #pgActiveQuery(): unknown {
+    const internals = this as unknown as {
+      _getActiveQuery?: () => unknown;
+      _activeQuery?: unknown;
+    };
+    /* v8 ignore next 3 — the field-read arm is for pre-_getActiveQuery pg 8.x minors */
+    return typeof internals._getActiveQuery === 'function'
+      ? internals._getActiveQuery()
+      : internals._activeQuery;
+  }
+
+  /** Duplex-teardown handle for `PgBridgePool.end()`'s close barrier:
+   *  `settled` resolves once the duplex has fully torn down — after the
+   *  awaited `_destroy`/`_final` rollback, so no PGlite call from this
+   *  client can still be in flight — and `abort` force-destroys a
+   *  straggling duplex when the barrier's drain bound expires. Settled
+   *  immediately when the stream factory never ran (client never
+   *  connected). */
+  get teardown(): { settled: Promise<void>; abort: (reason: Error) => void } {
+    const duplex = this.#duplexBox.current;
+    return {
+      /* v8 ignore next — the pool reads this on 'connect', where the factory has always run */
+      settled: duplex?.onClose ?? Promise.resolve(),
+      /* v8 ignore next — invoked only from end()'s defensive drain-bound expiry */
+      abort: (reason) => duplex?.destroy(reason),
+    };
+  }
+
   /**
    * Dispatch order: null/undefined and Submittable arguments go straight to
    * stock pg; the callback forms — positional or config-embedded, last

@@ -16,6 +16,11 @@ import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.
 import { SessionLock } from '../utils/session-lock.ts';
 import { PgBridgeClient, type PgBridgeClientOptions } from './pg-bridge-client.ts';
 
+/** Bound on `end()`'s wait for client duplex teardowns before it closes an
+ *  owned PGlite. Generous against a teardown's single ROLLBACK round trip;
+ *  a bounded residual close race beats an `end()` that can hang forever. */
+const TEARDOWN_DRAIN_MS = 10_000;
+
 export interface PgBridgePoolOptions
   extends Omit<
     PgBridgeClientOptions,
@@ -65,6 +70,16 @@ export interface PgBridgePoolOptions
    * in memory. Leave this at `1` unless your code specifically needs to check
    * out multiple `pg` clients or you are deliberately exercising wait-queue
    * behaviour in a test.
+   *
+   * A client queued behind another client's open transaction or suspended
+   * portal waits **unboundedly** — the {@link timeout} option bounds per-
+   * operation PGlite readiness, not the session-lock queue wait.
+   *
+   * At `max: 1` a client released with an unconsumed pg-cursor stays
+   * permanently wedged pg-side (its in-flight query never completes — same
+   * as real Postgres, no session lock involved); close cursors before
+   * releasing. At `max > 1` the pool recovers the shared session for the
+   * OTHER clients, but the abandoning client itself is equally wedged.
    */
   max?: number;
 
@@ -197,6 +212,15 @@ export class PgBridgePool extends pg.Pool {
 
   readonly #ownsPglite: boolean;
 
+  /** Unsettled duplex-teardown handles of this pool's clients — `end()`'s
+   *  close barrier. Entries self-prune on settle; tracking the handle (not
+   *  the client) means a client pg-pool removes inside `end()`'s microtask
+   *  gap cannot escape the barrier. */
+  readonly #pendingTeardowns = new Set<{
+    settled: Promise<void>;
+    abort: (reason: Error) => void;
+  }>();
+
   constructor({
     bridgeId = Symbol('bridge'),
     max = 1,
@@ -263,6 +287,15 @@ export class PgBridgePool extends pg.Pool {
     // collide with the leftovers, which persist only until the session next
     // quiesces to zero live clients.
     this.on('connect', (client) => {
+      // Track the client's duplex teardown for end()'s close barrier:
+      // pg-pool's end() resolves without waiting for client teardown
+      // (pg-pool 3.14.0 _pulseQueue removes idle clients with no callback
+      // and fires _endCallback synchronously), so end() must not close an
+      // owned PGlite while destroy-path rollbacks may still be in flight.
+      const teardown = (client as unknown as PgBridgeClient).teardown;
+      this.#pendingTeardowns.add(teardown);
+      void teardown.settled.then(() => this.#pendingTeardowns.delete(teardown));
+
       const prevClientCount = liveClientCounts.get(resolvedPglite) ?? 0;
       liveClientCounts.set(resolvedPglite, prevClientCount + 1);
       if (prevClientCount > 0) return;
@@ -283,20 +316,38 @@ export class PgBridgePool extends pg.Pool {
       (client as unknown as PgBridgeClient).deregisterLiveClient();
     });
 
-    // A client released with a suspended portal still open (an unclosed
-    // pg-cursor) will never produce the terminating Sync that frees its
-    // portal-suspension hold on the session lock — other clients would
-    // block forever. The abandoned portal is dead either way; drop the
-    // hold at release time.
-    this.on('release', (_err, client) => {
+    // Release-time session cleanup for two abandonment bugs the caller left
+    // behind. (1) A client released with a suspended portal still open (an
+    // unclosed pg-cursor) will never produce the terminating Sync that frees
+    // its portal-suspension hold on the session lock — other clients would
+    // block forever, and the backend keeps the dangling implicit transaction
+    // that would otherwise frame the next sibling's ReadyForQuery as `T`.
+    // Manufacture the Sync, then drop the hold. (2) A client released mid-transaction (no
+    // COMMIT/ROLLBACK) keeps the session lock owned and leaks the open
+    // transaction into the recycled client's next checkout — roll it back.
+    // Only on a plain release: `err != null` makes pg-pool `_remove` the
+    // client, whose `_destroy` `rollbackIfInTransaction` already handles it.
+    this.on('release', (err, client) => {
       (client as unknown as PgBridgeClient).releaseAbandonedPortalHold();
+      // Ordering (pinned to pg-pool 3.14.0 `_release`, index.js 384-429):
+      // 'release' is emitted synchronously BEFORE the client joins `_idle`
+      // and `_pulseQueue()` runs, so the ROLLBACK enters the client's
+      // submission chain ahead of any next-checkout user query and its RFQ
+      // `I` releases the session lock, waking queued waiters.
+      if (err == null) {
+        (client as unknown as PgBridgeClient).rollbackAbandonedTransaction();
+      }
     });
   }
 
   /**
-   * Drain the pool and close all connections. When the pool created its own
-   * PGlite (no `pglite` option at construction), also closes that instance.
-   * When the caller supplied a `pglite`, it is left open.
+   * Drain the pool and close all connections. Resolves only after every
+   * client's duplex has finished tearing down (bounded by an internal
+   * ~10s drain limit), so no destroy-path ROLLBACK can still be in flight
+   * against PGlite — for caller-owned instances too, making `end()` a
+   * deterministic barrier before `pglite.close()`. When the pool created
+   * its own PGlite (no `pglite` option at construction), also closes that
+   * instance; when the caller supplied a `pglite`, it is left open.
    */
   override end(): Promise<void>;
   override end(callback: () => void): void;
@@ -309,6 +360,27 @@ export class PgBridgePool extends pg.Pool {
     // rethrows (it cannot await).
     this.#releaseLiveSlot();
     const cleanup = async (): Promise<void> => {
+      // Teardown barrier: pg-pool's end() resolves without waiting for
+      // client teardown, but each duplex teardown ends with an awaited
+      // ROLLBACK against PGlite — closing the shared WASM instance
+      // mid-call kills it and spins the event loop (the dead-WASM
+      // defect). Wait for every tracked teardown, bounded so a wedged
+      // one cannot hang end() forever.
+      const drained = await Promise.race([
+        Promise.all([...this.#pendingTeardowns].map((t) => t.settled)).then(() => true),
+        new Promise<boolean>((resolve) => {
+          /* v8 ignore next — fires only when a teardown outlives the drain bound */
+          setTimeout(() => resolve(false), TEARDOWN_DRAIN_MS).unref();
+        }),
+      ]);
+      /* v8 ignore start — defensive drain-bound expiry: every reachable teardown settles (its rollback serializes through runExclusive) */
+      if (!drained) {
+        const reason = new Error(
+          'PgBridgePool.end(): a duplex teardown did not settle within the drain bound',
+        );
+        for (const teardown of this.#pendingTeardowns) teardown.abort(reason);
+      }
+      /* v8 ignore stop */
       if (this.#ownsPglite && !this.pglite.closed) {
         await this.pglite.close();
       }

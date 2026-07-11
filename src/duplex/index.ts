@@ -921,23 +921,45 @@ export class PGliteDuplex extends Duplex {
   }
 
   /**
-   * Drop a portal-suspension hold this duplex still has on the session.
+   * Recover the session from a portal-suspension hold this duplex still has
+   * at release time.
    *
    * Called by `PgBridgePool` when a client is released back to the pool: a
    * released client whose last query left a suspended portal open (an
-   * unclosed pg-cursor) will never produce the terminating Sync that
-   * releases the hold, and every other pool client would block forever. The
-   * abandoned portal is dead either way. A real transaction (last RFQ
-   * status T/E) keeps ownership — releasing a client mid-transaction is a
-   * pre-existing shared-session hazard covered by teardown rollback.
+   * unclosed pg-cursor) will never produce the terminating Sync — so the
+   * backend keeps the dead portal AND its open implicit transaction, and
+   * the hold would block every other pool client forever. Manufacture that
+   * Sync here (serialized behind any in-flight exec via runExclusive), then
+   * release the hold: the backend discards the portal and closes the
+   * implicit transaction, so the next client starts on a genuinely idle
+   * session. Without the Sync, a sibling's first ReadyForQuery reports the
+   * inherited `T` and its clean release fires a misattributed
+   * abandoned-transaction warning (probe-verified; plan, second amendment).
+   * Committing a partially executed writing portal via Sync is stock
+   * parity: with real Postgres + pg-pool, the next user's Sync on the
+   * recycled connection commits the same partial effects.
+   *
+   * A real transaction (last RFQ status T/E) keeps ownership — releasing a
+   * client mid-transaction is `rollbackAbandonedTransaction`'s job.
+   *
+   * The lock release rides a `finally` so waiters are unblocked on every
+   * path; a failed recovery Sync destroys the duplex (recoverySync's own
+   * contract), whose lock `cancel` supersedes the then-no-op release.
    */
   releaseAbandonedPortalHold(): void {
+    const lock = this.sessionLock;
     if (
-      this.sessionLock?.isOwner(this.duplexId) === true &&
+      lock?.isOwner(this.duplexId) === true &&
       this.lastSeenRfqStatus !== RFQ_STATUS_IN_TRANSACTION &&
       this.lastSeenRfqStatus !== RFQ_STATUS_FAILED
     ) {
-      this.sessionLock.release(this.duplexId);
+      void this.runUnderRunExclusive(() => this.recoverySync())
+        .finally(() => {
+          lock.release(this.duplexId);
+        })
+        /* v8 ignore start — reachable only when waitPGliteReady rejects before the exclusive turn */
+        .catch(() => {});
+      /* v8 ignore stop */
     }
   }
 
@@ -967,6 +989,23 @@ export class PGliteDuplex extends Duplex {
 
   private acquireSession(): Promise<void> | undefined {
     return this.sessionLock?.acquire(this.duplexId);
+  }
+
+  /**
+   * Whether the duplex's last observed ReadyForQuery status indicates an open
+   * transaction — `true` for `T` (in a transaction block) or `E` (failed
+   * transaction block), `false` for `I` (idle) or before any RFQ has arrived.
+   *
+   * A read-only view over the private `lastSeenRfqStatus`; adds no state. It
+   * exists for the pool's release-time abandoned-transaction handling
+   * (`PgBridgeClient.rollbackAbandonedTransaction`), which must decide at
+   * plain release whether an unclosed transaction is still open.
+   */
+  get inTransaction(): boolean {
+    return (
+      this.lastSeenRfqStatus === RFQ_STATUS_IN_TRANSACTION ||
+      this.lastSeenRfqStatus === RFQ_STATUS_FAILED
+    );
   }
 
   /**

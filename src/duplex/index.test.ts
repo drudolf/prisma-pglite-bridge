@@ -1612,6 +1612,68 @@ describe('PGliteDuplex malformed frontend message lengths', () => {
   });
 });
 
+// Red-phase TDD spec for the `inTransaction` accessor (design:
+// .claude/plans/rollback-abandoned-tx-on-release.md, §1). A read-only view
+// over the duplex's private `lastSeenRfqStatus`: true when the last RFQ
+// status is 'T' (in transaction) or 'E' (failed transaction block), false for
+// 'I' (idle) or before any RFQ. Authored red-phase (TDD), before the
+// accessor landed. The duplex is reached via a capturing stream factory
+// (the same box pattern PgBridgeClient uses internally) so the getter can
+// be read directly.
+describe('PGliteDuplex inTransaction accessor', () => {
+  const withCapturedDuplex = async (
+    run: (client: pg.Client, duplex: PGliteDuplex) => Promise<void>,
+  ): Promise<void> => {
+    const box: { current?: PGliteDuplex } = {};
+    const client = new pg.Client({
+      user: 'postgres',
+      database: 'postgres',
+      stream: () => {
+        const duplex = new PGliteDuplex(pglite);
+        box.current = duplex;
+        return duplex;
+      },
+    });
+    await client.connect();
+    // biome-ignore lint/style/noNonNullAssertion: the stream factory ran during connect
+    const duplex = box.current!;
+    try {
+      await run(client, duplex);
+    } finally {
+      await client.end();
+    }
+  };
+
+  it('is false before any query, true in T, true in E, and false again after ROLLBACK', async () => {
+    await withCapturedDuplex(async (client, duplex) => {
+      // Before any RFQ has been observed by a real query — no transaction.
+      // (connect() itself completes a startup RFQ with status 'I'.)
+      expect(duplex.inTransaction).toBe(false);
+
+      await client.query('BEGIN');
+      // Status 'T' — in a transaction block.
+      expect(duplex.inTransaction).toBe(true);
+
+      // A failing statement inside the transaction moves the session to 'E'.
+      await expect(client.query('SELECT nope_column')).rejects.toThrow();
+      expect(duplex.inTransaction).toBe(true);
+
+      await client.query('ROLLBACK');
+      // Status 'I' — transaction closed.
+      expect(duplex.inTransaction).toBe(false);
+    });
+  });
+
+  it('is false after a committed transaction', async () => {
+    await withCapturedDuplex(async (client, duplex) => {
+      await client.query('BEGIN');
+      expect(duplex.inTransaction).toBe(true);
+      await client.query('COMMIT');
+      expect(duplex.inTransaction).toBe(false);
+    });
+  });
+});
+
 describe('PGliteDuplex COPY FROM STDIN capture (raw frames)', () => {
   // Frontend message type bytes for the copy conversation.
   const QUERY = 0x51; // 'Q'
