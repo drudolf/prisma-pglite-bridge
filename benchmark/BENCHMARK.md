@@ -540,6 +540,7 @@ committed transaction visible) runs before any timing.
 pnpm bench:orm                            # all ORMs, N=300 warmup=30
 pnpm bench:orm --orm drizzle -n 300 -w 30
 pnpm bench:orm -r 3                       # whole-run repeats, p50 spread reported
+pnpm bench:orm --json > orm.json          # machine-readable JSON (progress on stderr)
 ```
 
 The workload is fixed in `orm/run.ts` — single insert, findMany,

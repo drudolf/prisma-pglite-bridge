@@ -12,6 +12,7 @@
  *   pnpm bench:orm                          # all ORMs, N=300 w=30
  *   pnpm bench:orm --orm drizzle -n 300 -w 30
  *   pnpm bench:orm -r 3                     # whole-run repeats; p50 spread reported
+ *   pnpm bench:orm --json > orm.json        # machine-readable; progress on stderr
  */
 import { PGlite } from '@electric-sql/pglite';
 import { PgBridgePool } from '../../src/pool';
@@ -44,6 +45,13 @@ const ormFilter = getArg('orm');
 const N = Number(getArg('n', 'n') ?? '300');
 const WARMUP = Number(getArg('warmup', 'w') ?? '30');
 const REPEAT = Number(getArg('repeat', 'r') ?? '1');
+const jsonOutput = argv.includes('--json');
+
+// In --json mode progress goes to stderr so stdout stays a clean JSON stream.
+const note = (s: string): void => {
+  (jsonOutput ? process.stderr : process.stdout).write(s);
+};
+const noteLine = (s = ''): void => note(`${s}\n`);
 
 // ─── Timing ───────────────────────────────────────────────────────────────────
 
@@ -71,7 +79,7 @@ const col = (s: string, w: number) => s.padEnd(w);
  *  afterwards — run before any timing so a wrong-answer path never gets
  *  benchmarked. */
 const checkCorrectness = async (native: OrmOps, wire: OrmOps): Promise<void> => {
-  process.stdout.write('  correctness...');
+  note('  correctness...');
 
   const email = 'ccheck@bench.com';
   await native.insertUser('CCheck', email);
@@ -92,7 +100,7 @@ const checkCorrectness = async (native: OrmOps, wire: OrmOps): Promise<void> => 
     throw new Error(`tx commit mismatch: native=${nTx.length} wire=${wTx.length} (want 1 each)`);
   }
 
-  process.stdout.write(' PASS\n');
+  note(' PASS\n');
 };
 
 // ─── Bench runner ─────────────────────────────────────────────────────────────
@@ -116,14 +124,14 @@ const runBench = async (ops: OrmOps, label: string): Promise<Record<string, numb
     await ops.insertPost(seedId, 'Seed post 2');
   }
 
-  process.stdout.write(`  [${label}] warmup ${WARMUP}...`);
+  note(`  [${label}] warmup ${WARMUP}...`);
   for (let i = 0; i < WARMUP; i++) {
     await ops.insertUser(`w${i}`, `w${i}@warm.com`);
     await ops.usersLimit(10);
   }
-  process.stdout.write(' done\n');
+  note(' done\n');
 
-  process.stdout.write(`  [${label}] N=${N}...`);
+  note(`  [${label}] N=${N}...`);
   for (let i = 0; i < N; i++) {
     results['single insert']?.push(await time(() => ops.insertUser(`U${i}`, `u${i}@run.com`)));
     results.findMany?.push(await time(() => ops.usersAll()));
@@ -131,20 +139,56 @@ const runBench = async (ops: OrmOps, label: string): Promise<Record<string, numb
     results.join?.push(await time(() => ops.postsJoinUsers()));
     results['tx (r+w)']?.push(await time(() => ops.txReadWrite(SEED_EMAIL, `P${i}`)));
   }
-  process.stdout.write(' done\n');
+  note(' done\n');
 
   return results;
 };
 
-// ─── Report ───────────────────────────────────────────────────────────────────
+// ─── Aggregate + report ─────────────────────────────────────────────────────────
 
-const report = (nRuns: Record<string, number[]>[], wRuns: Record<string, number[]>[]): void => {
-  const multi = nRuns.length > 1;
+interface Stat {
+  median: number;
+  min: number;
+  max: number;
+}
+interface OpAgg {
+  op: string;
+  native: { p50: Stat; p99: number };
+  wire: { p50: Stat; p99: number };
+  overhead: number;
+}
+
+/** Collapse per-repeat raw timings into per-operation native/wire stats: p50 as
+ *  median [min–max spread] across repeats, p99 as the median of per-repeat p99s.
+ *  The returned shape is what both the text table and `--json` emit. */
+const aggregate = (
+  nRuns: Record<string, number[]>[],
+  wRuns: Record<string, number[]>[],
+): OpAgg[] => {
+  const stat = (xs: number[]): Stat => ({
+    median: median(xs),
+    min: Math.min(...xs),
+    max: Math.max(...xs),
+  });
+  return Object.keys(nRuns[0] ?? {}).map((op) => {
+    const nP50s = nRuns.map((r) => pct(r[op] ?? [], 50));
+    const wP50s = wRuns.map((r) => pct(r[op] ?? [], 50));
+    return {
+      op,
+      native: { p50: stat(nP50s), p99: median(nRuns.map((r) => pct(r[op] ?? [], 99))) },
+      wire: { p50: stat(wP50s), p99: median(wRuns.map((r) => pct(r[op] ?? [], 99))) },
+      overhead: median(wP50s) / median(nP50s),
+    };
+  });
+};
+
+const report = (agg: OpAgg[], nReps: number): void => {
+  const multi = nReps > 1;
   const p50w = multi ? 26 : 12;
   const LINE = '─'.repeat(multi ? 102 : 74);
   console.log(`\n${LINE}`);
   console.log(
-    `Results (ms, lower is better${multi ? `; p50 median [spread] of ${nRuns.length} repeats, p99 median` : ''})\n`,
+    `Results (ms, lower is better${multi ? `; p50 median [spread] of ${nReps} repeats, p99 median` : ''})\n`,
   );
   console.log(
     col('Operation', 16) +
@@ -156,24 +200,17 @@ const report = (nRuns: Record<string, number[]>[], wRuns: Record<string, number[
   );
   console.log(LINE);
 
-  const cell = (p50s: number[]): string => {
-    const med = fmt(median(p50s));
-    if (!multi) return med;
-    return `${med} [${fmt(Math.min(...p50s))}–${fmt(Math.max(...p50s))}]`;
-  };
+  const cell = (s: Stat): string =>
+    multi ? `${fmt(s.median)} [${fmt(s.min)}–${fmt(s.max)}]` : fmt(s.median);
 
-  for (const op of Object.keys(nRuns[0] ?? {})) {
-    const nP50s = nRuns.map((r) => pct(r[op] ?? [], 50));
-    const wP50s = wRuns.map((r) => pct(r[op] ?? [], 50));
-    const nP99 = median(nRuns.map((r) => pct(r[op] ?? [], 99)));
-    const wP99 = median(wRuns.map((r) => pct(r[op] ?? [], 99)));
+  for (const o of agg) {
     console.log(
-      col(op, 16) +
-        col(cell(nP50s), p50w) +
-        col(cell(wP50s), p50w) +
-        col(fmt(nP99), 12) +
-        col(fmt(wP99), 12) +
-        `${(median(wP50s) / median(nP50s)).toFixed(1)}×`,
+      col(o.op, 16) +
+        col(cell(o.native.p50), p50w) +
+        col(cell(o.wire.p50), p50w) +
+        col(fmt(o.native.p99), 12) +
+        col(fmt(o.wire.p99), 12) +
+        `${o.overhead.toFixed(1)}×`,
     );
   }
   console.log(LINE);
@@ -183,7 +220,8 @@ const report = (nRuns: Record<string, number[]>[], wRuns: Record<string, number[
 
 const main = async () => {
   const selected = ormFilter ? [ormFilter] : Object.keys(ORMS);
-  console.log(`\nORM wire-protocol benchmark — N=${N}, warmup=${WARMUP}\n`);
+  noteLine(`\nORM wire-protocol benchmark — N=${N}, warmup=${WARMUP}\n`);
+  const results: unknown[] = [];
 
   for (const name of selected) {
     const load = ORMS[name];
@@ -192,33 +230,33 @@ const main = async () => {
     }
     const def = await load();
 
-    console.log(`═══ ${def.name} ═══`);
+    noteLine(`═══ ${def.name} ═══`);
     const nRuns: Record<string, number[]>[] = [];
     const wRuns: Record<string, number[]>[] = [];
 
     // Whole-run repeats: fresh PGlite instances, pool, and ORM per repeat,
-    // aggregated in report() as p50 median [min–max spread].
+    // aggregated as p50 median [min–max spread].
     for (let rep = 1; rep <= REPEAT; rep++) {
-      if (REPEAT > 1) console.log(`— repeat ${rep}/${REPEAT} —`);
-      console.log(`Setup: native (${def.nativeLabel})...`);
+      if (REPEAT > 1) noteLine(`— repeat ${rep}/${REPEAT} —`);
+      noteLine(`Setup: native (${def.nativeLabel})...`);
       const nativePglite = new PGlite();
       await nativePglite.waitReady;
       await nativePglite.exec(DDL);
       const nativePath = await def.createNative(nativePglite);
 
-      console.log(`Setup: wire (${def.wireLabel})...`);
+      noteLine(`Setup: wire (${def.wireLabel})...`);
       const wirePglite = new PGlite();
       await wirePglite.waitReady;
       await wirePglite.exec(DDL);
       const pool = new PgBridgePool({ pglite: wirePglite });
       const wirePath = await def.createWire(pool);
 
-      console.log('Correctness:');
+      noteLine('Correctness:');
       await checkCorrectness(nativePath.ops, wirePath.ops);
 
-      console.log('\nNative path:');
+      noteLine('\nNative path:');
       nRuns.push(await runBench(nativePath.ops, 'native'));
-      console.log('\nWire path:');
+      noteLine('\nWire path:');
       wRuns.push(await runBench(wirePath.ops, 'wire'));
 
       await nativePath.end();
@@ -231,8 +269,23 @@ const main = async () => {
       if (!nativePglite.closed) await nativePglite.close();
     }
 
-    report(nRuns, wRuns);
+    const operations = aggregate(nRuns, wRuns);
+    if (jsonOutput) {
+      results.push({
+        orm: def.name,
+        nativeLabel: def.nativeLabel,
+        wireLabel: def.wireLabel,
+        n: N,
+        warmup: WARMUP,
+        repeats: REPEAT,
+        operations,
+      });
+    } else {
+      report(operations, nRuns.length);
+    }
   }
+
+  if (jsonOutput) console.log(JSON.stringify(results, null, 2));
 };
 
 main().catch((err) => {
