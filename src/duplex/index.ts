@@ -683,9 +683,11 @@ export class PGliteDuplex extends Duplex {
   private async flushPipeline(rfqMode: 'suppress' | 'flush-boundary'): Promise<void> {
     const messages = this.pipeline;
     let batch: Uint8Array;
-    if (messages.length === 1) {
-      // Non-empty by construction: the Sync/Flush trigger was just pushed.
-      batch = messages[0] as Uint8Array;
+    const first = messages[0];
+    if (messages.length === 1 && first !== undefined) {
+      // Length-1 pipeline: the Sync/Flush trigger was just pushed, so the
+      // single element is always present — return it without a fresh view.
+      batch = first;
     } else {
       batch = this.tryContiguousPipelineBatch(messages) ?? this.concatPipeline(messages);
     }

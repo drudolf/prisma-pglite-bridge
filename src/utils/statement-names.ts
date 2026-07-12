@@ -83,15 +83,19 @@ export const createStatementNameGenerator = (
     if (count < minUsages) {
       counts.set(query.sql, count);
       if (counts.size > capacity) {
-        counts.delete(counts.keys().next().value as string);
+        for (const oldest of counts.keys()) {
+          counts.delete(oldest);
+          break;
+        }
       }
       return undefined;
     }
     if (names.size >= capacity) {
-      const lruSql = names.keys().next().value as string;
-      const lruName = names.get(lruSql) as string;
-      names.delete(lruSql);
-      onEvict?.(lruName);
+      for (const [lruSql, lruName] of names) {
+        names.delete(lruSql);
+        onEvict?.(lruName);
+        break;
+      }
     }
     const name = `ppb_${namespace}_${seq}`;
     seq += 1;

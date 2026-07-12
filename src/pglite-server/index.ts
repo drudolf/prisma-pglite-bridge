@@ -175,7 +175,14 @@ export class PGliteServer {
         // Inside the TCP listen callback the server is bound to a port, so
         // address() is always AddressInfo — never the Unix-socket string or the
         // pre-listen null that Node's union return type also allows.
-        const { address, family, port } = this.#server.address() as net.AddressInfo;
+        const addr = this.#server.address();
+        /* c8 ignore next 3 — unreachable inside the bound TCP listen callback */
+        if (typeof addr !== 'object' || addr === null) {
+          throw new Error(
+            `PGliteServer: expected TCP AddressInfo after listen(), got ${JSON.stringify(addr)}`,
+          );
+        }
+        const { address, family, port } = addr;
 
         this.#options.port = port; // re-assign used port
 

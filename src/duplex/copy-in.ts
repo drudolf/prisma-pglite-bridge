@@ -31,8 +31,10 @@ const stripQuotedAndComments = (text: string): string => {
   let i = 0;
   const n = text.length;
   while (i < n) {
-    const ch = text[i] as string;
-    const next = i + 1 < n ? (text[i + 1] as string) : '';
+    // charAt returns '' past the end (never undefined), matching the scanner's
+    // "no next char" sentinel without an unchecked index read.
+    const ch = text.charAt(i);
+    const next = text.charAt(i + 1);
 
     if (ch === '-' && next === '-') {
       while (i < n && text[i] !== '\n') i++;
