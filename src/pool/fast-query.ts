@@ -45,7 +45,11 @@ const COMMAND_TAG = /^([A-Za-z]+)(?: (\d+))?(?: (\d+))?/;
 export class FastQuery implements pg.Submittable {
   readonly name: string;
   readonly text: string;
-  readonly promise: Promise<FastQueryResult>;
+  // `deferred` holds the resolve/reject the settle path calls; `promise` is the
+  // public handle (`PgBridgeClient` awaits it). Keep the two adjacent — promise's
+  // initializer reads `this.deferred`, so deferred must be declared first.
+  private readonly deferred = Promise.withResolvers<FastQueryResult>();
+  readonly promise: Promise<FastQueryResult> = this.deferred.promise;
 
   private readonly values: unknown[];
   private readonly types: FastQueryTypes;
@@ -60,8 +64,6 @@ export class FastQuery implements pg.Submittable {
   private fieldsReceived = false;
   private bufferedError: Error | undefined;
   private settled = false;
-  private resolvePromise!: (result: FastQueryResult) => void;
-  private rejectPromise!: (error: Error) => void;
 
   /**
    * @param config  Already-validated fast-path arguments — `PgBridgeClient`
@@ -79,10 +81,6 @@ export class FastQuery implements pg.Submittable {
     this.values = config.values ?? [];
     this.types = config.types;
     this.fieldsCache = fieldsCache;
-    this.promise = new Promise((resolve, reject) => {
-      this.resolvePromise = resolve;
-      this.rejectPromise = reject;
-    });
   }
 
   /** Resolve one parser per column through the CURRENT call's `types`. */
@@ -242,10 +240,10 @@ export class FastQuery implements pg.Submittable {
     this.settled = true;
     if (error) {
       this.rows = [];
-      this.rejectPromise(error);
+      this.deferred.reject(error);
       return;
     }
-    this.resolvePromise({
+    this.deferred.resolve({
       rows: this.rows,
       fields: this.fields,
       rowCount: this.rowCount,
