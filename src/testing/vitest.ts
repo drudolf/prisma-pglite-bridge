@@ -97,6 +97,20 @@ export interface BridgeTestFixtures<TClient> {
   prisma: TClient;
 }
 
+/** The bridge fixture stores the client in a `WeakMap` before its own `use`
+ *  resolves, so the entry is present when the dependent `prisma` fixture runs.
+ *  The map value is `TClient | undefined`; narrow it with a guard rather than
+ *  asserting — the throw is unreachable but keeps the read honest. */
+const takeClient = <TClient>(
+  clients: WeakMap<PGliteBridge, TClient>,
+  bridge: PGliteBridge,
+): TClient => {
+  const client = clients.get(bridge);
+  /* c8 ignore next */
+  if (client === undefined) throw new Error('bridge fixture did not populate the client');
+  return client;
+};
+
 /**
  * `'file'` / `'worker'` scope: one shared bridge, restored to the seeded
  * snapshot before each test that takes `prisma`.
@@ -132,7 +146,7 @@ const createSharedBridgeTest = <TClient>(
       // have mutated state, so the reset is needed even for the first test.
       await bridge.resetDb();
       // The bridge fixture always populates the map before `use` resolves.
-      await use(clients.get(bridge) as TClient);
+      await use(takeClient(clients, bridge));
     },
   });
 };
@@ -150,6 +164,10 @@ const createTestScopedBridgeTest = <TClient>(
 
   // `template` is an internal per-file fixture (the dumped template); the
   // returned type hides it so only `bridge`/`prisma` are the public surface.
+  // `TestAPI` is invariant in its context type, so narrowing the wider fixtures
+  // API down to the public one cannot be expressed by assignment — the
+  // `as unknown as` below is the minimal honest encoding, and the public shape
+  // it asserts is pinned by a type test in vitest.test.ts.
   return baseTest.extend<BridgeTestFixtures<TClient> & { template: Blob | File }>({
     template: [
       // biome-ignore lint/correctness/noEmptyPattern: vitest parses the destructure to compute fixture dependencies — `{}` declares "none".
@@ -178,7 +196,7 @@ const createTestScopedBridgeTest = <TClient>(
       use: (value: TClient) => Promise<void>,
     ) => {
       // Freshly loaded from the template — already at seeded state, no reset.
-      await use(clients.get(bridge) as TClient);
+      await use(takeClient(clients, bridge));
     },
   }) as unknown as TestAPI<BridgeTestFixtures<TClient>>;
 };

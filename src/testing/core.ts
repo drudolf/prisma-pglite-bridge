@@ -86,8 +86,14 @@ export const createBridgeContext = async <TClient>(
     if (options.migrations !== undefined) {
       await pushMigrations(bridge.pglite, options.migrations === true ? {} : options.migrations);
     } else {
-      // The exactly-one validation before this call guarantees `schema` is set.
-      await pushSchema(bridge.adapter, options.schema as PushSchemaOptions);
+      const { schema } = options;
+      // assertExactlyOneSchemaSource ran before this call, so exactly one source
+      // is set — in this branch that means `schema`. The guard narrows it to
+      // PushSchemaOptions without a cast; the throw is unreachable.
+      /* c8 ignore next 2 */
+      if (schema === undefined)
+        throw new TypeError('createBridgeContext requires migrations or schema');
+      await pushSchema(bridge.adapter, schema);
     }
 
     prisma = options.client(bridge.adapter);

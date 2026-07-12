@@ -11,6 +11,9 @@ const CACHEABLE_SQL = /^\s*(?:select|insert|update|delete|with|merge|values)\b/i
 const NAMESPACE_SEQ: unique symbol = Symbol.for('prisma-pglite-bridge.stmt-namespace-seq');
 
 const nextNamespace = (): number => {
+  // Irreducible cast: `globalThis` cannot be augmented with a `unique symbol`
+  // index (TS7053), so reading this symbol-keyed slot off it is an honest view
+  // of a real runtime shape the type system can't express — not a suppression.
   const holder = globalThis as { [NAMESPACE_SEQ]?: number };
   const id = holder[NAMESPACE_SEQ] ?? 0;
   holder[NAMESPACE_SEQ] = id + 1;
