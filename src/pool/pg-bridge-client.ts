@@ -199,22 +199,22 @@ export class PgBridgeClient extends pg.Client {
   // biome-ignore lint/suspicious/noExplicitAny: satisfy pg.Client.query's overload union
   override query(...args: unknown[]): any {
     const first = args[0];
-    const submit = () => {
-      // Collapse pg.Client.query's 7-overload union for a spread call; only
-      // the chain path treats the result as a promise, which stock pg
-      // guarantees for the shapes that reach it.
-      return (super.query as unknown as (...a: unknown[]) => Promise<unknown>).apply(this, args);
-    };
+    // Forward the config/text (and the rejected null/undefined) shapes to stock
+    // pg. TypeScript cannot spread `args: unknown[]` across pg.query's overload
+    // set, so a single-signature view is unavoidable — but every shape routed
+    // here returns a promise or throws before returning, so the view is honest.
+    const submitStock = (): Promise<unknown> =>
+      (super.query as (...a: unknown[]) => Promise<unknown>).apply(this, args);
 
     // Preserve pg's synchronous TypeError for null/undefined query.
-    if (first === null || first === undefined) return submit();
+    if (first === null || first === undefined) return submitStock();
 
     // Submittable: terminal signaling isn't uniform across the pg contract.
-    // Let pg's internal queue handle it unserialized. adapter-pg never uses
-    // this form; users mixing Submittable + Promise forms on one client may
-    // still trip the pg queue deprecation.
+    // Let pg's internal queue handle it unserialized (overload 1 — no cast).
+    // adapter-pg never uses this form; users mixing Submittable + Promise forms
+    // on one client may still trip the pg queue deprecation.
     if (isSubmittable(first)) {
-      return submit();
+      return super.query(first);
     }
 
     // pg's query(config, values, callback) collapses positional functions and
@@ -270,7 +270,7 @@ export class PgBridgeClient extends pg.Client {
     // The fast path rides the SAME submission chain as stock object-form
     // queries — a FastQuery must never jump ahead of a chained pending
     // stock query, or mixed-path call order would invert.
-    const submitFn = this.#fastSubmit(args) ?? submit;
+    const submitFn = this.#fastSubmit(args) ?? submitStock;
     const submitWithCloses = () => {
       // Drain evicted-name Closes as a prefix of this query's message
       // train — including an eviction this very call's promotion queued.
@@ -466,7 +466,7 @@ export class PgBridgeClient extends pg.Client {
 
     const fastQuery = new FastQuery({ name, text, values, types }, this.#fieldsCache);
     return () => {
-      super.query(fastQuery as pg.Submittable);
+      super.query(fastQuery);
       return fastQuery.promise;
     };
   }
