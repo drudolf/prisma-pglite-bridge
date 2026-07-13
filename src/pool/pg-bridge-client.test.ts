@@ -45,6 +45,18 @@ const endPoolAndBarrier = async (close: () => Promise<void>): Promise<void> => {
   await pglite.query('SELECT 1').catch(() => {});
 };
 
+// Bounded blocked-promise detection (same shape as the abandoned-transaction
+// suite): resolves to the settled value if `p` settles first, else the
+// sentinel `'pending'` after `ms`. The loser timer is unref'd so it never
+// keeps the event loop alive after `p` wins.
+const settledOrPending = <T>(p: Promise<T>, ms: number): Promise<T | 'pending'> =>
+  Promise.race([
+    p,
+    new Promise<'pending'>((resolve) => {
+      setTimeout(() => resolve('pending'), ms).unref();
+    }),
+  ]);
+
 // Return the shared session to a clean slate between tests. The pool.end()
 // (and barrier) in each test's finally block drain any in-flight teardown
 // ROLLBACKs first. ROLLBACK here is a defensive no-op (swallowed) that
@@ -468,63 +480,185 @@ describe('PgBridgeClient', () => {
     }
   });
 
-  it('routes a synchronous admission throw from a deferred Submittable to its handleError', async () => {
-    // pg's own ended/errored-client failures arrive via nextTick handleError
-    // and never throw out of super.query — the deferred-admission catch
-    // exists for the path that DOES throw synchronously (e.g. a Submittable
-    // whose submit() throws when pg pulses it). Same prototype-stub seam as
-    // the callback-form test above: a real wedged submittable would crash
-    // pg's own teardown delivery (pg requires handleError at runtime), so
-    // the throw is staged at the super.query boundary instead. Thrown as a
-    // non-Error on purpose, pinning the normalization arm too.
-    const origQuery = pg.Client.prototype.query;
-    const client = new PgBridgeClient({
-      [PgBridgeClient.OptionsKey]: {
-        pglite,
-        sessionLock: new SessionLock(),
-        bridgeId: Symbol('bridge'),
-        syncToFs: false,
-      },
+  it('destroys the client when a deferred Submittable submit() throws, delivering one normalized Error to handleError', async () => {
+    // FIX 2, real pg state (no prototype stubs): a deferred Submittable whose
+    // submit() throws synchronously at the hand-off (a contract violation)
+    // used to leave pg internally wedged — the active-query slot stayed
+    // occupied and every successor hung forever. The bridge now destroys the
+    // client's connection with the thrown error, normalized to an Error.
+    // pg's connection-error path must then deliver that error EXACTLY ONCE
+    // to the Submittable via handleError(err, connection), reject the queued
+    // successor, and leave the client evictable so a fresh checkout works.
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    const { pool, close } = await createBridgePool(pglite);
+    // pg-pool re-raises client errors observed while idle as pool 'error'
+    // events; an unlistened emit would crash the worker. Captured, not pinned.
+    const poolErrors: unknown[] = [];
+    pool.on('error', (err) => {
+      poolErrors.push(err);
     });
     try {
-      let admissionThrow: unknown = 'submit boom';
-      const gates: Array<() => void> = [];
-      pg.Client.prototype.query = vi.fn((first: unknown) => {
-        if (typeof (first as { submit?: unknown } | undefined)?.submit === 'function') {
-          throw admissionThrow;
-        }
-        return new Promise<void>((resolve) => {
-          gates.push(resolve);
+      const client = await pool.connect();
+      let released = false;
+      try {
+        // Stock pg re-emits the destroy error on the client itself
+        // (_handleErrorEvent), and a checked-out pool client has no
+        // pool-attached 'error' listener — capture it so the re-emit cannot
+        // crash the worker. handleError is the pinned delivery channel.
+        const clientErrors: unknown[] = [];
+        client.on('error', (err) => {
+          clientErrors.push(err);
         });
-      }) as unknown as typeof pg.Client.prototype.query;
 
-      // Round 1 — non-Error throw is normalized. The gated opener keeps the
-      // submission chain busy, so the Submittable's admission is deferred
-      // onto the chain hop.
-      const opener = client.query('SELECT 1') as Promise<unknown>;
-      const handleError = vi.fn();
-      const evil = { submit: (): void => {}, handleError };
-      expect(client.query(evil)).toBe(evil);
+        // Busy chain at call time: the opener forces the Submittable's
+        // hand-off to pg onto the deferred chain hop.
+        void client.query('SELECT pg_sleep(0.05)').catch(() => {});
+        const handleError = vi.fn();
+        const evil = {
+          // Thrown as a non-Error on purpose — pins the normalization arm.
+          submit: (): void => {
+            throw 'submit boom';
+          },
+          handleError,
+        };
+        expect(client.query(evil)).toBe(evil);
+        // Queued successor: must REJECT once the client is destroyed — a
+        // wedged pg would leave it hanging forever.
+        const succ = client.query('SELECT 1 AS ok');
+        succ.catch(() => {});
 
-      gates[0]?.();
-      await opener;
-      await vi.waitFor(() => expect(handleError).toHaveBeenCalledTimes(1));
-      const [err] = handleError.mock.calls[0] as [unknown];
-      expect(err).toBeInstanceOf(Error);
-      expect((err as Error).message).toBe('submit boom');
+        const outcome = await settledOrPending(
+          succ.then(
+            () => 'resolved' as const,
+            () => 'rejected' as const,
+          ),
+          5_000,
+        );
+        expect(outcome).toBe('rejected');
 
-      // Round 2 — an Error instance passes through by identity.
-      const boom = new Error('submit boom 2');
-      admissionThrow = boom;
-      const opener2 = client.query('SELECT 1') as Promise<unknown>;
-      expect(client.query(evil)).toBe(evil);
+        // Delivery is async (nextTick via pg's _errorAllQueries).
+        await vi.waitFor(() => expect(handleError).toHaveBeenCalledTimes(1));
+        const [err] = handleError.mock.calls[0] ?? [];
+        expect(err).toBeInstanceOf(Error);
+        expect((err as Error).message).toBe('submit boom');
 
-      gates[1]?.();
-      await opener2;
-      await vi.waitFor(() => expect(handleError).toHaveBeenCalledTimes(2));
-      expect(handleError.mock.calls[1]?.[0]).toBe(boom);
+        // The destroyed connection left the client non-queryable, so a plain
+        // release EVICTS instead of recycling (pg-pool _release:
+        // `!client._queryable` → _remove, synchronous on totalCount).
+        client.release();
+        released = true;
+        expect(pool.totalCount).toBe(0);
+
+        // Pool recovers: a fresh client on the same session works. Bounded —
+        // a leaked SessionLock would hang the fresh query, not fail it.
+        const fresh = await settledOrPending(pool.connect(), 5_000);
+        expect(fresh).not.toBe('pending');
+        if (fresh !== 'pending') {
+          try {
+            const r = await settledOrPending(fresh.query<{ ok: number }>('SELECT 1 AS ok'), 5_000);
+            expect(r).not.toBe('pending');
+            if (r !== 'pending') expect(r.rows[0]?.ok).toBe(1);
+          } finally {
+            fresh.release();
+          }
+        }
+
+        // Still exactly once after the recovery round-trip — no duplicate
+        // delivery — and nothing surfaced as an unhandled rejection.
+        expect(handleError).toHaveBeenCalledTimes(1);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(rejections).toEqual([]);
+      } finally {
+        if (!released) client.release();
+      }
     } finally {
-      pg.Client.prototype.query = origQuery;
+      process.removeListener('unhandledRejection', onRejection);
+      // Bounded teardown: a red run leaves pg's active-query slot occupied —
+      // end() must not hang the worker; the barrier drains teardown work.
+      await settledOrPending(close(), 10_000).catch(() => {});
+      await pglite.query('SELECT 1').catch(() => {});
+    }
+  });
+
+  it('passes an Error-instance submit() throw to handleError by identity and recovers the pool', async () => {
+    // Identity arm of the same destroy path: an Error thrown by the deferred
+    // submit() must reach handleError unwrapped (toBe identity, no
+    // re-normalization), with the same successor-reject + evict +
+    // fresh-client recovery contract as the non-Error arm above.
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    const { pool, close } = await createBridgePool(pglite);
+    const poolErrors: unknown[] = [];
+    pool.on('error', (err) => {
+      poolErrors.push(err);
+    });
+    try {
+      const client = await pool.connect();
+      let released = false;
+      try {
+        const clientErrors: unknown[] = [];
+        client.on('error', (err) => {
+          clientErrors.push(err);
+        });
+
+        void client.query('SELECT pg_sleep(0.05)').catch(() => {});
+        const boom = new Error('submit boom 2');
+        const handleError = vi.fn();
+        const evil = {
+          submit: (): void => {
+            throw boom;
+          },
+          handleError,
+        };
+        expect(client.query(evil)).toBe(evil);
+        const succ = client.query('SELECT 1 AS ok');
+        succ.catch(() => {});
+
+        const outcome = await settledOrPending(
+          succ.then(
+            () => 'resolved' as const,
+            () => 'rejected' as const,
+          ),
+          5_000,
+        );
+        expect(outcome).toBe('rejected');
+
+        await vi.waitFor(() => expect(handleError).toHaveBeenCalledTimes(1));
+        expect(handleError.mock.calls[0]?.[0]).toBe(boom);
+
+        client.release();
+        released = true;
+        expect(pool.totalCount).toBe(0);
+
+        const fresh = await settledOrPending(pool.connect(), 5_000);
+        expect(fresh).not.toBe('pending');
+        if (fresh !== 'pending') {
+          try {
+            const r = await settledOrPending(fresh.query<{ ok: number }>('SELECT 1 AS ok'), 5_000);
+            expect(r).not.toBe('pending');
+            if (r !== 'pending') expect(r.rows[0]?.ok).toBe(1);
+          } finally {
+            fresh.release();
+          }
+        }
+
+        expect(handleError).toHaveBeenCalledTimes(1);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(rejections).toEqual([]);
+      } finally {
+        if (!released) client.release();
+      }
+    } finally {
+      process.removeListener('unhandledRejection', onRejection);
+      await settledOrPending(close(), 10_000).catch(() => {});
+      await pglite.query('SELECT 1').catch(() => {});
     }
   });
 
@@ -568,50 +702,6 @@ describe('PgBridgeClient', () => {
       await expect(successor).resolves.toBeUndefined();
     } finally {
       pg.Client.prototype.query = origQuery;
-    }
-  });
-
-  it('contains a deferred-admission throw when the Submittable has no handleError', async () => {
-    // Without a handleError there is nowhere to deliver the failure — the
-    // catch must still contain it (no unhandledRejection from the chain hop).
-    const rejections: unknown[] = [];
-    const onRejection = (reason: unknown): void => {
-      rejections.push(reason);
-    };
-    process.on('unhandledRejection', onRejection);
-    const origQuery = pg.Client.prototype.query;
-    const client = new PgBridgeClient({
-      [PgBridgeClient.OptionsKey]: {
-        pglite,
-        sessionLock: new SessionLock(),
-        bridgeId: Symbol('bridge'),
-        syncToFs: false,
-      },
-    });
-    try {
-      let releaseOpener: (() => void) | undefined;
-      const openerGate = new Promise<void>((resolve) => {
-        releaseOpener = resolve;
-      });
-      pg.Client.prototype.query = vi.fn((first: unknown) => {
-        if (typeof (first as { submit?: unknown } | undefined)?.submit === 'function') {
-          throw new Error('submit boom');
-        }
-        return openerGate;
-      }) as unknown as typeof pg.Client.prototype.query;
-
-      const opener = client.query('SELECT 1') as Promise<unknown>;
-      const evil = { submit: (): void => {} };
-      expect(client.query(evil)).toBe(evil);
-
-      releaseOpener?.();
-      await opener;
-      // Let the deferred admission hop run and any rejection surface.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(rejections).toEqual([]);
-    } finally {
-      pg.Client.prototype.query = origQuery;
-      process.removeListener('unhandledRejection', onRejection);
     }
   });
 

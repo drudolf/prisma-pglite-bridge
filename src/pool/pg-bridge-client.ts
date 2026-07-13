@@ -43,12 +43,8 @@ type PgBridgeClientConfig = pg.ClientConfig & {
 
 /** Mirrors stock pg's Submittable probe (`typeof config.submit === 'function'`,
  *  which boxes primitives). Callers pre-exclude null/undefined — the dispatch
- *  in {@link PgBridgeClient.query} returns those to pg first. The narrowed
- *  type carries the optional `handleError` pg itself uses for error delivery
- *  to Submittables, so deferred admission can route failures the same way. */
-const isSubmittable = (
-  value: unknown,
-): value is pg.Submittable & { handleError?: (err: Error, connection: pg.Connection) => void } =>
+ *  in {@link PgBridgeClient.query} returns those to pg first. */
+const isSubmittable = (value: unknown): value is pg.Submittable =>
   typeof (value as { submit?: unknown }).submit === 'function';
 
 export class PgBridgeClient extends pg.Client {
@@ -294,15 +290,20 @@ export class PgBridgeClient extends pg.Client {
           try {
             super.query(first);
           } catch (err) {
-            // pg delivers ended/errored-client failures through the
-            // Submittable's own handleError (never a throw to the caller);
-            // route a synchronous admission throw — e.g. a user submit()
-            // that throws once pulsed — the same way instead of leaking it
-            // as an unhandled rejection from this chain hop.
-            first.handleError?.(
-              err instanceof Error ? err : new Error(String(err)),
-              this.connection,
-            );
+            // A submit() that throws mid-pulse violates pg's Submittable
+            // contract and leaves the client wedged: pg has already set its
+            // active-query slot and cleared readyForQuery, nothing is on
+            // the wire to unwedge it, and every successor queues forever.
+            // Stock pg at least throws synchronously to query()'s caller;
+            // this deferred hop has no caller, so a silent wedge would be
+            // strictly worse (probe-verified against pg 8.22). Destroy the
+            // duplex: pg's connection-error path errors the active query
+            // (this Submittable) and everything queued behind it — exactly
+            // once each, through handleError, pg's canonical delivery — and
+            // pg-pool evicts the dead client. (A Submittable WITHOUT
+            // handleError crashes in that delivery — pg's own runtime
+            // contract, identical to stock pg erroring such an object.)
+            this.#duplexBox.current?.destroy(err instanceof Error ? err : new Error(String(err)));
           }
         });
       }
