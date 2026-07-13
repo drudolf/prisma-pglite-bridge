@@ -4,6 +4,7 @@ import { PGliteDuplex } from '../duplex';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import type { SessionLock } from '../utils/session-lock.ts';
 import { createStatementNameGenerator } from '../utils/statement-names.ts';
+import { decodeStatementCacheInvalidation, type StatementCacheInvalidation } from './deallocate.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 import { FastQuery, type FastQueryField, type FastQueryResult } from './fast-query.ts';
 import { getPgActiveQuery } from './pg-internals.ts';
@@ -461,8 +462,10 @@ export class PgBridgeClient extends pg.Client {
   /** Returns the eviction scope if args describe a DEALLOCATE or DISCARD ALL
    *  statement, `null` otherwise. Handles both string form
    *  (`query('DEALLOCATE ALL')`) and object form
-   *  (`query({ text: 'DEALLOCATE ALL' })`). */
-  #detectDeallocate(args: unknown[]): { all: true } | { name: string } | null {
+   *  (`query({ text: 'DEALLOCATE ALL' })`); the lexical contract — supported
+   *  identifier forms, ASCII-only folding, fail-closed exclusions — lives in
+   *  {@link decodeStatementCacheInvalidation}'s module. */
+  #detectDeallocate(args: unknown[]): StatementCacheInvalidation | null {
     const first = args[0];
     const text =
       typeof first === 'string'
@@ -471,25 +474,7 @@ export class PgBridgeClient extends pg.Client {
           ? ((first as Record<string, unknown>).text as string)
           : null;
     if (!text) return null;
-    // DISCARD ALL includes DEALLOCATE ALL semantics — the same session-wide
-    // statement wipe. (DISCARD PLANS/SEQUENCES/TEMP leave statements intact.)
-    if (/^\s*DISCARD\s+ALL\s*;?\s*$/i.test(text)) return { all: true };
-    // Quoted identifiers keep their exact spelling; unquoted ones are folded
-    // to lowercase, matching how PostgreSQL resolves the DEALLOCATE target —
-    // without the fold, `DEALLOCATE FOO` would deallocate `foo` server-side
-    // while the eviction missed pg's cache entry for it (26000 on next use).
-    // Unquoted identifiers admit `$` past the first character; [\w$]+ is a
-    // lenient superset, which is safe — the caller only evicts after the
-    // server CONFIRMED the DEALLOCATE, so a match on SQL the server rejects
-    // can never evict a live name. Known misses, each bounded to a skipped
-    // eviction (26000 on next use — the status quo for undetected shapes,
-    // never a false eviction): quoted identifiers with escaped inner quotes
-    // (`"a""b"`) and non-ASCII unquoted identifiers (\w is ASCII-only).
-    const m = /^\s*DEALLOCATE(?:\s+PREPARE)?\s+(?:(ALL)|"([^"]+)"|([\w$]+))\s*;?\s*$/i.exec(text);
-    if (!m) return null;
-    if (m[1] !== undefined) return { all: true };
-    if (m[2] !== undefined) return { name: m[2] };
-    return { name: (m[3] as string).toLowerCase() };
+    return decodeStatementCacheInvalidation(text);
   }
 
   /** Evict statement entries from pg's internal parsedStatements map and from
@@ -500,7 +485,7 @@ export class PgBridgeClient extends pg.Client {
    *  its own comment. Scope: this client only — session-wide propagation is
    *  the caller's job (the dealloc intercept in query() iterates the
    *  liveClients registry). */
-  #clearStatementCaches(scope: { all: true } | { name: string }): void {
+  #clearStatementCaches(scope: StatementCacheInvalidation): void {
     const ps = this.connection.parsedStatements;
     if ('all' in scope) {
       for (const key of Object.keys(ps)) delete ps[key];

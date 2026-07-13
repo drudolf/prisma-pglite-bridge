@@ -144,6 +144,7 @@ describe('PgBridgePool — fastQueryPath', () => {
 
   it('re-sends Parse after DEALLOCATE ALL and succeeds (guards parsedStatements coupling)', async () => {
     const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
     const pool = new PgBridgePool({ pglite });
     try {
       const client = await pool.connect();
@@ -159,12 +160,16 @@ describe('PgBridgePool — fastQueryPath', () => {
         // Invalidate PGlite's copy of all named statements.
         await client.query('DEALLOCATE ALL');
         parseSpy.mockClear();
+        describeSpy.mockClear();
 
         // Next execution must re-Parse. If #clearStatementCaches failed to
         // evict from pg's parsedStatements (e.g. due to a pg internal rename),
         // pg would skip Parse and PGlite would return error 26000.
         const result = await client.query(fastShapeQuery());
         expect(parseSpy).toHaveBeenCalledTimes(1);
+        // The fields cache must be evicted too — a leftover #fieldsCache
+        // entry would allow the Parse above but wrongly skip Describe.
+        expect(describeSpy).toHaveBeenCalledTimes(1);
         expect(result.rows).toEqual([[7]]);
       } finally {
         client.release();
@@ -593,6 +598,385 @@ describe('PgBridgePool — fastQueryPath', () => {
         expect(isStockResult(result)).toBe(true);
       } finally {
         await pool.end();
+      }
+    });
+  });
+});
+
+// Backend regressions for the bounded DEALLOCATE identifier decoder (plan:
+// .claude/plans/bounded-deallocate-identifier-decoder.md, tests 1–8; test 9's
+// session-wide Describe assertion lives in the DEALLOCATE ALL test above).
+// Every target rides the fast path so BOTH cache deletions stay observable:
+// evicting parsedStatements alone would re-Parse but skip Describe on a
+// leftover #fieldsCache entry — an invalidated name must show one fresh
+// Parse AND one fresh Describe, a warm neighbor zero of each. Neighbors are
+// asserted FIRST (ordering is load-bearing): a false eviction must surface
+// there before the target's re-Parse can mask it.
+describe('PgBridgePool — bounded DEALLOCATE decoder (backend regressions)', () => {
+  // Protocol-named fast-shape statement, adapter-pg style. The name is a
+  // PROTOCOL name — pg sends it byte-exact in Parse; only the SQL DEALLOCATE
+  // text is subject to identifier lexing/folding.
+  const namedShape = (name: string) => ({
+    name,
+    text: 'SELECT $1::int AS n',
+    values: [7],
+    rowMode: 'array' as const,
+    types: pg.types,
+  });
+
+  const withClient = async (run: (client: pg.PoolClient) => Promise<void>): Promise<void> => {
+    const pool = new PgBridgePool({ pglite });
+    try {
+      const client = await pool.connect();
+      try {
+        await run(client);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  };
+
+  it('DEALLOCATE "a""b" evicts exactly the escaped-quote name — neighbor stays warm, target re-Parses and re-Describes', async () => {
+    // Plan test 1: "" decodes to one literal quote, so the target protocol
+    // name is a"b. Pre-fix the detector misses the doubled quote entirely,
+    // the eviction is skipped, and the target's warm repeat Binds into a
+    // 26000.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    await withClient(async (client) => {
+      const target = namedShape('a"b');
+      const keep = namedShape('keep');
+      await client.query(target);
+      await client.query(keep);
+
+      await client.query('DEALLOCATE "a""b"');
+
+      // Neighbor FIRST: a false eviction would show up here as a fresh
+      // Parse/Describe before the target's recovery could mask it.
+      parseSpy.mockClear();
+      describeSpy.mockClear();
+      const warm = await client.query(keep);
+      expect(parseSpy).not.toHaveBeenCalled();
+      expect(describeSpy).not.toHaveBeenCalled();
+      expect(warm.rows).toEqual([[7]]);
+
+      // Target: one fresh Parse AND one fresh Describe — both the
+      // parsedStatements and #fieldsCache entries were evicted.
+      const revived = await client.query(target);
+      expect(parseSpy).toHaveBeenCalledTimes(1);
+      expect(describeSpy).toHaveBeenCalledTimes(1);
+      expect(revived.rows).toEqual([[7]]);
+    });
+  });
+
+  it('unquoted DEALLOCATE MÜNZE evicts only mÜnze — the distinct münze neighbor stays warm', async () => {
+    // Plan test 2 (Unicode collision tripwire): PGlite folds ASCII letters
+    // only, so MÜNZE names mÜnze. Pre-fix the non-ASCII identifier is not
+    // recognized at all (stale 26000 on mÜnze); a naive JS toLowerCase
+    // widening would instead evict the LIVE münze — the warm-first neighbor
+    // assertion catches exactly that false eviction.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    await withClient(async (client) => {
+      const target = namedShape('mÜnze');
+      const neighbor = namedShape('münze');
+      await client.query(target);
+      await client.query(neighbor);
+
+      await client.query('DEALLOCATE MÜNZE');
+
+      parseSpy.mockClear();
+      describeSpy.mockClear();
+      const warm = await client.query(neighbor);
+      expect(parseSpy).not.toHaveBeenCalled();
+      expect(describeSpy).not.toHaveBeenCalled();
+      expect(warm.rows).toEqual([[7]]);
+
+      const revived = await client.query(target);
+      expect(parseSpy).toHaveBeenCalledTimes(1);
+      expect(describeSpy).toHaveBeenCalledTimes(1);
+      expect(revived.rows).toEqual([[7]]);
+    });
+  });
+
+  it('unquoted DEALLOCATE MYSTMT evicts only mystmt — the protocol-exact MYSTMT neighbor stays warm', async () => {
+    // Plan test 3 (ASCII fold collision tripwire): SQL folds the unquoted
+    // identifier to mystmt, but protocol names are byte-exact — a future
+    // "helpful" case-insensitive local-key deletion would evict the live
+    // MYSTMT statement too.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    await withClient(async (client) => {
+      const target = namedShape('mystmt');
+      const neighbor = namedShape('MYSTMT');
+      await client.query(target);
+      await client.query(neighbor);
+
+      await client.query('DEALLOCATE MYSTMT');
+
+      parseSpy.mockClear();
+      describeSpy.mockClear();
+      const warm = await client.query(neighbor);
+      expect(parseSpy).not.toHaveBeenCalled();
+      expect(describeSpy).not.toHaveBeenCalled();
+      expect(warm.rows).toEqual([[7]]);
+
+      const revived = await client.query(target);
+      expect(parseSpy).toHaveBeenCalledTimes(1);
+      expect(describeSpy).toHaveBeenCalledTimes(1);
+      expect(revived.rows).toEqual([[7]]);
+    });
+  });
+
+  it('DEALLOCATE "MiXeD" is case-exact — mixed stays warm, only MiXeD re-Parses and re-Describes', async () => {
+    // Plan test 4: quoted identifiers never fold. Already green today —
+    // pinned against a future case-folding regression.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    await withClient(async (client) => {
+      const target = namedShape('MiXeD');
+      const neighbor = namedShape('mixed');
+      await client.query(target);
+      await client.query(neighbor);
+
+      await client.query('DEALLOCATE "MiXeD"');
+
+      parseSpy.mockClear();
+      describeSpy.mockClear();
+      const warm = await client.query(neighbor);
+      expect(parseSpy).not.toHaveBeenCalled();
+      expect(describeSpy).not.toHaveBeenCalled();
+      expect(warm.rows).toEqual([[7]]);
+
+      const revived = await client.query(target);
+      expect(parseSpy).toHaveBeenCalledTimes(1);
+      expect(describeSpy).toHaveBeenCalledTimes(1);
+      expect(revived.rows).toEqual([[7]]);
+    });
+  });
+
+  it('bare DEALLOCATE PREPARE targets the statement named prepare — the bystander stays warm', async () => {
+    // Plan test 5, backend-success case: PGlite probe-confirmed that bare
+    // DEALLOCATE PREPARE validly deallocates a statement named prepare —
+    // here the whole loop through the backend and the invalidation runs.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    await withClient(async (client) => {
+      const target = namedShape('prepare');
+      const bystander = namedShape('bystander');
+      await client.query(target);
+      await client.query(bystander);
+
+      await client.query('DEALLOCATE PREPARE');
+
+      parseSpy.mockClear();
+      describeSpy.mockClear();
+      const warm = await client.query(bystander);
+      expect(parseSpy).not.toHaveBeenCalled();
+      expect(describeSpy).not.toHaveBeenCalled();
+      expect(warm.rows).toEqual([[7]]);
+
+      const revived = await client.query(target);
+      expect(parseSpy).toHaveBeenCalledTimes(1);
+      expect(describeSpy).toHaveBeenCalledTimes(1);
+      expect(revived.rows).toEqual([[7]]);
+    });
+  });
+
+  it('DEALLOCATE PREPARE foo targets only foo — prepare and the bystander stay warm', async () => {
+    // Plan test 5, lookahead disambiguation: PREPARE is consumed as the
+    // optional keyword because a complete target follows. Decoding it as
+    // { name: 'prepare' } would falsely evict the LIVE prepare statement
+    // after the backend deallocated foo.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    await withClient(async (client) => {
+      const prepareStmt = namedShape('prepare');
+      const foo = namedShape('foo');
+      const bystander = namedShape('bystander');
+      await client.query(prepareStmt);
+      await client.query(foo);
+      await client.query(bystander);
+
+      await client.query('DEALLOCATE PREPARE foo');
+
+      parseSpy.mockClear();
+      describeSpy.mockClear();
+      const warmPrepare = await client.query(prepareStmt);
+      const warmBystander = await client.query(bystander);
+      expect(parseSpy).not.toHaveBeenCalled();
+      expect(describeSpy).not.toHaveBeenCalled();
+      expect(warmPrepare.rows).toEqual([[7]]);
+      expect(warmBystander.rows).toEqual([[7]]);
+
+      const revived = await client.query(foo);
+      expect(parseSpy).toHaveBeenCalledTimes(1);
+      expect(describeSpy).toHaveBeenCalledTimes(1);
+      expect(revived.rows).toEqual([[7]]);
+    });
+  });
+
+  it('DEALLOCATE PREPARE ALL is session-wide — every named statement re-Parses and re-Describes', async () => {
+    // Plan test 5, session-wide arm of the matrix.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    await withClient(async (client) => {
+      const first = namedShape('prepare');
+      const second = namedShape('bystander');
+      await client.query(first);
+      await client.query(second);
+
+      await client.query('DEALLOCATE PREPARE ALL');
+
+      parseSpy.mockClear();
+      describeSpy.mockClear();
+      const revivedFirst = await client.query(first);
+      const revivedSecond = await client.query(second);
+      expect(parseSpy).toHaveBeenCalledTimes(2);
+      expect(describeSpy).toHaveBeenCalledTimes(2);
+      expect(revivedFirst.rows).toEqual([[7]]);
+      expect(revivedSecond.rows).toEqual([[7]]);
+    });
+  });
+
+  it('object-form DEALLOCATE "a""b" from a sibling client evicts the preparer through the registry', async () => {
+    // Plan test 6: the decoder must still flow through the unchanged
+    // query-shape extraction ({ text } object form) and the liveClients
+    // registry — the eviction lands on the SIBLING that prepared the name.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    const pool = new PgBridgePool({ pglite, max: 2 });
+    let a: pg.PoolClient | undefined;
+    let b: pg.PoolClient | undefined;
+    try {
+      a = await pool.connect();
+      b = await pool.connect();
+      const target = namedShape('a"b');
+      await a.query(target);
+
+      await b.query({ text: 'DEALLOCATE "a""b"' });
+
+      parseSpy.mockClear();
+      describeSpy.mockClear();
+      const revived = await a.query(target);
+      expect(parseSpy).toHaveBeenCalledTimes(1);
+      expect(describeSpy).toHaveBeenCalledTimes(1);
+      expect(revived.rows).toEqual([[7]]);
+    } finally {
+      a?.release();
+      b?.release();
+      await pool.end();
+    }
+  });
+
+  it('a DEALLOCATE rejected by the backend (26000) evicts nothing — the stale entry still skips Parse', async () => {
+    // Plan test 7 (backend success first): cache mutation lives exclusively
+    // in the fulfilled arm. The raw-PGlite DEALLOCATE makes the client's
+    // caches deliberately stale; the client's own repeat of the SAME command
+    // must reject 26000 AND run no invalidation — proven by the next attempt
+    // still skipping Parse (stale entry intact) into the same 26000. Zero
+    // Parse distinguishes "no mutation" from an accidental local clearing,
+    // which would heal the statement here and hide the defect.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    await withClient(async (client) => {
+      const target = namedShape('a"b');
+      await client.query(target);
+
+      // Behind the client's back: the backend forgets a"b, both local
+      // caches keep it.
+      await pglite.query('DEALLOCATE "a""b"');
+
+      await expect(client.query('DEALLOCATE "a""b"')).rejects.toMatchObject({ code: '26000' });
+
+      parseSpy.mockClear();
+      await expect(client.query(target)).rejects.toMatchObject({ code: '26000' });
+      expect(parseSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  it('the identical >63-byte spelling deallocates, evicts, and re-Parses — truncation notice captured', async () => {
+    // Plan test 8(a): pg keys parsedStatements by the full 64-byte protocol
+    // name even though the server stores the 63-byte truncation. Deleting
+    // the identical decoded spelling is exact — the next execution re-Parses
+    // and re-Describes. The lexer's truncation NOTICE is captured and
+    // asserted so this guard stays quiet.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    await withClient(async (client) => {
+      const name64 = 'l'.repeat(64);
+      const notices: string[] = [];
+      const onNotice = (notice: { message?: string }): void => {
+        notices.push(notice.message ?? '');
+      };
+      client.on('notice', onNotice);
+      try {
+        const shape = namedShape(name64);
+        await client.query(shape);
+
+        await client.query(`DEALLOCATE ${name64}`);
+        expect(notices.some((message) => message.includes('will be truncated'))).toBe(true);
+
+        parseSpy.mockClear();
+        describeSpy.mockClear();
+        const revived = await client.query(shape);
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(describeSpy).toHaveBeenCalledTimes(1);
+        expect(revived.rows).toEqual([[7]]);
+      } finally {
+        client.off('notice', onNotice);
+      }
+    });
+  });
+
+  it('a longer same-prefix alias is a fail-closed miss — 42P05 on prepare, neighbor warm, 63-byte entry stays stale', async () => {
+    // Plan test 8(b): the server exposes ONE truncated identity, so the
+    // 64-byte alias cannot be prepared next to its live 63-byte prefix
+    // (42P05). DEALLOCATE through the alias succeeds server-side but decodes
+    // to the full alias spelling — no such local key exists, so nothing is
+    // evicted: the deliberate, documented alias miss. The neighbor must stay
+    // warm (no broadened eviction) and the 63-byte entry stays locally
+    // stale: repeat 26000 with ZERO Parse — never a false eviction.
+    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+    await withClient(async (client) => {
+      const prefix63 = 'l'.repeat(63);
+      const alias64 = `${prefix63}z`;
+      const notices: string[] = [];
+      const onNotice = (notice: { message?: string }): void => {
+        notices.push(notice.message ?? '');
+      };
+      client.on('notice', onNotice);
+      try {
+        const shape63 = namedShape(prefix63);
+        const neighbor = namedShape('keep');
+        await client.query(shape63);
+        await client.query(neighbor);
+
+        // The server truncates the alias to the live prefix — Parse fails.
+        await expect(client.query(namedShape(alias64))).rejects.toMatchObject({
+          code: '42P05',
+        });
+
+        // Server-side success: the lexer truncates the identifier to the
+        // prefix and deallocates it, warning as it goes.
+        await client.query(`DEALLOCATE ${alias64}`);
+        expect(notices.some((message) => message.includes('will be truncated'))).toBe(true);
+
+        // Neighbor FIRST: the alias miss must not broaden into any eviction.
+        parseSpy.mockClear();
+        describeSpy.mockClear();
+        const warm = await client.query(neighbor);
+        expect(parseSpy).not.toHaveBeenCalled();
+        expect(describeSpy).not.toHaveBeenCalled();
+        expect(warm.rows).toEqual([[7]]);
+
+        // The 63-byte entry is locally stale — the accepted fail-closed miss.
+        await expect(client.query(shape63)).rejects.toMatchObject({ code: '26000' });
+        expect(parseSpy).not.toHaveBeenCalled();
+      } finally {
+        client.off('notice', onNotice);
       }
     });
   });
