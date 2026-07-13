@@ -96,8 +96,9 @@ export class FastQuery implements pg.Submittable {
   /**
    * Called by pg.Client when this query becomes active. Returns an Error
    * (never throws) for client-side validation failures — stock Query
-   * parity. A synchronous serialization failure inside Bind settles the
-   * promise directly and returns null instead (see the catch below).
+   * parity. A synchronous serialization failure inside Bind or a warm-path
+   * parser-resolution failure settles the promise directly and returns
+   * null instead (see the catches below).
    */
   submit(connection: pg.Connection): Error | null {
     // The extended-protocol methods, parsedStatements, and sendCopyFail this
@@ -143,7 +144,21 @@ export class FastQuery implements pg.Submittable {
         this.describeSent = true;
         connection.describe({ type: 'P', name: '' });
       } else {
-        this.applyFields(cachedFields);
+        try {
+          this.applyFields(cachedFields);
+        } catch (err) {
+          // Parser resolution runs caller code (types.getTypeParser) — a
+          // throw here would escape pg's _pulseQueryQueue with readyForQuery
+          // still false, the same client-wedging failure mode as the Bind
+          // catch above. Recover identically: bare Sync (the backend
+          // discards the bound portal and answers ReadyForQuery), settle,
+          // done. The cached fields entry stays — it is server truth; the
+          // failure belongs to this call's types object, which is
+          // re-resolved on every execution by design.
+          connection.sync();
+          this.settle(err instanceof Error ? err : new Error(String(err)));
+          return null;
+        }
       }
       connection.execute({ portal: '', rows: 0 });
       connection.sync();
@@ -161,21 +176,43 @@ export class FastQuery implements pg.Submittable {
   handleRowDescription(msg: { fields: FastQueryField[] }): void {
     this.fieldsReceived = true;
     this.fieldsCache.set(this.name, msg.fields);
-    this.applyFields(msg.fields);
+    try {
+      this.applyFields(msg.fields);
+    } catch (err) {
+      // Called from pg's connection event handler — a throw would surface
+      // as an uncaughtException. Buffer it; ReadyForQuery turns it into the
+      // query's ordinary rejection (Execute/Sync are already on the wire,
+      // so the protocol reaches RFQ on its own). The fields were cached
+      // above on purpose: they are server truth, only this call's parser
+      // resolution failed.
+      this.bufferedError ??= err instanceof Error ? err : new Error(String(err));
+    }
   }
 
   /** Parse one row through the per-column parsers resolved at submit or
    *  Describe time. */
   handleDataRow(msg: { fields: (string | null)[] }): void {
-    /* v8 ignore next 2 — defensive: a straggler row after a fatal error has
-       no parsers to run through; stock pg guards the same way. */
-    if (this.settled) return;
+    // Straggler rows are dropped after a fatal error settled the query
+    // (stock pg guards the same way) and after a buffered failure — a
+    // failed applyFields leaves holes in `parsers`, so rows must not run
+    // through it.
+    if (this.settled || this.bufferedError) return;
     const data = msg.fields;
     const row: unknown[] = new Array(data.length);
     const parsers = this.parsers;
-    for (let i = 0; i < data.length; i++) {
-      const raw = data[i];
-      row[i] = raw === null || raw === undefined ? null : (parsers[i] as Parser)(raw);
+    try {
+      for (let i = 0; i < data.length; i++) {
+        const raw = data[i];
+        row[i] = raw === null || raw === undefined ? null : (parsers[i] as Parser)(raw);
+      }
+    } catch (err) {
+      // Type parsers are caller code. Stock pg catches parseRow throws and
+      // rejects at ReadyForQuery (_canceledDueToError); mirror that with the
+      // buffered-error path — a throw from the dataRow event handler would
+      // otherwise be an uncaughtException. Partial rows are discarded by
+      // settle(error).
+      this.bufferedError = err instanceof Error ? err : new Error(String(err));
+      return;
     }
     this.rows.push(row);
   }

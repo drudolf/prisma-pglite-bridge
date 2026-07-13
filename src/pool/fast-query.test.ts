@@ -11,6 +11,7 @@
 import pg from 'pg';
 import pgUtils from 'pg/lib/utils.js';
 import { describe, expect, it, vi } from 'vitest';
+import type { TypesLike } from './fast-array-parsers.ts';
 import { FastQuery, type FastQueryField } from './fast-query.ts';
 import { PgBridgePool } from './index.ts';
 
@@ -196,6 +197,41 @@ describe('FastQuery — submit, warm path', () => {
     second.handleReadyForQuery();
     await expect(second.promise).resolves.toMatchObject({ rows: [['B:2']] });
   });
+
+  it('turns a warm-path parser-resolution throw into a rejection and recovery Sync', async () => {
+    const boom = new Error('parser resolver boom');
+    const text = 'SELECT n FROM t';
+    const cache = new Map<string, FastQueryField[]>([['q1', [{ name: 'n', dataTypeID: 23 }]]]);
+    const types = makeTypes(() => {
+      throw boom;
+    });
+    const conn = createMockConnection({ parsedStatements: { q1: text } });
+    const { query } = buildQuery({ text, cache, types });
+
+    // Stock pg contains parser setup failures inside the query. FastQuery must
+    // likewise recover the already-sent Bind with Sync rather than throwing
+    // out of Client._pulseQueryQueue and wedging the client.
+    expect(query.submit(conn)).toBeNull();
+    expect(conn.methods()).toEqual(['bind', 'sync']);
+    await expect(query.promise).rejects.toBe(boom);
+  });
+
+  it('normalizes a non-Error warm-path parser-resolution throw into an Error rejection', async () => {
+    // The recovery arm must not assume caller code throws Error instances —
+    // a string throw still settles as a real Error (pg's rejection contract).
+    const text = 'SELECT n FROM t';
+    const cache = new Map<string, FastQueryField[]>([['q1', [{ name: 'n', dataTypeID: 23 }]]]);
+    const types = makeTypes(() => {
+      throw 'parser resolver string boom';
+    });
+    const conn = createMockConnection({ parsedStatements: { q1: text } });
+    const { query } = buildQuery({ text, cache, types });
+
+    expect(query.submit(conn)).toBeNull();
+    expect(conn.methods()).toEqual(['bind', 'sync']);
+    await expect(query.promise).rejects.toBeInstanceOf(Error);
+    await expect(query.promise).rejects.toThrow('parser resolver string boom');
+  });
 });
 
 describe('FastQuery — handleRowDescription', () => {
@@ -218,6 +254,69 @@ describe('FastQuery — handleRowDescription', () => {
     expect(types.getTypeParser).toHaveBeenCalledWith(23, 'text');
     // Missing format defaults to 'text'.
     expect(types.getTypeParser).toHaveBeenCalledWith(25, 'text');
+  });
+
+  it('buffers a parser-resolution failure and rejects at ReadyForQuery', async () => {
+    const boom = new Error('parser resolver boom');
+    const types = makeTypes(() => {
+      throw boom;
+    });
+    const { query } = buildQuery({ types });
+    const conn = createMockConnection();
+    query.submit(conn);
+
+    // RowDescription is delivered from pg's connection event handler. A throw
+    // here escapes as uncaughtException; it must instead become the query's
+    // ordinary rejection once the protocol reaches ReadyForQuery.
+    expect(() =>
+      query.handleRowDescription({
+        fields: [{ name: 'n', dataTypeID: 23, format: 'text' }],
+      }),
+    ).not.toThrow();
+    query.handleReadyForQuery();
+
+    await expect(query.promise).rejects.toBe(boom);
+  });
+
+  it('keeps the first buffered error when parser resolution also fails (first error wins)', async () => {
+    const boom = new Error('parser resolver boom');
+    const types = makeTypes(() => {
+      throw boom;
+    });
+    const { query } = buildQuery({ types });
+    const conn = createMockConnection();
+    query.submit(conn);
+
+    // An unexpected PortalSuspended buffered an error first; the later
+    // parser-resolution failure must not overwrite it.
+    query.handlePortalSuspended();
+    expect(() =>
+      query.handleRowDescription({
+        fields: [{ name: 'n', dataTypeID: 23, format: 'text' }],
+      }),
+    ).not.toThrow();
+    query.handleReadyForQuery();
+
+    await expect(query.promise).rejects.toThrow(/unexpected PortalSuspended/);
+  });
+
+  it('normalizes a non-Error parser-resolution throw into an Error rejection', async () => {
+    const types = makeTypes(() => {
+      throw 'cold string boom';
+    });
+    const { query } = buildQuery({ types });
+    const conn = createMockConnection();
+    query.submit(conn);
+
+    expect(() =>
+      query.handleRowDescription({
+        fields: [{ name: 'n', dataTypeID: 23, format: 'text' }],
+      }),
+    ).not.toThrow();
+    query.handleReadyForQuery();
+
+    await expect(query.promise).rejects.toBeInstanceOf(Error);
+    await expect(query.promise).rejects.toThrow('cold string boom');
   });
 });
 
@@ -245,6 +344,92 @@ describe('FastQuery — handleDataRow', () => {
         [6, 't:x'],
       ],
     });
+  });
+
+  it('buffers a row-parser failure, discards partial rows, and rejects at ReadyForQuery', async () => {
+    const boom = new Error('row parser boom');
+    const types = makeTypes(() => (raw) => {
+      if (raw === 'bad') throw boom;
+      return Number(raw);
+    });
+    const { query } = buildQuery({ types });
+    const conn = createMockConnection();
+    query.submit(conn);
+    query.handleRowDescription({
+      fields: [{ name: 'n', dataTypeID: 23, format: 'text' }],
+    });
+    query.handleDataRow({ fields: ['1'] });
+
+    // Stock pg catches type-parser failures in handleDataRow. FastQuery must
+    // not let one escape the connection's dataRow event as uncaughtException.
+    expect(() => query.handleDataRow({ fields: ['bad'] })).not.toThrow();
+    query.handleReadyForQuery();
+
+    await expect(query.promise).rejects.toBe(boom);
+  });
+
+  it('drops a straggler row after a fatal handleError without parsing or resurrecting the query', async () => {
+    const parser = vi.fn((raw: string) => Number(raw));
+    const types = makeTypes(() => parser);
+    const { query } = buildQuery({ types });
+    const conn = createMockConnection();
+    query.submit(conn);
+    query.handleRowDescription({ fields: [{ name: 'n', dataTypeID: 23, format: 'text' }] });
+
+    const fatal = new Error('fatal connection boom');
+    query.handleError(fatal);
+
+    // A DataRow already in the pipe when a fatal error settled the query is
+    // still delivered — pg dispatches connection events unconditionally. It
+    // must be dropped silently: no throw out of the dataRow event, no parser
+    // run, and no resurrection of the already-settled rejection.
+    expect(() => query.handleDataRow({ fields: ['7'] })).not.toThrow();
+    expect(parser).not.toHaveBeenCalled();
+
+    await expect(query.promise).rejects.toBe(fatal);
+  });
+
+  it('skips rows arriving after a buffered row-parser failure without invoking the parser', async () => {
+    const boom = new Error('row parser boom');
+    const parser = vi.fn((raw: string): number => {
+      if (raw === 'bad') throw boom;
+      return Number(raw);
+    });
+    const types = makeTypes(() => parser);
+    const { query } = buildQuery({ types });
+    const conn = createMockConnection();
+    query.submit(conn);
+    query.handleRowDescription({ fields: [{ name: 'n', dataTypeID: 23, format: 'text' }] });
+
+    query.handleDataRow({ fields: ['1'] });
+    expect(() => query.handleDataRow({ fields: ['bad'] })).not.toThrow();
+
+    // Rows AFTER the buffered failure must be skipped WITHOUT running their
+    // parsers: the result is already doomed, and a second parser throw here
+    // would escape the connection's dataRow event as uncaughtException.
+    const parserCallsAtFailure = parser.mock.calls.length;
+    expect(() => query.handleDataRow({ fields: ['2'] })).not.toThrow();
+    expect(parser.mock.calls.length).toBe(parserCallsAtFailure);
+
+    query.handleReadyForQuery();
+    await expect(query.promise).rejects.toBe(boom);
+  });
+
+  it('normalizes a non-Error row-parser throw into an Error rejection', async () => {
+    const types = makeTypes(() => (raw) => {
+      if (raw === 'bad') throw 'row string boom';
+      return Number(raw);
+    });
+    const { query } = buildQuery({ types });
+    const conn = createMockConnection();
+    query.submit(conn);
+    query.handleRowDescription({ fields: [{ name: 'n', dataTypeID: 23, format: 'text' }] });
+
+    expect(() => query.handleDataRow({ fields: ['bad'] })).not.toThrow();
+    query.handleReadyForQuery();
+
+    await expect(query.promise).rejects.toBeInstanceOf(Error);
+    await expect(query.promise).rejects.toThrow('row string boom');
   });
 });
 
@@ -548,6 +733,144 @@ describe('FastQuery — bind-throw recovery on a live client', () => {
       expect(rejection).toBeInstanceOf(Error);
       expect((rejection as Error).message).toBe('boom');
     } finally {
+      await pool.end();
+    }
+  });
+});
+
+// Integration spec for the parser-failure recovery paths on a live client.
+// The unit tests above pin the protocol mechanics (recovery Sync, buffered
+// rejection at ReadyForQuery, straggler skipping); these three prove the
+// consequence that matters: a throwing types.getTypeParser — or a throwing
+// resolved row parser — rejects only ITS query, and the SAME client answers
+// the next one. Real pools, like the bind-throw describe above.
+describe('FastQuery — parser-failure recovery keeps the client live (integration)', () => {
+  // Bounded blocked-promise detection (the settledOrPending idiom from
+  // index.abandoned-transaction.test.ts): a recovery bug wedges the client
+  // and the follow-up never settles — surface that as the 'pending' sentinel
+  // in ~1.5 s instead of hanging into the suite timeout. The raced-away
+  // promise only settles at pool teardown ("Connection terminated"); swallow
+  // that late rejection so it cannot surface as an unhandled error.
+  const settledOrPending = <T>(p: Promise<T>, ms: number): Promise<T | 'pending'> => {
+    p.catch(() => {});
+    return Promise.race([
+      p,
+      new Promise<'pending'>((resolve) => {
+        setTimeout(() => resolve('pending'), ms).unref();
+      }),
+    ]);
+  };
+
+  // Minimal user-supplied types objects, adapter-pg shaped. The bridge wraps
+  // them with the fast-array wrapper, which DELEGATES to the user
+  // getTypeParser for non-array OIDs — so a plain int column reaches these.
+  // Same `as unknown as pg.CustomTypesConfig` narrowing precedent as
+  // fast-array-parsers.test.ts (@types/pg overload-types getTypeParser).
+  const passthroughTypes = (): TypesLike => ({
+    getTypeParser: () => (raw: string) => raw,
+  });
+  const throwingTypes = (boom: Error): TypesLike => ({
+    getTypeParser: () => {
+      throw boom;
+    },
+  });
+
+  it('warm path: a parser-resolution throw rejects the query and the same client answers the next one', async () => {
+    const boom = new Error('warm parser resolver boom');
+    const pool = new PgBridgePool();
+    const client = await pool.connect();
+    try {
+      // First execution (cold) succeeds and caches the fields under this
+      // name, so the SECOND execution takes the warm submit path — parsers
+      // re-resolved inside submit, after Bind is already on the wire. The
+      // throw must be recovered with a Sync (the promise rejecting with the
+      // thrown error) instead of escaping _pulseQueryQueue and wedging.
+      const shape = {
+        name: 'live_w',
+        text: 'SELECT 1 AS n',
+        rowMode: 'array' as const,
+        values: [],
+      };
+      const first = await client.query({
+        ...shape,
+        types: passthroughTypes() as unknown as pg.CustomTypesConfig,
+      });
+      expect(first.rows).toEqual([['1']]);
+
+      await expect(
+        client.query({
+          ...shape,
+          types: throwingTypes(boom) as unknown as pg.CustomTypesConfig,
+        }),
+      ).rejects.toBe(boom);
+
+      // Same-client liveness is the point: a wedge leaves this 'pending'.
+      const followUp = await settledOrPending(client.query('SELECT 1 AS ok'), 1_500);
+      expect(followUp).not.toBe('pending');
+      if (followUp !== 'pending') expect(followUp.rows).toEqual([{ ok: 1 }]);
+    } finally {
+      client.release();
+      await pool.end();
+    }
+  });
+
+  it('cold path: a parser-resolution throw at RowDescription rejects at RFQ and the client stays live', async () => {
+    const boom = new Error('cold parser resolver boom');
+    const pool = new PgBridgePool();
+    const client = await pool.connect();
+    try {
+      // Fresh statement name — no cached fields, so getTypeParser throws when
+      // RowDescription arrives (inside a connection event handler): the
+      // failure is buffered, rows after it are skipped unparsed, and the
+      // promise rejects once the protocol reaches ReadyForQuery.
+      await expect(
+        client.query({
+          name: 'live_c',
+          text: 'SELECT 1 AS n',
+          rowMode: 'array' as const,
+          values: [],
+          types: throwingTypes(boom) as unknown as pg.CustomTypesConfig,
+        }),
+      ).rejects.toBe(boom);
+
+      const followUp = await settledOrPending(client.query('SELECT 1 AS ok'), 1_500);
+      expect(followUp).not.toBe('pending');
+      if (followUp !== 'pending') expect(followUp.rows).toEqual([{ ok: 1 }]);
+    } finally {
+      client.release();
+      await pool.end();
+    }
+  });
+
+  it('row parser: a throwing resolved parser rejects at RFQ and the client stays live', async () => {
+    const boom = new Error('row parser value boom');
+    const pool = new PgBridgePool();
+    const client = await pool.connect();
+    try {
+      // getTypeParser RESOLVES fine; the resolved parser throws on the row
+      // value, mid-DataRow. The partial row is discarded, the failure is
+      // buffered, and the promise rejects at ReadyForQuery — never an
+      // uncaughtException out of the connection's dataRow event.
+      const rowThrowingTypes: TypesLike = {
+        getTypeParser: () => () => {
+          throw boom;
+        },
+      };
+      await expect(
+        client.query({
+          name: 'live_r',
+          text: 'SELECT 1 AS n',
+          rowMode: 'array' as const,
+          values: [],
+          types: rowThrowingTypes as unknown as pg.CustomTypesConfig,
+        }),
+      ).rejects.toBe(boom);
+
+      const followUp = await settledOrPending(client.query('SELECT 1 AS ok'), 1_500);
+      expect(followUp).not.toBe('pending');
+      if (followUp !== 'pending') expect(followUp.rows).toEqual([{ ok: 1 }]);
+    } finally {
+      client.release();
       await pool.end();
     }
   });
