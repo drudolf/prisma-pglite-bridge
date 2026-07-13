@@ -86,7 +86,11 @@ export interface PgBridgePoolOptions
    * permanently wedged pg-side (its in-flight query never completes — same
    * as real Postgres, no session lock involved); close cursors before
    * releasing. At `max > 1` the pool recovers the shared session for the
-   * OTHER clients, but the abandoning client itself is equally wedged.
+   * OTHER clients, but the abandoning client itself is equally wedged. The
+   * one shape release does not recover is a cursor abandoned inside an
+   * explicit transaction: the transaction's ROLLBACK cannot reach the wire
+   * behind the suspended portal, so the session stays held until the pool
+   * closes (probe-pinned by the composite-window test).
    */
   max?: number;
 

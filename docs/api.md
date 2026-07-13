@@ -319,7 +319,11 @@ const pool2 = new PgBridgePool({ pglite });
 ```
 
 The constructor takes a `PgBridgePoolOptions` (also exported)
-accepting `pglite` (optional), `max`, `bridgeId`, `syncToFs`,
+accepting `pglite` (optional), `max` (default `1`; must be a
+positive integer — the constructor throws a `TypeError` for `0`,
+negative, or fractional values rather than inheriting pg-pool's
+silent `max || 10` fallback, which would run ten clients without
+shared-session transaction isolation), `bridgeId`, `syncToFs`,
 `timeout`, `idleTimeoutMillis` (default `0`: in-process clients are
 never evicted, so their prepared-statement state survives idle gaps),
 and `fastQueryPath` (default `true`: named `rowMode: 'array'` queries
@@ -338,10 +342,27 @@ from the [diagnostics channels](./stats.md#diagnostics-channels).
 Since 1.7 the pool supports pg's full query surface including
 portal suspension: `rows: N` query configs, pg-cursor, and
 pg-query-stream page results through the bridge as they would
-against a server. One shared-session caveat: an open cursor holds
+against a server. Submittables and promise-form queries mixed on
+one client keep their call order: a Submittable's hand-off to pg
+waits for earlier still-pending queries instead of jumping ahead
+of them. One shared-session caveat: an open cursor holds
 the PGlite session the way an open transaction does — in a
 `max > 1` pool, other clients queue until the cursor is exhausted,
-closed, or its client is released back to the pool.
+closed, or its client is released back to the pool. The one shape
+release does NOT recover is a cursor abandoned inside an explicit
+transaction: the transaction's ROLLBACK cannot reach the wire
+behind the suspended portal, so the session stays held until the
+pool closes.
+
+Releasing a client with an open transaction (no `COMMIT` or
+`ROLLBACK` — a caller bug) emits one
+`PGliteBridgeAbandonedTransactionWarning` and the pool rolls the
+transaction back automatically before the client's next checkout,
+so siblings unblock and no state leaks. This also covers releases
+with work still in flight: the cleanup waits for the in-flight
+query to settle and re-checks — an unawaited `BEGIN` is rolled
+back once it completes, while an unawaited `COMMIT` that wins the
+race produces no warning and no rollback.
 
 A second shared-session caveat: *user-supplied* named prepared
 statements (`query({ name, text })`) are single-client-only.

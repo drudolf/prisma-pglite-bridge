@@ -2,8 +2,10 @@
 
 ## Limitations
 
-- **Node.js 20+ only** — requires `node:stream` and `node:fs`.
-  Does not work in browsers despite PGlite's browser support.
+- **Node.js 22+ only** — requires `node:stream`, `node:fs`, and
+  `Promise.withResolvers` (the binding floor; matches the package's
+  `engines` field). Does not work in browsers despite PGlite's
+  browser support.
 - **WASM cold start** — the first PGlite query through a
   `PGliteBridge` takes ~2s for PGlite WASM compilation. Subsequent
   calls in the same process reuse the compiled module.
@@ -88,6 +90,30 @@ cleanup runs only when no other client is live, and a `DEALLOCATE` /
 from every live client's plan cache. If the error appears anyway,
 avoid session-wide deallocation outside the pools, or pass
 `preparedStatements: false` to the bridge.
+
+*User-named* statements can also hit 26000 when a `DEALLOCATE`
+arrives in a form the bridge's bounded eviction decoder deliberately
+does not parse — inside comments or multi-statement text, via
+`U&"..."` syntax, or through a long-name spelling that differs from
+the one used to prepare. See the eviction-detection notes in
+[api.md](./api.md#pgbridgepool) for the exact supported subset.
+
+## `PGliteBridgeAbandonedTransactionWarning`
+
+A pool client was released back to the pool with an open transaction —
+`release()` was called after `BEGIN` without a `COMMIT` or `ROLLBACK`.
+On the shared PGlite session an open transaction would block every
+other pool client and leak into the client's next checkout, so the
+pool emits this warning once and rolls the transaction back
+automatically before the client is reused; siblings unblock on their
+own. The warning also fires when the release happened while a query
+was still in flight — cleanup waits for that query to settle first
+(an unawaited `COMMIT` that completes produces no warning and no
+rollback).
+
+Fix the caller: `COMMIT` or `ROLLBACK` (or let your ORM's transaction
+helper finish) before releasing the client. The automatic rollback is
+a safety net, not a transaction API.
 
 ## `ExperimentalWarning: Importing WebAssembly module instances is an experimental feature`
 

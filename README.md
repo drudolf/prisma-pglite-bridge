@@ -11,7 +11,7 @@ code path they ship with — only the transport differs.
 
 ## Install
 
-Requires **Prisma 7+** and **Node.js 20+**.
+Requires **Prisma 7+** and **Node.js 22+**.
 
 ```sh
 pnpm add -D prisma-pglite-bridge
