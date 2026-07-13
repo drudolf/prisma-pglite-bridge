@@ -60,6 +60,19 @@ describe('PgBridgePool — max default', () => {
       await pool.end();
     }
   });
+
+  it('rejects max: 0 instead of letting pg-pool silently expand it to 10 without a lock', async () => {
+    let constructed: PgBridgePool | undefined;
+    try {
+      expect(() => {
+        constructed = new PgBridgePool({ pglite, max: 0 });
+      }).toThrow(/max.*positive integer/i);
+    } finally {
+      // Red-phase cleanup: the buggy implementation constructs an effective
+      // max:10 pool, so retain and end it even though the assertion fails.
+      await constructed?.end();
+    }
+  });
 });
 
 describe('PgBridgePool — idleTimeoutMillis default', () => {

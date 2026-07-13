@@ -64,6 +64,12 @@ export interface PgBridgePoolOptions
    * Maximum pool connections (default: 1). Compatibility knob, not a
    * throughput knob.
    *
+   * Must be a positive integer — the constructor throws a `TypeError` for
+   * `0`, negative, fractional, or non-numeric values. This deliberately
+   * diverges from pg-pool, which coerces and expands a falsy `max` to 10:
+   * here that fallback would run ten clients with no shared-session
+   * transaction isolation (the SessionLock is only built for `max > 1`).
+   *
    * PGlite's WASM runtime executes queries serially behind a single mutex.
    * Raising `max` above 1 therefore does not add parallelism — queries still
    * run one at a time — and each extra connection costs a full `PGliteDuplex`
@@ -223,6 +229,14 @@ export class PgBridgePool extends pg.Pool {
     fastQueryPath,
     statementCaching,
   }: PgBridgePoolOptions & { telemetry?: TelemetrySink } = {}) {
+    // pg-pool expands a falsy max to 10 (`max || 10`) while the SessionLock
+    // gate below reads the raw value — `max: 0` would silently run ten
+    // clients with no transaction isolation. Reject anything but a positive
+    // integer, and do it before creating an owned PGlite that nothing would
+    // ever close.
+    if (!Number.isInteger(max) || max < 1) {
+      throw new TypeError(`PgBridgePool: max must be a positive integer (got ${String(max)})`);
+    }
     const resolvedPglite = pglite ?? new PGlite();
 
     // Load-bearing: pg.Pool forwards this config object verbatim to
