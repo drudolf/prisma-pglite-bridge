@@ -43,8 +43,12 @@ type PgBridgeClientConfig = pg.ClientConfig & {
 
 /** Mirrors stock pg's Submittable probe (`typeof config.submit === 'function'`,
  *  which boxes primitives). Callers pre-exclude null/undefined — the dispatch
- *  in {@link PgBridgeClient.query} returns those to pg first. */
-const isSubmittable = (value: unknown): value is pg.Submittable =>
+ *  in {@link PgBridgeClient.query} returns those to pg first. The narrowed
+ *  type carries the optional `handleError` pg itself uses for error delivery
+ *  to Submittables, so deferred admission can route failures the same way. */
+const isSubmittable = (
+  value: unknown,
+): value is pg.Submittable & { handleError?: (err: Error, connection: pg.Connection) => void } =>
   typeof (value as { submit?: unknown }).submit === 'function';
 
 export class PgBridgeClient extends pg.Client {
@@ -245,13 +249,15 @@ export class PgBridgeClient extends pg.Client {
   }
 
   /**
-   * Dispatch order: null/undefined and Submittable arguments go straight to
-   * stock pg; the callback forms — positional or config-embedded, last
-   * positional winning like pg's normalizeQueryConfig — re-enter as a
-   * promise and return `undefined`; remaining object-form queries get
-   * `types` wrapped with fast-array parsers, then run either the FastQuery
-   * fast path or stock pg — both serialized on one submission chain so
-   * mixed-path call order cannot invert.
+   * Dispatch order: null/undefined go straight to stock pg; Submittables
+   * return synchronously with their ADMISSION deferred behind the
+   * submission chain (call order preserved, completion untracked); the
+   * callback forms — positional or config-embedded, last positional winning
+   * like pg's normalizeQueryConfig — re-enter as a promise and return
+   * `undefined`; remaining object-form queries get `types` wrapped with
+   * fast-array parsers, then run either the FastQuery fast path or stock
+   * pg — both serialized on one submission chain so mixed-path call order
+   * cannot invert.
    */
   // biome-ignore lint/suspicious/noExplicitAny: satisfy pg.Client.query's overload union
   override query(...args: unknown[]): any {
@@ -266,12 +272,41 @@ export class PgBridgeClient extends pg.Client {
     // Preserve pg's synchronous TypeError for null/undefined query.
     if (first === null || first === undefined) return submitStock();
 
-    // Submittable: terminal signaling isn't uniform across the pg contract.
-    // Let pg's internal queue handle it unserialized (overload 1 — no cast).
-    // adapter-pg never uses this form; users mixing Submittable + Promise forms
-    // on one client may still trip the pg queue deprecation.
+    // Submittable: pg's contract returns the argument itself, synchronously,
+    // and pg's internal queue provides FIFO execution once admitted. Only
+    // ADMISSION (the super.query call) is serialized behind the submission
+    // chain, so a Submittable cannot jump ahead of a chained pending query;
+    // the chain is NOT extended past it — arbitrary Submittables expose no
+    // uniform terminal signal, so ordering relative to its COMPLETION stays
+    // pg's business (admission order, not completion order). A later
+    // ordinary query chains onto the same prior, and `.then` callbacks on
+    // one promise run in registration order, so pg's queue still receives
+    // both in call order. adapter-pg never uses this form; users mixing
+    // Submittable + promise forms on one client may still trip the pg queue
+    // deprecation.
     if (isSubmittable(first)) {
-      return super.query(first);
+      const prior = this.querySubmissionChain;
+      if (prior === undefined) {
+        super.query(first);
+      } else {
+        // `prior` is a chain tail and never rejects (both settle arms release it).
+        void prior.then(() => {
+          try {
+            super.query(first);
+          } catch (err) {
+            // pg delivers ended/errored-client failures through the
+            // Submittable's own handleError (never a throw to the caller);
+            // route a synchronous admission throw — e.g. a user submit()
+            // that throws once pulsed — the same way instead of leaking it
+            // as an unhandled rejection from this chain hop.
+            first.handleError?.(
+              err instanceof Error ? err : new Error(String(err)),
+              this.connection,
+            );
+          }
+        });
+      }
+      return first;
     }
 
     // pg's query(config, values, callback) collapses positional functions and

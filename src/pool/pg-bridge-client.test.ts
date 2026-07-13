@@ -281,11 +281,16 @@ describe('PgBridgeClient', () => {
     expect(racing).toEqual([]);
   });
 
-  it('passes Submittable form through unserialized (documented scope boundary)', async () => {
+  it('returns a Submittable synchronously and admits it immediately when the chain is idle', async () => {
     const { pool, close } = await createBridgePool(pglite);
     try {
       const client = await pool.connect();
       try {
+        // Submittable contract (pg API parity): client.query(q) hands back
+        // the SAME object synchronously — callers attach event listeners to
+        // it. With the submission chain idle, admission to pg's queue is
+        // immediate; deferred admission behind a busy chain is pinned by the
+        // ordering tests below.
         const q = new pg.Query('SELECT 1');
         const returned = client.query(q);
         expect(returned).toBe(q);
@@ -298,6 +303,315 @@ describe('PgBridgeClient', () => {
       }
     } finally {
       await endPoolAndBarrier(close);
+    }
+  });
+
+  it('preserves call order when a Submittable follows a chain-delayed ordinary query', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('CREATE TABLE submittable_order_t (seq serial, n int)');
+
+        // The first query keeps pg active. The ordinary INSERT is therefore
+        // delayed on PgBridgeClient's submission chain, while the following
+        // Submittable currently bypasses that chain and jumps ahead of it.
+        const first = client.query('SELECT pg_sleep(0.05)');
+        const second = client.query('INSERT INTO submittable_order_t (n) VALUES (2)');
+        const submittable = new pg.Query('INSERT INTO submittable_order_t (n) VALUES (3)');
+        const third = new Promise<void>((resolve, reject) => {
+          submittable.once('end', () => resolve());
+          submittable.once('error', reject);
+        });
+        expect(client.query(submittable)).toBe(submittable);
+
+        await Promise.all([first, second, third]);
+        const { rows } = await client.query<{ n: number }>(
+          'SELECT n FROM submittable_order_t ORDER BY seq',
+        );
+        expect(rows.map(({ n }) => n)).toEqual([2, 3]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('keeps ordinary → Submittable → ordinary call order on a busy chain', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('CREATE TABLE mixed_order_t (seq serial, n int)');
+
+        // All three calls land while the opener keeps pg busy. The
+        // Submittable's ADMISSION defers behind the chained INSERT 1, and
+        // the trailing ordinary INSERT 3 must not overtake the Submittable
+        // either — call order is execution order. (Completion ordering after
+        // admission is pg's own queue discipline; the chain is deliberately
+        // not extended past the Submittable.)
+        const opener = client.query('SELECT pg_sleep(0.05)');
+        const first = client.query('INSERT INTO mixed_order_t (n) VALUES (1)');
+        const submittable = new pg.Query('INSERT INTO mixed_order_t (n) VALUES (2)');
+        const second = new Promise<void>((resolve, reject) => {
+          submittable.once('end', () => resolve());
+          submittable.once('error', reject);
+        });
+        expect(client.query(submittable)).toBe(submittable);
+        const third = client.query('INSERT INTO mixed_order_t (n) VALUES (3)');
+
+        await Promise.all([opener, first, second, third]);
+        const { rows } = await client.query<{ n: number }>(
+          'SELECT n FROM mixed_order_t ORDER BY seq',
+        );
+        expect(rows.map(({ n }) => n)).toEqual([1, 2, 3]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('preserves relative admission order between two Submittables behind a busy chain', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('CREATE TABLE twin_sub_t (seq serial, n int)');
+
+        // Two Submittables deferred behind the same pending ordinary query:
+        // both admissions wait for the chain to settle, and they must reach
+        // pg's queue in call order — deferral must not reorder them.
+        const settleOf = (q: pg.Query): Promise<void> =>
+          new Promise<void>((resolve, reject) => {
+            q.once('end', () => resolve());
+            q.once('error', reject);
+          });
+        const opener = client.query('SELECT pg_sleep(0.05)');
+        const first = client.query('INSERT INTO twin_sub_t (n) VALUES (1)');
+        const qa = new pg.Query('INSERT INTO twin_sub_t (n) VALUES (2)');
+        const qb = new pg.Query('INSERT INTO twin_sub_t (n) VALUES (3)');
+        const second = settleOf(qa);
+        const third = settleOf(qb);
+        expect(client.query(qa)).toBe(qa);
+        expect(client.query(qb)).toBe(qb);
+
+        await Promise.all([opener, first, second, third]);
+        const { rows } = await client.query<{ n: number }>('SELECT n FROM twin_sub_t ORDER BY seq');
+        expect(rows.map(({ n }) => n)).toEqual([1, 2, 3]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('delivers an ended-client admission failure through the Submittable error path, not an unhandled rejection', async () => {
+    // The deferred admission may fire after the client has ended (pool
+    // teardown wins the race against a busy chain). The failure must reach
+    // the Submittable's OWN error path — pg.Query's 'error' event — never an
+    // unhandled promise rejection (captured like the abandoned-transaction
+    // suite does).
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    const { pool, close } = await createBridgePool(pglite);
+    let closed = false;
+    try {
+      const client = await pool.connect();
+      let released = false;
+      try {
+        // Busy chain at admission time: the opener occupies the submission
+        // chain while the pool tears down.
+        void client.query('SELECT pg_sleep(0.3)').catch(() => {});
+        const q = new pg.Query('SELECT 1');
+        const settled = new Promise<'end' | 'error'>((resolve) => {
+          q.once('error', () => resolve('error'));
+          q.once('end', () => resolve('end'));
+        });
+        expect(client.query(q)).toBe(q);
+        client.release();
+        released = true;
+        await close();
+        closed = true;
+
+        // Bounded: a dropped Submittable would never settle — surface that
+        // in ~5 s instead of eating the suite timeout. Which path fires
+        // ('error' from the teardown, or 'end' if the query won the race) is
+        // not pinned; settling through q's own events is.
+        const outcome = await Promise.race([
+          settled,
+          new Promise<'pending'>((resolve) => {
+            setTimeout(() => resolve('pending'), 5_000).unref();
+          }),
+        ]);
+        expect(outcome).not.toBe('pending');
+
+        // Let any deferred rejection surface before asserting none did.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(rejections).toEqual([]);
+      } finally {
+        if (!released) client.release();
+      }
+    } finally {
+      process.removeListener('unhandledRejection', onRejection);
+      // The pool is usually ended in the body; pg-pool rejects a second
+      // end(), so only close here when an assertion threw before it ran.
+      if (!closed) await close().catch(() => {});
+      // Drain any in-flight teardown work before the afterEach reset.
+      await pglite.query('SELECT 1').catch(() => {});
+    }
+  });
+
+  it('routes a synchronous admission throw from a deferred Submittable to its handleError', async () => {
+    // pg's own ended/errored-client failures arrive via nextTick handleError
+    // and never throw out of super.query — the deferred-admission catch
+    // exists for the path that DOES throw synchronously (e.g. a Submittable
+    // whose submit() throws when pg pulses it). Same prototype-stub seam as
+    // the callback-form test above: a real wedged submittable would crash
+    // pg's own teardown delivery (pg requires handleError at runtime), so
+    // the throw is staged at the super.query boundary instead. Thrown as a
+    // non-Error on purpose, pinning the normalization arm too.
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    try {
+      let admissionThrow: unknown = 'submit boom';
+      const gates: Array<() => void> = [];
+      pg.Client.prototype.query = vi.fn((first: unknown) => {
+        if (typeof (first as { submit?: unknown } | undefined)?.submit === 'function') {
+          throw admissionThrow;
+        }
+        return new Promise<void>((resolve) => {
+          gates.push(resolve);
+        });
+      }) as unknown as typeof pg.Client.prototype.query;
+
+      // Round 1 — non-Error throw is normalized. The gated opener keeps the
+      // submission chain busy, so the Submittable's admission is deferred
+      // onto the chain hop.
+      const opener = client.query('SELECT 1') as Promise<unknown>;
+      const handleError = vi.fn();
+      const evil = { submit: (): void => {}, handleError };
+      expect(client.query(evil)).toBe(evil);
+
+      gates[0]?.();
+      await opener;
+      await vi.waitFor(() => expect(handleError).toHaveBeenCalledTimes(1));
+      const [err] = handleError.mock.calls[0] as [unknown];
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe('submit boom');
+
+      // Round 2 — an Error instance passes through by identity.
+      const boom = new Error('submit boom 2');
+      admissionThrow = boom;
+      const opener2 = client.query('SELECT 1') as Promise<unknown>;
+      expect(client.query(evil)).toBe(evil);
+
+      gates[1]?.();
+      await opener2;
+      await vi.waitFor(() => expect(handleError).toHaveBeenCalledTimes(2));
+      expect(handleError.mock.calls[1]?.[0]).toBe(boom);
+    } finally {
+      pg.Client.prototype.query = origQuery;
+    }
+  });
+
+  it('leaves a successor chain tail in place when the cleanup link settles (identity check)', async () => {
+    // Pins the cleanup link's tail-release identity check: a next-checkout
+    // query that chains BEFORE the link settles replaces the chain tail, and
+    // the link's own release must leave that successor tail alone — clearing
+    // it would let a later query bypass the successor's serialization. Same
+    // stub seam as above; the client never connected, so the link's run-time
+    // re-check no-ops (no duplex) and only the chain mechanics are in play.
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    try {
+      const gates: Array<() => void> = [];
+      pg.Client.prototype.query = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            gates.push(resolve);
+          }),
+      ) as unknown as typeof pg.Client.prototype.query;
+
+      // Busy chain at release time, so the cleanup is deferred onto a link…
+      const opener = client.query('SELECT 1') as Promise<unknown>;
+      client.rollbackAbandonedTransaction();
+      // …and the successor chains behind the still-pending link.
+      const successor = client.query('SELECT 2') as Promise<unknown>;
+
+      gates[0]?.();
+      await opener;
+      // The successor submits only after the link settles; wait for its
+      // gated stub call to appear, then let it finish.
+      await vi.waitFor(() => expect(gates).toHaveLength(2));
+      gates[1]?.();
+      await expect(successor).resolves.toBeUndefined();
+    } finally {
+      pg.Client.prototype.query = origQuery;
+    }
+  });
+
+  it('contains a deferred-admission throw when the Submittable has no handleError', async () => {
+    // Without a handleError there is nowhere to deliver the failure — the
+    // catch must still contain it (no unhandledRejection from the chain hop).
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    try {
+      let releaseOpener: (() => void) | undefined;
+      const openerGate = new Promise<void>((resolve) => {
+        releaseOpener = resolve;
+      });
+      pg.Client.prototype.query = vi.fn((first: unknown) => {
+        if (typeof (first as { submit?: unknown } | undefined)?.submit === 'function') {
+          throw new Error('submit boom');
+        }
+        return openerGate;
+      }) as unknown as typeof pg.Client.prototype.query;
+
+      const opener = client.query('SELECT 1') as Promise<unknown>;
+      const evil = { submit: (): void => {} };
+      expect(client.query(evil)).toBe(evil);
+
+      releaseOpener?.();
+      await opener;
+      // Let the deferred admission hop run and any rejection surface.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(rejections).toEqual([]);
+    } finally {
+      pg.Client.prototype.query = origQuery;
+      process.removeListener('unhandledRejection', onRejection);
     }
   });
 
