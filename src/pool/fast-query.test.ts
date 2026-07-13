@@ -210,9 +210,14 @@ describe('FastQuery — submit, warm path', () => {
 
     // Stock pg contains parser setup failures inside the query. FastQuery must
     // likewise recover the already-sent Bind with Sync rather than throwing
-    // out of Client._pulseQueryQueue and wedging the client.
+    // out of Client._pulseQueryQueue and wedging the client. The rejection
+    // arrives at ReadyForQuery, not inside submit — premature settlement
+    // clears the submission chain while pg's active-query slot still holds
+    // this query, and a release() in that window skips the
+    // abandoned-transaction cleanup (probe-verified leak).
     expect(query.submit(conn)).toBeNull();
     expect(conn.methods()).toEqual(['bind', 'sync']);
+    query.handleReadyForQuery();
     await expect(query.promise).rejects.toBe(boom);
   });
 
@@ -229,6 +234,7 @@ describe('FastQuery — submit, warm path', () => {
 
     expect(query.submit(conn)).toBeNull();
     expect(conn.methods()).toEqual(['bind', 'sync']);
+    query.handleReadyForQuery();
     await expect(query.promise).rejects.toBeInstanceOf(Error);
     await expect(query.promise).rejects.toThrow('parser resolver string boom');
   });

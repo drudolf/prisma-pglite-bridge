@@ -100,6 +100,21 @@ describe('PgBridgePool — rollback abandoned transaction on release', () => {
 
   const flushWarnings = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
+  // Fast-query `types` doubles for the FIX 1 tests below (fast-array-parsers
+  // cast precedent — @types/pg's CustomTypesConfig mistypes getTypeParser).
+  // goodTypes is the identity-parser adapter-pg shape used to WARM the fast
+  // path; throwingTypes(err) throws from getTypeParser, tripping the warm
+  // path at submit time on the second sighting of the same named statement.
+  const goodTypes = {
+    getTypeParser: () => (raw: string) => raw,
+  } as unknown as pg.CustomTypesConfig;
+  const throwingTypes = (err: Error): pg.CustomTypesConfig =>
+    ({
+      getTypeParser: (): never => {
+        throw err;
+      },
+    }) as unknown as pg.CustomTypesConfig;
+
   it('unblocks a sibling with a clean view and recycles the client outside any transaction (E4)', async () => {
     // max: 2. Client A opens a transaction and INSERTs, then plain-releases
     // (no error). Currently the abandoned tx stays open on the shared session:
@@ -938,6 +953,211 @@ describe('PgBridgePool — rollback abandoned transaction on release', () => {
       // Redundant when the body ended the pool (pg-pool rejects a second
       // end()); only meaningful if an assertion threw before end() settled.
       await settledOrPending(pool.end(), 10_000).catch(() => {});
+    }
+  });
+
+  it('buffered warm-parser failure: release after its rejection settles rolls back and unblocks the sibling', async () => {
+    // FIX 1 (fast-query buffered submit-time rejection), window 1. A warm
+    // fast-path query whose types.getTypeParser throws used to reject
+    // IMMEDIATELY inside submit while pg's active-query slot stayed occupied
+    // — the release issued from the rejection handler then saw a "wedged"
+    // client and skipped the abandoned-tx cleanup, leaking the open
+    // transaction and the SessionLock forever. Buffering the error until the
+    // recovery Sync's ReadyForQuery keeps the submission chain occupied
+    // through the failure, so this release fires the cleanup: sibling
+    // unblocked, exactly one warning, clean session.
+    const pool = new PgBridgePool({ pglite, max: 2 });
+    const { warnings, stop } = captureAbandonWarnings();
+    let a: pg.PoolClient | undefined;
+    let aReleased = false;
+    let b: pg.PoolClient | undefined;
+    try {
+      a = await pool.connect();
+      b = await pool.connect();
+      await a.query('BEGIN');
+
+      // Warm the fast path: running the named statement once with working
+      // types caches its result fields, so the SECOND run hits getTypeParser
+      // at submit time.
+      await a.query({
+        name: 'leak_w',
+        text: 'SELECT 1 AS n',
+        rowMode: 'array',
+        values: [],
+        types: goodTypes,
+      });
+
+      const boom = new Error('warm parser boom');
+      const failing = a.query({
+        name: 'leak_w',
+        text: 'SELECT 1 AS n',
+        rowMode: 'array',
+        values: [],
+        types: throwingTypes(boom),
+      });
+      // Bounded: the buffered error must flush at the recovery Sync's RFQ —
+      // a buffer that never drains would leave this pending.
+      const failure = await settledOrPending(
+        failing.then(
+          () => 'resolved' as const,
+          (err: unknown) => err,
+        ),
+        1_500,
+      );
+      expect(failure).toBe(boom);
+
+      // Release AFTER the rejection handler ran — the window that used to
+      // skip the cleanup.
+      a.release();
+      aReleased = true;
+
+      // The cleanup ROLLBACK released the SessionLock: the sibling settles
+      // instead of queueing forever behind the leaked transaction.
+      const sibling = b.query<{ ok: number }>('SELECT 1 AS ok');
+      sibling.catch(() => {});
+      const outcome = await settledOrPending(sibling, 1_500);
+      expect(outcome).not.toBe('pending');
+      if (outcome !== 'pending') expect(outcome.rows[0]?.ok).toBe(1);
+
+      // B's view is clean: its RFQ reports 'I', not an inherited 'T' from
+      // A's abandoned BEGIN (same pg-internals precedent as the
+      // sibling-cursor test above).
+      const internals = b as unknown as {
+        connection: { stream: { inTransaction: boolean } };
+      };
+      expect(internals.connection.stream.inTransaction).toBe(false);
+
+      await flushWarnings();
+      expect(warnings).toHaveLength(1);
+    } finally {
+      stop();
+      if (a && !aReleased) a.release();
+      b?.release();
+      // Red-phase recovery: clear any leaked 'T' directly on the shared
+      // session so a red run cannot poison later tests; endPoolAndClose's
+      // bounded end() contains a wedged SessionLock.
+      await pglite.query('ROLLBACK').catch(() => {});
+      await endPoolAndClose(pool);
+    }
+  });
+
+  it('buffered warm-parser failure: release while the failing query is in flight rolls back and unblocks the sibling', async () => {
+    // FIX 1, window 2: release() lands BEFORE the buffered rejection flushes.
+    // The occupied chain defers the cleanup link behind the failing query's
+    // recovery Sync; when its RFQ arrives the link finds 'T', warns once and
+    // ROLLBACKs — previously this window skipped the cleanup outright.
+    const pool = new PgBridgePool({ pglite, max: 2 });
+    const { warnings, stop } = captureAbandonWarnings();
+    let a: pg.PoolClient | undefined;
+    let aReleased = false;
+    let b: pg.PoolClient | undefined;
+    try {
+      a = await pool.connect();
+      b = await pool.connect();
+      await a.query('BEGIN');
+
+      await a.query({
+        name: 'leak_w2',
+        text: 'SELECT 1 AS n',
+        rowMode: 'array',
+        values: [],
+        types: goodTypes,
+      });
+
+      const boom = new Error('warm parser boom 2');
+      const failing = a.query({
+        name: 'leak_w2',
+        text: 'SELECT 1 AS n',
+        rowMode: 'array',
+        values: [],
+        types: throwingTypes(boom),
+      });
+      failing.catch(() => {});
+      // Release with the failing query still in flight — no await between.
+      a.release();
+      aReleased = true;
+
+      const failure = await settledOrPending(
+        failing.then(
+          () => 'resolved' as const,
+          (err: unknown) => err,
+        ),
+        1_500,
+      );
+      expect(failure).toBe(boom);
+
+      const sibling = b.query<{ ok: number }>('SELECT 1 AS ok');
+      sibling.catch(() => {});
+      const outcome = await settledOrPending(sibling, 1_500);
+      expect(outcome).not.toBe('pending');
+      if (outcome !== 'pending') expect(outcome.rows[0]?.ok).toBe(1);
+
+      await flushWarnings();
+      expect(warnings).toHaveLength(1);
+    } finally {
+      stop();
+      if (a && !aReleased) a.release();
+      b?.release();
+      await pglite.query('ROLLBACK').catch(() => {});
+      await endPoolAndClose(pool);
+    }
+  });
+
+  it('buffered Bind-serialization failure inside BEGIN: release after rejection rolls back and unblocks the sibling', async () => {
+    // FIX 1, the other submit-time throw: serializing a circular structure
+    // in `values` fails while building Bind. Buffered until the recovery
+    // Sync's RFQ like the warm-parser throw — the release that follows the
+    // rejection must fire the abandoned-tx cleanup instead of leaking the
+    // transaction and the SessionLock.
+    const pool = new PgBridgePool({ pglite, max: 2 });
+    const { warnings, stop } = captureAbandonWarnings();
+    let a: pg.PoolClient | undefined;
+    let aReleased = false;
+    let b: pg.PoolClient | undefined;
+    try {
+      a = await pool.connect();
+      b = await pool.connect();
+      await a.query('BEGIN');
+
+      const circular: unknown[] = [];
+      circular.push(circular);
+      const failing = a.query({
+        name: 'leak_b',
+        text: 'SELECT $1::text AS v',
+        rowMode: 'array',
+        values: [circular],
+        types: goodTypes,
+      });
+      const failure = await settledOrPending(
+        failing.then(
+          () => 'resolved' as const,
+          (err: unknown) => err,
+        ),
+        1_500,
+      );
+      // The serialization error's exact shape is the serializer's to choose —
+      // only "rejects with an Error" is pinned, not its message.
+      expect(failure).not.toBe('pending');
+      expect(failure).not.toBe('resolved');
+      expect(failure).toBeInstanceOf(Error);
+
+      a.release();
+      aReleased = true;
+
+      const sibling = b.query<{ ok: number }>('SELECT 1 AS ok');
+      sibling.catch(() => {});
+      const outcome = await settledOrPending(sibling, 1_500);
+      expect(outcome).not.toBe('pending');
+      if (outcome !== 'pending') expect(outcome.rows[0]?.ok).toBe(1);
+
+      await flushWarnings();
+      expect(warnings).toHaveLength(1);
+    } finally {
+      stop();
+      if (a && !aReleased) a.release();
+      b?.release();
+      await pglite.query('ROLLBACK').catch(() => {});
+      await endPoolAndClose(pool);
     }
   });
 });

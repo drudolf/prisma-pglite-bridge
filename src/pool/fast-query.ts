@@ -97,8 +97,14 @@ export class FastQuery implements pg.Submittable {
    * Called by pg.Client when this query becomes active. Returns an Error
    * (never throws) for client-side validation failures — stock Query
    * parity. A synchronous serialization failure inside Bind or a warm-path
-   * parser-resolution failure settles the promise directly and returns
-   * null instead (see the catches below).
+   * parser-resolution failure is buffered and returns null instead; the
+   * recovery Sync's ReadyForQuery settles the promise (see the catches
+   * below). Settling INSIDE submit would be premature: the promise (and
+   * with it the client's submission chain) would clear while pg's
+   * active-query slot still holds this query, and a release() in that
+   * window would read as "bare Submittable in flight" and skip the
+   * abandoned-transaction cleanup — leaking an open transaction and the
+   * SessionLock (probe-verified).
    */
   submit(connection: pg.Connection): Error | null {
     // The extended-protocol methods, parsedStatements, and sendCopyFail this
@@ -132,12 +138,15 @@ export class FastQuery implements pg.Submittable {
         // Without a catch the throw escapes pg's _pulseQueryQueue with
         // readyForQuery still false — wedging the client forever. Recover
         // with a bare Sync: the backend answers ReadyForQuery and pg pulses
-        // the queue. Unlike stock pg, no Close for the just-parsed statement:
-        // ParseComplete still records it in parsedStatements, so closing it
-        // server-side would desync the parse-skip cache (26000 on the next
-        // execution); keeping it is exactly the cache's normal warm state.
+        // the queue. The error is BUFFERED, not settled here — see the
+        // submit() doc comment for why premature settlement leaks abandoned
+        // transactions. Unlike stock pg, no Close for the just-parsed
+        // statement: ParseComplete still records it in parsedStatements, so
+        // closing it server-side would desync the parse-skip cache (26000
+        // on the next execution); keeping it is exactly the cache's normal
+        // warm state.
+        this.bufferedError = err instanceof Error ? err : new Error(String(err));
         connection.sync();
-        this.settle(err instanceof Error ? err : new Error(String(err)));
         return null;
       }
       if (cachedFields === undefined) {
@@ -150,13 +159,14 @@ export class FastQuery implements pg.Submittable {
           // Parser resolution runs caller code (types.getTypeParser) — a
           // throw here would escape pg's _pulseQueryQueue with readyForQuery
           // still false, the same client-wedging failure mode as the Bind
-          // catch above. Recover identically: bare Sync (the backend
-          // discards the bound portal and answers ReadyForQuery), settle,
-          // done. The cached fields entry stays — it is server truth; the
-          // failure belongs to this call's types object, which is
-          // re-resolved on every execution by design.
+          // catch above. Recover identically: buffer the error, bare Sync
+          // (the backend discards the bound portal and answers
+          // ReadyForQuery, which settles the rejection). The cached fields
+          // entry stays — it is server truth; the failure belongs to this
+          // call's types object, which is re-resolved on every execution by
+          // design.
+          this.bufferedError = err instanceof Error ? err : new Error(String(err));
           connection.sync();
-          this.settle(err instanceof Error ? err : new Error(String(err)));
           return null;
         }
       }
