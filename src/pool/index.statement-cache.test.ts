@@ -112,6 +112,28 @@ describe('PgBridgePool — per-client statement names', () => {
     }
   });
 
+  it('evicts a user-named statement deallocated through a valid dollar identifier', async () => {
+    // PostgreSQL permits `$` in an unquoted identifier. The deallocation
+    // detector must not leave pg's parsedStatements entry behind after the
+    // backend has forgotten this statement, or the repeat Bind fails 26000.
+    const pool = new PgBridgePool({ pglite, statementCaching: false });
+    try {
+      const client = await pool.connect();
+      try {
+        const shape = { name: 'dollar$statement', text: 'SELECT 41 AS n' };
+        await client.query(shape);
+        await client.query(`DEALLOCATE ${shape.name}`);
+
+        const repeated = await client.query(shape);
+        expect(repeated.rows).toEqual([{ n: 41 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPool(pool);
+    }
+  });
+
   it('zombie-client connect race: a successor pool queries the same SQL while the old client is still ending', async () => {
     // Defect 3 regression: pg-pool resolves pool.end()'s promise BEFORE
     // client.end()'s callback fires, so a successor pool's first client can

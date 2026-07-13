@@ -385,7 +385,14 @@ export class PgBridgeClient extends pg.Client {
     // to lowercase, matching how PostgreSQL resolves the DEALLOCATE target —
     // without the fold, `DEALLOCATE FOO` would deallocate `foo` server-side
     // while the eviction missed pg's cache entry for it (26000 on next use).
-    const m = /^\s*DEALLOCATE(?:\s+PREPARE)?\s+(?:(ALL)|"([^"]+)"|(\w+))\s*;?\s*$/i.exec(text);
+    // Unquoted identifiers admit `$` past the first character; [\w$]+ is a
+    // lenient superset, which is safe — the caller only evicts after the
+    // server CONFIRMED the DEALLOCATE, so a match on SQL the server rejects
+    // can never evict a live name. Known misses, each bounded to a skipped
+    // eviction (26000 on next use — the status quo for undetected shapes,
+    // never a false eviction): quoted identifiers with escaped inner quotes
+    // (`"a""b"`) and non-ASCII unquoted identifiers (\w is ASCII-only).
+    const m = /^\s*DEALLOCATE(?:\s+PREPARE)?\s+(?:(ALL)|"([^"]+)"|([\w$]+))\s*;?\s*$/i.exec(text);
     if (!m) return null;
     if (m[1] !== undefined) return { all: true };
     if (m[2] !== undefined) return { name: m[2] };
