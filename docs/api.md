@@ -359,7 +359,14 @@ statement caching (`statementCaching`, default on) stays active
 across pools — each client names its own statements, so pools never
 contend for names — and a `DEALLOCATE`/`DISCARD ALL` issued through
 any pool client evicts the affected names from every live client's
-plan cache. Statements left by departed clients linger in the shared
+plan cache. Eviction detection parses the statement text:
+`DEALLOCATE ALL`/`DISCARD ALL` and every bridge-injected name are
+always recognized, but a single-name `DEALLOCATE` whose identifier
+uses escaped inner quotes (`"a""b"`) or non-ASCII characters — or
+that arrives inside comments or multi-statement text — is not, and
+that statement's next execution fails with error 26000, exactly as
+it would without the interception.
+Statements left by departed clients linger in the shared
 session (bounded at 500 per client) until it next quiesces to zero
 live clients, when the connect-time cleanup reclaims them — memory
 overhead only, never a name collision. The pool still emits

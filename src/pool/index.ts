@@ -141,6 +141,12 @@ export interface PgBridgePoolOptions
    * `DEALLOCATE` and `DISCARD ALL` issued through any pool client evict the
    * affected names from every live client's plan cache on this instance, so
    * repeat executions re-Parse instead of failing with error 26000.
+   * Detection parses the statement text: `DEALLOCATE ALL` / `DISCARD ALL`
+   * and every bridge-injected name are always recognized, but a single-name
+   * `DEALLOCATE` whose identifier uses escaped inner quotes (`"a""b"`) or
+   * non-ASCII characters — or that arrives inside comments or
+   * multi-statement text — is not, and that statement's next execution
+   * fails with error 26000, as it would without the interception.
    */
   statementCaching?: boolean;
 
