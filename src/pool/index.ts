@@ -342,8 +342,9 @@ export class PgBridgePool extends pg.Pool {
       client.releaseAbandonedPortalHold();
       // Ordering (pinned to pg-pool 3.14.0 `_release`, index.js 384-429):
       // 'release' is emitted synchronously BEFORE the client joins `_idle`
-      // and `_pulseQueue()` runs, so the ROLLBACK enters the client's
-      // submission chain ahead of any next-checkout user query and its RFQ
+      // and `_pulseQueue()` runs, so the rollback cleanup link enters the
+      // client's submission chain ahead of any next-checkout user query —
+      // behind any still-in-flight chained work — and its ROLLBACK's RFQ
       // `I` releases the session lock, waking queued waiters.
       if (err == null) {
         client.rollbackAbandonedTransaction();

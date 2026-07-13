@@ -135,39 +135,96 @@ export class PgBridgeClient extends pg.Client {
    *  COMMIT/ROLLBACK) — invoked by `PgBridgePool`'s `'release'` listener. On a
    *  shared PGlite session an abandoned transaction would otherwise keep the
    *  SessionLock owned (wedging every other pool client) and leak into the
-   *  recycled client's next checkout, so it is rolled back here. A no-op
-   *  unless the duplex reports an open transaction. */
+   *  recycled client's next checkout. Cleanup is judged when the submission
+   *  chain drains, not at release time — see the chained cleanup link below. */
   rollbackAbandonedTransaction(): void {
-    // A client released mid-operation (an abandoned in-flight query or
-    // cursor Submittable) is wedged: pg's active query will never complete,
-    // so a chained ROLLBACK could never reach the wire — it would only sit
-    // queued until teardown and then arm a destroy-time race against a
-    // closing PGlite (the dead-WASM event-loop spin). That includes a real
-    // abandoned transaction with an operation still in flight (awaited
-    // BEGIN, unawaited query, release): skip silently — the destroy-time
+    // A released client whose active query is a bare Submittable with no
+    // chained bridge-managed work behind it is wedged for good if that
+    // Submittable never completes (an abandoned cursor): a chained ROLLBACK
+    // could never reach the wire — it would only sit queued until teardown
+    // and then arm a destroy-time race against a closing PGlite (the
+    // dead-WASM event-loop spin). Skip silently — the destroy-time
     // rollbackIfInTransaction goes through pglite.query directly, bypassing
     // pg's queue, and remains the backstop. Abandoned-cursor releases never
-    // reach the status check below anyway: the forced mid-portal
+    // reach the transaction check below anyway: the forced mid-portal
     // ReadyForQuery reports `I` (probe-verified; plan, second amendment),
     // and their dangling implicit transaction is closed by
     // releaseAbandonedPortalHold's recovery Sync.
-    if (getPgActiveQuery(this) != null) return;
-    if (!this.#duplexBox.current?.inTransaction) return;
-    process.emitWarning(
-      'A pool client was released with an open transaction; attempting ROLLBACK. ' +
-        'Commit or roll back before release().',
-      { type: 'PGliteBridgeAbandonedTransactionWarning' },
-    );
-    void (this.query('ROLLBACK') as Promise<unknown>).catch((err: unknown) => {
-      // The ROLLBACK failing means the connection itself is broken — a plain
-      // swallow would park a dirty client in pg-pool's idle set with the
-      // session lock possibly still held. Destroy the duplex instead: its
-      // _destroy path (rollbackIfInTransaction + lock cancel) is the
-      // authoritative backstop, and pg-pool's idle 'error' listener removes
-      // the dead client from the pool.
-      /* v8 ignore next — defensive arms: pg rejects with Error instances, and the duplex outlives its client */
-      this.#duplexBox.current?.destroy(err instanceof Error ? err : new Error(String(err)));
-    });
+    if (getPgActiveQuery(this) != null && this.querySubmissionChain === undefined) return;
+    // Known residual (probe-pinned by the composite-window test): chained
+    // work queued BEHIND a wedged Submittable inside an explicit transaction
+    // registers a link that never runs before teardown — the tail can only
+    // settle after a terminating Sync the abandoned cursor will never send,
+    // and releaseAbandonedPortalHold deliberately keeps ownership on T/E.
+    // The link stays dormant (its run-time re-check finds the duplex
+    // destroyed at teardown drain), so the cost is the documented
+    // unbounded sibling wait, bounded by the pool's lifetime. Lifting it
+    // means manufacturing the recovery Sync inside an explicit transaction
+    // too — a duplex-level change deferred to its own design round.
+    //
+    // Idle client outside a transaction: nothing abandoned. A client WITH
+    // chained work is deliberately not screened on inTransaction here — the
+    // verdict belongs to AFTER that work settles (an unawaited BEGIN opens
+    // a transaction, an unawaited COMMIT closes one), so the cleanup link
+    // re-checks when it runs.
+    if (this.querySubmissionChain === undefined && !this.#duplexBox.current?.inTransaction) {
+      return;
+    }
+    this.#chainRollbackCleanup();
+  }
+
+  /**
+   * Register the abandoned-transaction cleanup as an explicit link on the
+   * submission chain. Invariants: the link is registered SYNCHRONOUSLY here
+   * — pg-pool emits 'release' before the client joins the idle set, so the
+   * link (and any ROLLBACK it issues) is ordered ahead of every
+   * next-checkout query — and the link's chain tail releases only after
+   * that ROLLBACK has settled, never between enqueue and settle. State is
+   * judged when the link RUNS, not at registration: an unawaited in-flight
+   * COMMIT/ROLLBACK has closed the transaction by then (silent no-op, no
+   * spurious warning), an unawaited BEGIN has opened one (rolled back), and
+   * a duplex already torn down hands off to _destroy's
+   * rollbackIfInTransaction backstop.
+   */
+  #chainRollbackCleanup(): void {
+    const prior = this.querySubmissionChain ?? Promise.resolve();
+    const cleanup = (): Promise<void> => {
+      const duplex = this.#duplexBox.current;
+      /* v8 ignore next — a release-registered link implies the stream factory ran */
+      if (duplex === undefined) return Promise.resolve();
+      // Teardown won the race (or the in-flight query died with its
+      // connection): the duplex _destroy path already rolls back. And a
+      // transaction closed by the in-flight work itself needs no cleanup.
+      if (duplex.destroyed || !duplex.inTransaction) return Promise.resolve();
+      process.emitWarning(
+        'A pool client was released with an open transaction; attempting ROLLBACK. ' +
+          'Commit or roll back before release().',
+        { type: 'PGliteBridgeAbandonedTransactionWarning' },
+      );
+      // super.query, not this.query: re-entering query() from a chain link
+      // would chain onto the link's own unsettled tail and deadlock. A bare
+      // ROLLBACK needs none of query()'s added services (no statement
+      // naming, no dealloc intercept, no fast path).
+      return super.query('ROLLBACK').then(
+        () => undefined,
+        (err: unknown) => {
+          // The ROLLBACK failing means the connection itself is broken — a
+          // plain swallow would park a dirty client in pg-pool's idle set
+          // with the session lock possibly still held. Destroy the duplex
+          // instead: its _destroy path (rollbackIfInTransaction + lock
+          // cancel) is the authoritative backstop, and pg-pool's idle
+          // 'error' listener removes the dead client from the pool.
+          /* v8 ignore next — defensive arm: pg rejects with Error instances, and the duplex outlives its client */
+          this.#duplexBox.current?.destroy(err instanceof Error ? err : new Error(String(err)));
+        },
+      );
+    };
+    let chainTail: Promise<void>;
+    const releaseChainTail = (): void => {
+      if (this.querySubmissionChain === chainTail) this.querySubmissionChain = undefined;
+    };
+    chainTail = prior.then(cleanup).then(releaseChainTail, releaseChainTail);
+    this.querySubmissionChain = chainTail;
   }
 
   /** Duplex-teardown handle for `PgBridgePool.end()`'s close barrier:

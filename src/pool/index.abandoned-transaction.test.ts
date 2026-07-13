@@ -403,6 +403,341 @@ describe('PgBridgePool — rollback abandoned transaction on release', () => {
     }
   });
 
+  it('rolls back after a finite in-flight query settles so a sibling does not remain blocked', async () => {
+    const pool = new PgBridgePool({ pglite, max: 2 });
+    let a: pg.PoolClient | undefined;
+    let b: pg.PoolClient | undefined;
+    let aReleased = false;
+    let sibling: Promise<pg.QueryResult<{ one: number }>> | undefined;
+    try {
+      a = await pool.connect();
+      b = await pool.connect();
+      await a.query('BEGIN');
+
+      // Release while an ordinary, finite query is active. The eager release
+      // hook cannot ROLLBACK yet, but it must arrange a cleanup barrier after
+      // this query settles; treating it like a permanently wedged cursor leaves
+      // the SessionLock owned forever.
+      const inFlight = a.query('SELECT pg_sleep(0.05)');
+      a.release();
+      aReleased = true;
+      sibling = b.query<{ one: number }>('SELECT 1 AS one');
+      sibling.catch(() => {});
+
+      await inFlight;
+      const outcome = await settledOrPending(sibling, 1_500);
+      expect(outcome).not.toBe('pending');
+      if (outcome !== 'pending') expect(outcome.rows[0]?.one).toBe(1);
+    } finally {
+      if (a && !aReleased) a.release();
+
+      if (sibling) {
+        // Red-phase recovery: check out released client A and manually clear
+        // the transaction so the intentionally failing assertion cannot leave
+        // client B or the shared PGlite wedged for later tests.
+        const recovery = await pool.connect();
+        try {
+          await recovery.query('ROLLBACK').catch(() => {});
+        } finally {
+          recovery.release();
+        }
+        await sibling.catch(() => {});
+      }
+      b?.release();
+      await endPoolAndClose(pool);
+    }
+  });
+
+  it('runs the deferred ROLLBACK after in-flight chained work but before the next checkout query (max: 1)', async () => {
+    // Recycle-ordering pin: the cleanup link is registered SYNCHRONOUSLY on
+    // the submission chain at release, so it is ordered AFTER the unawaited
+    // in-flight pg_sleep but AHEAD of any query the next checkout submits on
+    // the recycled client. That checkout must therefore see the INSERT rolled
+    // back and inherit no open transaction.
+    const pool = new PgBridgePool({ pglite, max: 1 });
+    const { warnings, stop } = captureAbandonWarnings();
+    let next: pg.PoolClient | undefined;
+    try {
+      const a = await pool.connect();
+      await a.query('CREATE TABLE recycle_t (id int)');
+      await a.query('BEGIN');
+      await a.query('INSERT INTO recycle_t VALUES (1)');
+      // Unawaited and still in flight at release time.
+      void a.query('SELECT pg_sleep(0.05)');
+      a.release();
+
+      // pg-pool recycles the sole client; its queries join the same
+      // submission chain, so they serialize behind the sleep AND the cleanup
+      // link. Bounded so a wedge fails fast instead of hanging the worker.
+      next = await pool.connect();
+      const count = await settledOrPending(
+        next.query<{ count: string }>('SELECT count(*)::text AS count FROM recycle_t'),
+        1_500,
+      );
+      expect(count).not.toBe('pending');
+      if (count !== 'pending') expect(count.rows[0]?.count).toBe('0');
+
+      // No inherited open transaction on the recycled client.
+      const clean = await next.query<{ clean: boolean }>(
+        'SELECT pg_current_xact_id_if_assigned() IS NULL AS clean',
+      );
+      expect(clean.rows[0]?.clean).toBe(true);
+
+      await flushWarnings();
+      expect(warnings).toHaveLength(1);
+    } finally {
+      stop();
+      // Red-phase recovery: the recycled client may still be inside the
+      // inherited transaction — clear it before teardown.
+      await next?.query('ROLLBACK').catch(() => {});
+      next?.release();
+      await endPoolAndClose(pool);
+    }
+  });
+
+  it('stays silent when the unawaited in-flight query was the COMMIT itself (no-op re-check arm)', async () => {
+    // The cleanup link must re-check transaction state when it RUNS, not
+    // trust a snapshot from release time: here the release-time status still
+    // reads 'T' (the COMMIT is in flight), but by the time the link runs the
+    // COMMIT has won. A snapshot-based implementation would fire a spurious
+    // warning and a ROLLBACK it never needed. Like the delayed-BEGIN window
+    // above, this guards the no-op arm rather than being red-until-fixed.
+    const pool = new PgBridgePool({ pglite, max: 1 });
+    const { warnings, stop } = captureAbandonWarnings();
+    let next: pg.PoolClient | undefined;
+    try {
+      const a = await pool.connect();
+      await a.query('CREATE TABLE commitwin_t (id int)');
+      await a.query('BEGIN');
+      await a.query('INSERT INTO commitwin_t VALUES (1)');
+      void a.query('COMMIT');
+      a.release();
+
+      // Settle barrier: the recycled client's query chains behind the COMMIT
+      // and the cleanup link, so the link has run by the time this resolves.
+      next = await pool.connect();
+      const count = await settledOrPending(
+        next.query<{ count: string }>('SELECT count(*)::text AS count FROM commitwin_t'),
+        1_500,
+      );
+      expect(count).not.toBe('pending');
+      // The COMMIT won — no spurious ROLLBACK undid the insert.
+      if (count !== 'pending') expect(count.rows[0]?.count).toBe('1');
+
+      await flushWarnings();
+      expect(warnings).toHaveLength(0);
+    } finally {
+      stop();
+      next?.release();
+      await endPoolAndClose(pool);
+    }
+  });
+
+  it('recovers an unawaited BEGIN: the cleanup link rolls back once it settles and warns exactly once', async () => {
+    // Upgrade over the delayed-BEGIN window test above (which tolerates both
+    // outcomes): the release-time status reads 'I' while the BEGIN is still
+    // in flight, so the old release-time check legitimately skipped — leaving
+    // the SessionLock held forever once the BEGIN settled. The deferred
+    // cleanup link runs after the BEGIN settles, re-checks, finds 'T', emits
+    // exactly one PGliteBridgeAbandonedTransactionWarning and ROLLBACKs —
+    // unblocking sibling B.
+    const pool = new PgBridgePool({ pglite, max: 2 });
+    const { warnings, stop } = captureAbandonWarnings();
+    let b: pg.PoolClient | undefined;
+    try {
+      const a = await pool.connect();
+      b = await pool.connect();
+
+      // Unawaited at RELEASE time — that is the whole window.
+      const beginP = a.query('BEGIN');
+      beginP.catch(() => {});
+      a.release();
+      // Deterministic red: let the BEGIN settle so the session really is in
+      // a transaction before the sibling queries (mirrors the delayed-BEGIN
+      // test's settle await).
+      await beginP.catch(() => {});
+
+      const sibling = b.query<{ ok: number }>('SELECT 1 AS ok');
+      sibling.catch(() => {});
+      const outcome = await settledOrPending(sibling, 1_500);
+      expect(outcome).not.toBe('pending');
+      if (outcome !== 'pending') expect(outcome.rows[0]?.ok).toBe(1);
+
+      // Warning barrier: the recycled client (A) chains this query behind
+      // the BEGIN and its cleanup link, so the single warning is a mere
+      // emit-tick away by the time it resolves.
+      const barrier = await pool.connect();
+      try {
+        await barrier.query('SELECT 1');
+      } finally {
+        barrier.release();
+      }
+      await flushWarnings();
+      expect(warnings).toHaveLength(1);
+    } finally {
+      stop();
+      // Red-phase recovery: clear the leaked transaction through a recovery
+      // checkout (pg-pool hands back recycled A) so the shared instance is
+      // not poisoned for later tests.
+      const recovery = await pool.connect().catch(() => undefined);
+      if (recovery !== undefined) {
+        await recovery.query('ROLLBACK').catch(() => {});
+        recovery.release();
+      }
+      b?.release();
+      await endPoolAndClose(pool);
+    }
+  });
+
+  it('composite window: suspended cursor inside an explicit tx — wedge bounded by pool lifetime, teardown recovers', async () => {
+    // DESIGN-FORK RESOLUTION (tribunal-mandated probe). This composition —
+    // an abandoned suspended portal AND chained work (the unawaited tail
+    // query queued behind the cursor) inside an explicit BEGIN — was the
+    // open question of the deferred-cleanup review: is the chain-presence
+    // discriminator sound here? The probe's verdict: the wedge is NOT a
+    // discriminator artifact and no release-time cleanup can lift it.
+    // releaseAbandonedPortalHold deliberately keeps ownership on a T/E
+    // status (a real transaction needs its COMMIT/ROLLBACK), while the
+    // cleanup link is queued behind a tail that can only settle after a
+    // terminating Sync that never comes — each side correctly defers to the
+    // other. The reviewed fallback (an explicit bridge-managed-active flag)
+    // is behaviorally inert here: it would skip registering a dormant link,
+    // and the sibling stays blocked either way. What this test PINS is the
+    // contract the shipped design does guarantee, matching the documented
+    // "waits unboundedly behind another client's open transaction or
+    // suspended portal" (PgBridgePoolOptions.max): the wedge is bounded by
+    // the POOL's lifetime, the dormant cleanup link stays silent (no
+    // warning for a ROLLBACK it can never deliver), pool.end() settles (the
+    // destroy-time rollbackIfInTransaction frees the session out-of-band),
+    // nothing leaks as an unhandledRejection, and the shared session is
+    // clean afterwards. The root fix — manufacturing the portal-abandon
+    // recovery Sync inside an explicit transaction too, so the tail and the
+    // cleanup link can drain — is a duplex-level design change deferred to
+    // its own review round.
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    const pool = new PgBridgePool({ pglite, max: 2 });
+    const { warnings, stop } = captureAbandonWarnings();
+    let a: pg.PoolClient | undefined;
+    let b: pg.PoolClient | undefined;
+    let sibling: Promise<pg.QueryResult<{ one: number }>> | undefined;
+    try {
+      a = await pool.connect();
+      b = await pool.connect();
+      await a.query('BEGIN');
+
+      // Portal suspended inside the explicit transaction…
+      const cursor = a.query(new Cursor<{ i: number }>('select i from generate_series(1,50) g(i)'));
+      await cursor.read(5);
+      // …with an ordinary query queued behind the wedged cursor.
+      const tail = a.query('SELECT 1');
+      tail.catch(() => {});
+      a.release();
+
+      // The sibling waits behind A's still-open transaction — the documented
+      // unbounded wait. Pinned as 'pending' so a future duplex-level fix that
+      // unblocks it announces itself here (flip this to a settle assertion).
+      sibling = b.query<{ one: number }>('SELECT 1 AS one');
+      sibling.catch(() => {});
+      const outcome = await settledOrPending(sibling, 1_200);
+      expect(outcome).toBe('pending');
+
+      // The dormant cleanup link must not warn about a ROLLBACK it cannot
+      // deliver — the warning belongs to cleanups that actually run.
+      await flushWarnings();
+      expect(warnings).toHaveLength(0);
+
+      // Teardown recovery: B releases with its query still queued (its own
+      // cleanup link no-ops — no transaction), and end() must settle within
+      // the drain bound. Asserted here because endPoolAndClose in finally
+      // deliberately swallows a pending end() — a wedge would pass silently.
+      b.release();
+      b = undefined;
+      const ended = await settledOrPending(pool.end(), 10_000);
+      expect(ended).not.toBe('pending');
+
+      // The blocked sibling settles once teardown cancels its lock wait
+      // (rejection — its client was destroyed), rather than leaking forever.
+      const siblingSettled = await settledOrPending(
+        sibling.then(
+          () => 'settled',
+          () => 'settled',
+        ),
+        2_000,
+      );
+      expect(siblingSettled).toBe('settled');
+
+      // Destroy-path rollbackIfInTransaction freed the session out-of-band:
+      // the shared instance is idle and usable, and the wedge died with the
+      // pool. No dead-WASM spin: this direct query serializes behind any
+      // in-flight teardown work inside runExclusive.
+      const alive = await pglite.query<{ ok: number }>('SELECT 1 AS ok');
+      expect(alive.rows[0]?.ok).toBe(1);
+
+      // The dormant link drained during teardown without firing (destroyed
+      // duplex re-check) and nothing surfaced as an unhandledRejection.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(rejections).toEqual([]);
+      await flushWarnings();
+      expect(warnings).toHaveLength(0);
+    } finally {
+      stop();
+      process.removeListener('unhandledRejection', onRejection);
+      b?.release();
+      // Defensive: clear any backend 'T' directly on the shared session so
+      // the afterEach reset starts clean even if an assertion above threw
+      // before teardown ran.
+      await pglite.query('ROLLBACK').catch(() => {});
+      await endPoolAndClose(pool);
+    }
+  });
+
+  it('tolerates pool.end() racing the deferred cleanup of an unawaited in-flight query', async () => {
+    // Targets the duplex-destroyed re-check arm: end() fires while the
+    // pg_sleep is still in flight, so the cleanup link typically finds the
+    // duplex already destroyed and goes silent (duplex _destroy's
+    // rollbackIfInTransaction is the backstop). The exact arm hit is
+    // timing-dependent — the link may instead win the race and roll back
+    // first — so only the invariants are pinned: end() settles, nothing
+    // surfaces as an unhandledRejection, at most one warning, and the shared
+    // session stays usable.
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    const pool = new PgBridgePool({ pglite, max: 2 });
+    const { warnings, stop } = captureAbandonWarnings();
+    try {
+      const a = await pool.connect();
+      await a.query('BEGIN');
+      void a.query('SELECT pg_sleep(0.3)').catch(() => {});
+      a.release();
+      // No await between the release and end(): teardown races both the
+      // still-running sleep and the chained cleanup link.
+      const ended = await settledOrPending(pool.end(), 10_000);
+      expect(ended).not.toBe('pending');
+
+      // Deterministic drain: a direct query serializes behind any in-flight
+      // sleep/rollback inside PGlite's runExclusive — the session is usable.
+      const alive = await pglite.query<{ ok: number }>('SELECT 1 AS ok');
+      expect(alive.rows[0]?.ok).toBe(1);
+
+      // Let any deferred rejection and warning surface.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(rejections).toEqual([]);
+      await flushWarnings();
+      expect(warnings.length).toBeLessThanOrEqual(1);
+    } finally {
+      stop();
+      process.removeListener('unhandledRejection', onRejection);
+      await endPoolAndClose(pool);
+    }
+  });
+
   it('named statements promoted inside a transaction survive its ROLLBACK (probe-confirmed PG parity)', async () => {
     // Tribunal-mandated statement-cache exposure probe. Statement caching is
     // on by default: a parameterized shape earns a protocol-level prepared
