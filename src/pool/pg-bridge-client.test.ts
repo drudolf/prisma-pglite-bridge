@@ -961,53 +961,102 @@ describe('PgBridgeClient — call-time query-config snapshot (promise forms)', (
   });
 
   // A7 — mechanical pg field-consumption drift guard. The production snapshot
-  // field list must stay in lockstep with what the installed pg version's
-  // `Query` constructor actually consumes; a pg update that reads another
-  // config property would otherwise be silently dropped on deferred bridge
-  // submission. Record the property reads through `new pg.Query(proxy)` and
-  // compare the DEDUPED set (Query re-reads `callback` when `process.domain`
-  // is set) against the production list minus the separately-documented
-  // Client-level `query_timeout`. Known blind spot (tribunal-reviewed LOW):
-  // the proxy sees only the Query CONSTRUCTOR's reads — a future pg that
-  // starts reading a new config field inside `Client.query` itself (like
-  // `query_timeout` today) is outside the mechanical guard and is covered
-  // only by the hand-verified source citation on PG_CONSUMED_QUERY_FIELDS.
-  it('A7 production field list matches pg.Query constructor reads plus query_timeout', () => {
-    const reads: string[] = [];
-    const proxy = new Proxy(
-      // A minimally valid config so the Query constructor runs to completion.
-      { text: 'SELECT 1' } as Record<string, unknown>,
-      {
-        get(target, prop, receiver) {
-          if (typeof prop === 'string') reads.push(prop);
-          return Reflect.get(target, prop, receiver);
-        },
-      },
-    );
-    // biome-ignore lint/suspicious/noExplicitAny: Query's constructor typing rejects a Proxy view
-    new pg.Query(proxy as any);
+  // field list must stay in lockstep with what the installed pg version
+  // actually consumes; a pg update that reads another config property would
+  // otherwise be silently dropped on deferred bridge submission. Record every
+  // PropertyKey read through the COMPLETE stock `pg.Client.prototype.query`
+  // entry point on a live connected client — not `new pg.Query` alone, which
+  // misses Client-level reads like `query_timeout` — and require the traced
+  // call to finish its normal success path, so the recorded accesses belong
+  // to a viable invocation. pg reads `submit` first as its dispatch probe;
+  // the bridge mirrors that check (isSubmittable) before snapshotting, so it
+  // is asserted in position and never part of the snapshot list. The tail is
+  // compared as an order-independent exact set: repeat reads are deduped
+  // because A7 guards field MEMBERSHIP, not read counts — the snapshot tests
+  // own exact getter-count behavior. Residual: a runtime trace covers the
+  // executed successful promise path only; a field read solely on an
+  // unexecuted upstream branch (or only on the callback path) stays outside
+  // any finite trace and is covered by the source citations on
+  // PG_CONSUMED_QUERY_FIELDS.
+  it('A7 production field list matches the full stock Client.query read set', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      // Destroy the checked-out client unless the traced call and every
+      // assertion completed — a failed trace could leave partial upstream
+      // state (a queued Query, a live read-timeout timer) that must not be
+      // recycled into teardown.
+      let releaseError: Error | undefined = new Error(
+        'A7 full-entry-point trace did not complete cleanly',
+      );
+      try {
+        const accesses: PropertyKey[] = [];
+        // A deliberately rich callback-free promise-path config — named +
+        // parameterized + extended + typed + row-limited + array rowMode +
+        // timeout — so the traced path exercises the common option surface.
+        // Still one executed shape, not proof over every upstream branch.
+        const target: Record<string, unknown> = {
+          text: 'SELECT $1::int AS n',
+          values: [1],
+          rows: 1,
+          types: pg.types,
+          name: 'a7_full_client_query_trace',
+          queryMode: 'extended',
+          binary: false,
+          portal: '',
+          rowMode: 'array',
+          query_timeout: 30_000,
+        };
+        const proxy = new Proxy(target, {
+          get(t, prop, receiver) {
+            accesses.push(prop);
+            return Reflect.get(t, prop, receiver);
+          },
+        });
 
-    const dedupedReads = [...new Set(reads)];
-    const productionMinusTimeout = PG_CONSUMED_QUERY_FIELDS.filter(
-      (field) => field !== 'query_timeout',
-    );
+        // The STOCK entry point on the bridge client's real connection —
+        // bypassing the bridge override exactly the way super.query does.
+        const ret = Reflect.apply(
+          pg.Client.prototype.query as (...a: unknown[]) => unknown,
+          client,
+          [proxy],
+        );
+        expect((ret as { then?: unknown }).then).toBeTypeOf('function');
+        const result = (await ret) as { rows: unknown[] };
+        // The traced call completed its normal success path (array rowMode).
+        expect(result.rows).toEqual([[1]]);
 
-    // Same fields, order-independent — the production list preserves pg's read
-    // order for correctness, but drift detection only cares about the set.
-    expect([...dedupedReads].sort()).toEqual([...productionMinusTimeout].sort());
-    // query_timeout is the sole Client-level (client.js) addition beyond the
-    // Query constructor's consumed fields.
-    expect(PG_CONSUMED_QUERY_FIELDS).toContain('query_timeout');
-    expect(dedupedReads).not.toContain('query_timeout');
-    // The snapshot record itself must stay in lockstep with the list — without
-    // this, the record literal could drop or add a field while A7 stays green.
-    // (The record defines every key even for absent config fields; `callback`
-    // is present exactly when the capture injects one.)
-    const record = snapshotQueryConfig(
-      { text: 'SELECT 1' },
-      { override: false },
-      { omit: false, value: undefined },
-    );
-    expect(Object.keys(record)).toEqual([...PG_CONSUMED_QUERY_FIELDS]);
+        // Copy AFTER the await: the complete successful invocation's trace.
+        const deduped = [...new Set(accesses)];
+        const symbols = deduped.filter((key) => typeof key === 'symbol');
+        // No Symbol reads today; a future engine/pg Symbol probe must be
+        // classified explicitly, never silently filtered.
+        expect(symbols).toEqual([]);
+        const strings = deduped.filter((key): key is string => typeof key === 'string');
+        // pg's dispatch probe leads; it is classified, never snapshotted.
+        expect(strings[0]).toBe('submit');
+        // Exact membership, order-independent — harmless upstream read
+        // reordering does not change which fields the bridge must preserve.
+        expect(strings.slice(1).sort()).toEqual([...PG_CONSUMED_QUERY_FIELDS].sort());
+
+        // The snapshot record itself must stay in lockstep with the list —
+        // without this, the record literal could drop or add a field while
+        // A7 stays green. (The record defines every key even for absent
+        // config fields; `callback` is present exactly when the capture
+        // injects one.)
+        const record = snapshotQueryConfig(
+          { text: 'SELECT 1' },
+          { override: false },
+          { omit: false, value: undefined },
+        );
+        expect(Object.keys(record)).toEqual([...PG_CONSUMED_QUERY_FIELDS]);
+
+        releaseError = undefined;
+      } finally {
+        client.release(releaseError);
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
   });
 });

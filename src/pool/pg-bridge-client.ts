@@ -60,11 +60,17 @@ const isSubmittable = (value: unknown): value is pg.Submittable =>
  * `query_timeout` is the sole Client-level addition beyond the Query
  * constructor's fields. Any pg update that starts consuming another config
  * property must be reflected here or the deferred bridge submission would
- * silently drop it — the A7 drift guard fails the suite if the Query
- * constructor's read set diverges from this list. Exported for that test
- * only; it is NOT part of the package's public surface (absent from
- * src/index.ts). knip's default config treats *.test.ts as entry files, so a
- * test-only consumer keeps this export "used".
+ * silently drop it — the A7 drift guard traces the complete stock
+ * `Client.prototype.query` entry point through a successful live query and
+ * fails the suite if the executed read set diverges from this list. pg's
+ * leading `submit` dispatch probe is observed and asserted separately (the
+ * bridge mirrors it in isSubmittable before snapshotting); it is never a
+ * snapshot field. A runtime trace covers the executed successful path; a
+ * read hidden behind an unexecuted upstream branch remains covered only by
+ * the source citations above. Exported for that test only; it is NOT part
+ * of the package's public surface (absent from src/index.ts). knip's
+ * default config treats *.test.ts as entry files, so a test-only consumer
+ * keeps this export "used".
  */
 export const PG_CONSUMED_QUERY_FIELDS = [
   'text',
