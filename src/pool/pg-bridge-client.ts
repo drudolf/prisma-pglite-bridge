@@ -48,6 +48,88 @@ type PgBridgeClientConfig = pg.ClientConfig & {
 const isSubmittable = (value: unknown): value is pg.Submittable =>
   typeof (value as { submit?: unknown }).submit === 'function';
 
+/**
+ * The exact runtime query-config fields pg 8.x consumes, in pg's own
+ * consumption order. Sources of truth (verified against the installed
+ * pg 8.22.0):
+ *   - `pg/lib/query.js` `Query` constructor reads `text, values, rows, types,
+ *     name, queryMode, binary, portal, callback, rowMode` (via `this.text =
+ *     config.text` etc.); it reads `config.callback` a second time only when
+ *     `process.domain` is set;
+ *   - `pg/lib/client.js` (`Client.query`, ~line 660) reads `config.query_timeout`.
+ * `query_timeout` is the sole Client-level addition beyond the Query
+ * constructor's fields. Any pg update that starts consuming another config
+ * property must be reflected here or the deferred bridge submission would
+ * silently drop it — the A7 drift guard fails the suite if the Query
+ * constructor's read set diverges from this list. Exported for that test
+ * only; it is NOT part of the package's public surface (absent from
+ * src/index.ts). knip's default config treats *.test.ts as entry files, so a
+ * test-only consumer keeps this export "used".
+ */
+export const PG_CONSUMED_QUERY_FIELDS = [
+  'text',
+  'values',
+  'rows',
+  'types',
+  'name',
+  'queryMode',
+  'binary',
+  'portal',
+  'callback',
+  'rowMode',
+  'query_timeout',
+] as const;
+
+/** The single config.callback discovery read, as consumed by the snapshot:
+ *  `omit: true` means a callback was selected out-of-band (positional or
+ *  config-embedded function) and the field must not resurface on the record;
+ *  `omit: false` carries the captured non-function value so the snapshot never
+ *  re-reads a possibly-accessor property. */
+type CallbackCapture = { omit: true } | { omit: false; value: unknown };
+
+/**
+ * Snapshot a non-Submittable object query-config into an owned mutable plain
+ * record, copying only the pg-consumed fields ({@link PG_CONSUMED_QUERY_FIELDS})
+ * in pg's consumption order, reading each unshadowed field exactly once. This
+ * reproduces stock pg's synchronous `new Query(config)` field capture so a
+ * caller mutating the config after `query()` returns cannot change what the
+ * deferred bridge submission (or the invalidation decoder) sees. Nested objects
+ * (`values`, `types`, `callback`) are assigned by reference — no deep clone, no
+ * freeze, no proxy. Unknown properties are never read, matching pg's Query
+ * constructor.
+ *
+ * `valuesOverride` supplies a positional values array as the authoritative
+ * `values` without reading a shadowed `config.values`. `callback` carries the
+ * single discovery read: omit the field (a callback was selected out-of-band)
+ * or inject the already-captured non-function value — never a second accessor
+ * read.
+ *
+ * Exported for the A7 drift guard only (record keys must equal
+ * {@link PG_CONSUMED_QUERY_FIELDS}); not part of the package's public surface.
+ */
+export const snapshotQueryConfig = (
+  config: Record<string, unknown>,
+  valuesOverride: { override: true; values: unknown[] } | { override: false },
+  callback: CallbackCapture,
+): Record<string, unknown> => {
+  const record: Record<string, unknown> = {
+    text: config.text,
+    values: valuesOverride.override ? valuesOverride.values : config.values,
+    rows: config.rows,
+    types: config.types,
+    name: config.name,
+    queryMode: config.queryMode,
+    binary: config.binary,
+    portal: config.portal,
+    // `callback` is positioned per pg's read order; its value comes from the
+    // single discovery read (or is omitted) rather than a fresh accessor read.
+    ...(callback.omit ? {} : { callback: callback.value }),
+    rowMode: config.rowMode,
+    query_timeout: config.query_timeout,
+  };
+  return record;
+};
+
 export class PgBridgeClient extends pg.Client {
   private querySubmissionChain?: Promise<void>;
   /** Result-field metadata per statement name, mirroring the lifetime of
@@ -251,9 +333,10 @@ export class PgBridgeClient extends pg.Client {
    * submission chain (call order preserved, completion untracked); the
    * callback forms — positional or config-embedded, last positional winning
    * like pg's normalizeQueryConfig — re-enter as a promise and return
-   * `undefined`; remaining object-form queries get `types` wrapped with
-   * fast-array parsers, then run either the FastQuery fast path or stock
-   * pg — both serialized on one submission chain so mixed-path call order
+   * `undefined`; remaining object-form queries are snapshotted into an owned
+   * record (stock pg's call-time `new Query(config)` capture), then get `types`
+   * wrapped with fast-array parsers, then run either the FastQuery fast path or
+   * stock pg — both serialized on one submission chain so mixed-path call order
    * cannot invert.
    */
   // biome-ignore lint/suspicious/noExplicitAny: satisfy pg.Client.query's overload union
@@ -313,15 +396,38 @@ export class PgBridgeClient extends pg.Client {
 
     // pg's query(config, values, callback) collapses positional functions and
     // a config-embedded `callback` into one slot (last positional wins).
+    // Discover the callback ONCE here so both the callback re-entry and the
+    // ordinary snapshot below share the single read (an accessor-backed
+    // `config.callback` must never be evaluated twice, and a shadowed one must
+    // not be evaluated at all).
+    const discovery = this.#discoverCallback(args, first);
     // Handle every callback form, then return `undefined` like stock pg does
     // in callback mode.
-    if (this.#dispatchCallbackForm(args, first)) return undefined;
+    if (this.#dispatchCallbackForm(args, first, discovery)) return undefined;
 
-    if (isObject(first) && isTypesLike(first.types)) {
-      args[0] = {
-        ...first,
-        types: wrapTypesWithFastArrayParsers(first.types),
-      };
+    // From here on, non-Submittable object configs are snapshotted into an
+    // owned mutable record (stock pg's call-time `new Query(config)` capture),
+    // and every later transformation — types wrapping, name injection,
+    // invalidation decoding, fast-path selection, deferred submission — reads
+    // that owned record. A caller mutating the original config after query()
+    // returns therefore cannot change which text is submitted or decoded.
+    if (isObject(first)) {
+      // A positional array is the authoritative `values` override, applied
+      // before any fast-path decision and without reading a shadowed
+      // config.values. Non-array trailing shapes keep today's behavior (they
+      // still disqualify FastQuery via the args.length/Array checks).
+      const valuesOverride: { override: true; values: unknown[] } | { override: false } =
+        Array.isArray(args[1]) ? { override: true, values: args[1] } : { override: false };
+      // Every callback-selecting shape dispatched and returned above, so here
+      // the capture is always the completed config.callback read. Copy that
+      // captured value into the snapshot (never a function on this path: a
+      // function would have fired the callback dispatch).
+      args[0] = snapshotQueryConfig(first, valuesOverride, discovery.capture);
+    }
+
+    if (isObject(args[0]) && isTypesLike(args[0].types)) {
+      // Wrap the owned record's `types` in place — no second clone.
+      args[0].types = wrapTypesWithFastArrayParsers(args[0].types);
     }
 
     // String-form parameterized queries run the extended protocol with an
@@ -348,18 +454,20 @@ export class PgBridgeClient extends pg.Client {
     // the simple protocol via the isObject guard below. Empty text is never
     // named — CACHEABLE_SQL requires a leading statement keyword, and that
     // regex (not this guard) is the layer keeping empty text unnamed like
-    // stock pg runs it.
+    // stock pg runs it. The record is owned, so the name is injected in place.
     if (this.#stmtNameGen && isObject(args[0])) {
       const queryConfig = args[0] as Record<string, unknown>;
       if (typeof queryConfig.text === 'string' && queryConfig.name == null) {
         const name = this.#stmtNameGen({ sql: queryConfig.text });
-        if (name !== undefined) args[0] = { ...queryConfig, name };
+        if (name !== undefined) queryConfig.name = name;
       }
     }
 
     // Detect DEALLOCATE before submitting so we can sync pg's plan cache
-    // with PGlite after the statement resolves.
-    const dealloc = this.#detectDeallocate(args);
+    // with PGlite after the statement resolves. Decode from the ONE captured
+    // text (the owned record's, or the immutable string form) — the same value
+    // the backend eventually submits.
+    const dealloc = this.#detectStatementCacheInvalidation(args[0]);
 
     // The fast path rides the SAME submission chain as stock object-form
     // queries — a FastQuery must never jump ahead of a chained pending
@@ -415,41 +523,94 @@ export class PgBridgeClient extends pg.Client {
     return queryPromise;
   }
 
-  /** Handle the callback forms of `query()`: positional functions after the
-   *  first argument and a config-embedded `callback`, last positional winning
-   *  like pg's normalizeQueryConfig. Re-enters as a promise and invokes the
-   *  callback; returns `true` when it fired (the caller returns `undefined`
-   *  like stock pg in callback mode), `false` when there is no callback. */
-  #dispatchCallbackForm(args: unknown[], first: unknown): boolean {
-    const promiseArgs: unknown[] = [first];
-    let origCb: ((err: unknown, res: unknown) => void) | undefined;
+  /** Discover pg's single callback slot ONCE: the last positional function
+   *  after the first argument wins; only when none exists is an object config's
+   *  `callback` read (exactly once — it may be an accessor). `retained` is the
+   *  non-function positional arguments, in order, for callback re-entry. The
+   *  `capture` mirrors that single read for {@link snapshotQueryConfig} on the
+   *  ordinary promise path so no field is re-evaluated. */
+  #discoverCallback(
+    args: unknown[],
+    first: unknown,
+  ): {
+    callback: ((err: unknown, res: unknown) => void) | undefined;
+    retained: unknown[];
+    capture: CallbackCapture;
+  } {
+    const retained: unknown[] = [];
+    let positionalCb: ((err: unknown, res: unknown) => void) | undefined;
     for (let i = 1; i < args.length; i++) {
       const arg = args[i];
       if (typeof arg === 'function') {
-        origCb = arg as (err: unknown, res: unknown) => void;
+        positionalCb = arg as (err: unknown, res: unknown) => void;
       } else {
-        promiseArgs.push(arg);
+        retained.push(arg);
       }
     }
-    if (origCb === undefined && isObject(first) && typeof first.callback === 'function') {
-      origCb = first.callback as (err: unknown, res: unknown) => void;
+    if (positionalCb !== undefined) {
+      // A positional callback shadows any config.callback — pg overwrites it —
+      // so config.callback is never read, and the ordinary snapshot (which the
+      // dispatch will skip anyway) omits it.
+      return { callback: positionalCb, retained, capture: { omit: true } };
     }
-    if (origCb === undefined) return false;
+    if (!isObject(first)) {
+      // A non-object first argument is never snapshotted, so this capture is
+      // never consumed; `omit` keeps the type total without a dead read arm.
+      return { callback: undefined, retained, capture: { omit: true } };
+    }
+    // Single read of a possibly-accessor config.callback.
+    const configCb = first.callback;
+    if (typeof configCb === 'function') {
+      // The selected callback is omitted from the re-entry snapshot; pg would
+      // overwrite it with the positional callback we synthesize on re-entry.
+      return {
+        callback: configCb as (err: unknown, res: unknown) => void,
+        retained,
+        capture: { omit: true },
+      };
+    }
+    // A captured non-function callback value is injected into the ordinary
+    // snapshot from this one read (stripped-then-re-copied, matching pg keeping
+    // a non-function `callback` on the config for its own later rejection).
+    return { callback: undefined, retained, capture: { omit: false, value: configCb } };
+  }
 
-    const cb = origCb;
-    if (isObject(first) && 'callback' in first) {
-      // Strip even a non-function `callback` — pg would overwrite it with the
-      // positional one, so it must not resurface on re-entry.
-      const { callback: _callback, ...rest } = first;
-      promiseArgs[0] = rest;
-    }
+  /** Handle the callback forms of `query()` using the shared {@link
+   *  #discoverCallback} result: re-enters as a promise with an OWNED snapshot
+   *  record (callback omitted, built inside the try so a throwing other-known
+   *  field getter is delivered to the callback) and retained positional
+   *  arguments, then invokes the callback. Returns `true` when a callback
+   *  fired (the caller returns `undefined` like stock pg in callback mode),
+   *  `false` when there is none. */
+  #dispatchCallbackForm(
+    args: unknown[],
+    first: unknown,
+    discovery: {
+      callback: ((err: unknown, res: unknown) => void) | undefined;
+      retained: unknown[];
+      capture: CallbackCapture;
+    },
+  ): boolean {
+    const cb = discovery.callback;
+    if (cb === undefined) return false;
 
     try {
+      // For an object config, snapshot it with the callback omitted rather than
+      // spreading it (a `{ callback, ...rest }` rest-spread would evaluate every
+      // unrelated enumerable getter). A positional-array values override applies
+      // here too. Building inside this try delivers a throwing other-known field
+      // getter to the callback, not to the synchronous caller. A string first
+      // argument needs no snapshot (immutable).
+      const valuesOverride: { override: true; values: unknown[] } | { override: false } =
+        Array.isArray(args[1]) ? { override: true, values: args[1] } : { override: false };
+      const reentryFirst = isObject(first)
+        ? snapshotQueryConfig(first, valuesOverride, { omit: true })
+        : first;
       // Known deviation: a callback that throws surfaces as an unhandled
       // rejection here, where stock pg propagates it synchronously from the
       // connection's message handler (uncaughtException channel). adapter-pg
       // never uses callback mode.
-      this.query(...promiseArgs).then(
+      this.query(reentryFirst, ...discovery.retained).then(
         (res: unknown) => cb(null, res),
         (err: unknown) => cb(err, undefined),
       );
@@ -459,19 +620,20 @@ export class PgBridgeClient extends pg.Client {
     return true;
   }
 
-  /** Returns the eviction scope if args describe a DEALLOCATE or DISCARD ALL
-   *  statement, `null` otherwise. Handles both string form
-   *  (`query('DEALLOCATE ALL')`) and object form
+  /** Returns the eviction scope if the OWNED query record (or immutable string
+   *  form) describes a DEALLOCATE or DISCARD ALL statement, `null` otherwise.
+   *  Takes the config already captured by {@link query} — one text identity per
+   *  call — so the decoded scope and the submitted text can never diverge.
+   *  Handles both string form (`query('DEALLOCATE ALL')`) and object form
    *  (`query({ text: 'DEALLOCATE ALL' })`); the lexical contract — supported
    *  identifier forms, ASCII-only folding, fail-closed exclusions — lives in
    *  {@link decodeStatementCacheInvalidation}'s module. */
-  #detectDeallocate(args: unknown[]): StatementCacheInvalidation | null {
-    const first = args[0];
+  #detectStatementCacheInvalidation(config: unknown): StatementCacheInvalidation | null {
     const text =
-      typeof first === 'string'
-        ? first
-        : isObject(first) && typeof (first as Record<string, unknown>).text === 'string'
-          ? ((first as Record<string, unknown>).text as string)
+      typeof config === 'string'
+        ? config
+        : isObject(config) && typeof config.text === 'string'
+          ? config.text
           : null;
     if (!text) return null;
     return decodeStatementCacheInvalidation(text);

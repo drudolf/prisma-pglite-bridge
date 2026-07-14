@@ -79,6 +79,20 @@ describe('decodeStatementCacheInvalidation — accepted grammar', () => {
     ['DEALLOCATE """"', '"'],
     ['DEALLOCATE "sp ace;\t-- /* not a comment */"', 'sp ace;\t-- /* not a comment */'],
     ['DEALLOCATE\n"a""b"\r;', 'a"b'],
+    // Quoted-adjacency targets — a `"` opens a delimited identifier and
+    // cannot continue the preceding keyword, so zero whitespace after
+    // DEALLOCATE / optional PREPARE is an unambiguous token boundary.
+    ['DEALLOCATE"foo"', 'foo'],
+    ['DEALLOCATE"a-b"', 'a-b'],
+    ['DEALLOCATE"a""b"', 'a"b'],
+    ['deallocate"mÜnze"', 'mÜnze'],
+    ['DEALLOCATE"ALL"', 'ALL'], // quoted ALL is a name, never { all: true }
+    ['DEALLOCATE PREPARE"a-b"', 'a-b'],
+    ['deallocate prepare"a-b"', 'a-b'], // mixed-case keyword variant
+    ['DEALLOCATE"a-b" ', 'a-b'], // trailing whitespace
+    ['DEALLOCATE"a-b";', 'a-b'], // one permitted semicolon
+    ['DEALLOCATE"a-b" ; ', 'a-b'],
+    ['DEALLOCATE PREPARE"a-b";', 'a-b'],
     // Exact spellings longer than 63 UTF-8 bytes come back in full — pg's
     // parsedStatements is keyed by the original protocol name, never by
     // PostgreSQL's truncated server identity.
@@ -135,8 +149,21 @@ describe('decodeStatementCacheInvalidation — rejected inputs fail closed', () 
     'DEALLOCATE',
     'DEALLOCATE ',
     'DEALLOCATE ;',
-    'DEALLOCATE"foo"',
     'DISCARDALL',
+    // Quoted adjacency stays strictly at the `"` boundary — a regular token
+    // or keyword welded onto DEALLOCATE is one identifier, not a command,
+    // and comments / Unicode-escape syntax / trailing junk still fail closed.
+    'DEALLOCATEfoo', // single regular token — not a command
+    'DEALLOCATEPREPARE"foo"', // PREPARE welded onto DEALLOCATE
+    'DEALLOCATE/*x*/"foo"', // block comment before the quote
+    'DEALLOCATE--x\n"foo"', // line comment before the quote
+    'DEALLOCATEU&"foo"', // Unicode-escape identifier syntax
+    'DEALLOCATE""', // empty quoted target
+    'DEALLOCATE"abc', // unterminated quoted target
+    'DEALLOCATE"a""', // the "" escapes — still unterminated
+    'DEALLOCATE"a-b" foo', // junk token after a complete quoted target
+    'DEALLOCATE"a-b";;', // a second semicolon (multi-statement)
+    'DEALLOCATE"a-b"; SELECT 1', // a second statement after the quoted target
     // Near-keywords and non-ASCII lookalikes inside keywords.
     'DEALLOCATEX foo',
     'DEALLOCATES ALL',

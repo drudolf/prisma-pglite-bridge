@@ -227,4 +227,121 @@ describe('config-embedded callback form', () => {
       expect(res.rows[0]?.one).toBe(1);
     });
   });
+
+  // Plan A3 (callback getter rows) — a config `callback` must be discovered
+  // with exactly one getter read when no positional callback exists, and must
+  // not be read at all when a positional callback wins. Pre-fix the typeof
+  // probe and the `{ callback, ...rest }` destructure each read it.
+  it('A3 reads a config callback getter exactly once when no positional callback exists', async () => {
+    await withPooledClient(async (client) => {
+      let reads = 0;
+      const calls: Array<{ err: unknown; res: unknown }> = [];
+      let settle: () => void = () => {};
+      const settled = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      const config = {
+        text: 'SELECT 1 AS one',
+        get callback(): QueryCallback {
+          reads++;
+          return (err, res) => {
+            calls.push({ err, res });
+            settle();
+          };
+        },
+      };
+
+      const ret = (client.query as unknown as (...args: unknown[]) => unknown)(config);
+
+      expect(ret).toBeUndefined();
+      await settled;
+      // Delivery still works: the discovered callback fires with rows.
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.err).toBeNull();
+      const res = calls[0]?.res as pg.QueryResult<{ one: number }>;
+      expect(res.rows[0]?.one).toBe(1);
+      // Exactly one getter read — no double discovery, no rest-spread.
+      expect(reads).toBe(1);
+    });
+  });
+
+  it('A3 does not read a config callback getter when a positional callback wins', async () => {
+    await withPooledClient(async (client) => {
+      let reads = 0;
+      const positional = recordCallback();
+      const config = {
+        text: 'SELECT 1 AS one',
+        get callback(): QueryCallback {
+          reads++;
+          return (_err, _res) => {};
+        },
+      };
+
+      const ret = (client.query as unknown as (...args: unknown[]) => unknown)(
+        config,
+        positional.callback,
+      );
+
+      expect(ret).toBeUndefined();
+      await positional.settled;
+      expect(positional.calls).toHaveLength(1);
+      expect(positional.calls[0]?.err).toBeNull();
+      const res = positional.calls[0]?.res as pg.QueryResult<{ one: number }>;
+      expect(res.rows[0]?.one).toBe(1);
+      // The positional callback shadows the config one: its getter is never
+      // evaluated. Pre-fix the rest-destructure still reads it once.
+      expect(reads).toBe(0);
+    });
+  });
+
+  // Plan A6 (callback / positional-callback rows) — an otherwise valid config
+  // carrying an unrelated enumerable throwing getter must succeed as a
+  // callback query. Pre-fix the `{ callback, ...rest }` destructure evaluates
+  // the unrelated getter and throws synchronously out of query().
+  it('A6 ignores an unrelated throwing getter with an embedded config callback', async () => {
+    await withPooledClient(async (client) => {
+      const { calls, callback, settled } = recordCallback();
+      const config = {
+        text: 'SELECT 1 AS one',
+        callback,
+        get unrelated(): never {
+          throw new Error('unrelated getter boom');
+        },
+      } as unknown as CallbackConfig;
+
+      const ret = client.query(config);
+
+      expect(ret).toBeUndefined();
+      await settled;
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.err).toBeNull();
+      const res = calls[0]?.res as pg.QueryResult<{ one: number }>;
+      expect(res.rows[0]?.one).toBe(1);
+    });
+  });
+
+  it('A6 ignores an unrelated throwing getter when a positional callback overrides a config callback', async () => {
+    await withPooledClient(async (client) => {
+      const positional = recordCallback();
+      const config = {
+        text: 'SELECT 1 AS one',
+        callback: (_err: unknown, _res: unknown) => {},
+        get unrelated(): never {
+          throw new Error('unrelated getter boom');
+        },
+      };
+
+      const ret = (client.query as unknown as (...args: unknown[]) => unknown)(
+        config,
+        positional.callback,
+      );
+
+      expect(ret).toBeUndefined();
+      await positional.settled;
+      expect(positional.calls).toHaveLength(1);
+      expect(positional.calls[0]?.err).toBeNull();
+      const res = positional.calls[0]?.res as pg.QueryResult<{ one: number }>;
+      expect(res.rows[0]?.one).toBe(1);
+    });
+  });
 });

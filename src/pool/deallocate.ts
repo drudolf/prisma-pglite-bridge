@@ -6,11 +6,12 @@
  * Recognized grammar — deliberately bounded, everything else fails CLOSED
  * (returns null, no cache mutation; the SQL still runs unchanged):
  *
- *   ws       := ASCII space, tab, LF, CR, FF, VT
- *   trailer  := ws* (";" ws*)? EOF
- *   command  := ws* DISCARD ws+ ALL trailer
- *             | ws* DEALLOCATE ws+ (PREPARE ws+)? target trailer
- *   target   := ALL | regular_identifier | delimited_identifier
+ *   ws         := ASCII space, tab, LF, CR, FF, VT
+ *   quoted_sep := ws+ | empty only when the next token starts with '"'
+ *   trailer    := ws* (";" ws*)? EOF
+ *   command    := ws* DISCARD ws+ ALL trailer
+ *               | ws* DEALLOCATE quoted_sep (PREPARE quoted_sep)? target trailer
+ *   target     := ALL | regular_identifier | delimited_identifier
  *
  * Keywords compare case-insensitively for ASCII letters ONLY and must end on
  * a token boundary (`DEALLOCATEX` is an identifier, not a command). There is
@@ -28,6 +29,12 @@
  * (whitespace, semicolons, comment-like text, case, non-ASCII); empty or
  * unterminated quotes reject.
  *
+ * The separator between a command word and its target is normally
+ * whitespace, but a delimited identifier may sit immediately adjacent: a `"`
+ * opens a quoted identifier and cannot continue the preceding keyword, so
+ * `DEALLOCATE"x"` and `DEALLOCATE PREPARE"x"` are unambiguous commands. A
+ * regular identifier still requires whitespace — `DEALLOCATEx` is one token.
+ *
  * The optional `PREPARE` is consumed as a keyword only when a complete
  * target and trailer follow — otherwise it IS the target: bare
  * `DEALLOCATE PREPARE` validly deallocates a statement named `prepare`
@@ -41,11 +48,14 @@
  * the server truncates to the same identity is a documented fail-closed miss
  * (26000 on that name's next use), never a false eviction.
  *
- * Out of scope (all fail closed): comments anywhere, multi-statement text,
+ * Out of scope (all fail closed): comments anywhere — including a comment
+ * between a command word and a quoted target — multi-statement text,
  * `U&"..."` Unicode-escape syntax, and truncation-equivalent long-name
- * aliases. The caller mutates caches only after the backend CONFIRMED the
- * command, so over-acceptance here (e.g. a reserved word as an unquoted
- * target) is bounded by the server rejecting the SQL.
+ * aliases; only a `"` may immediately follow a command word without
+ * whitespace, never any other zero-whitespace form. The caller mutates
+ * caches only after the backend CONFIRMED the command, so over-acceptance
+ * here (e.g. a reserved word as an unquoted target) is bounded by the server
+ * rejecting the SQL.
  *
  * The decoder runs on every ordinary query text: after skipping leading
  * whitespace it bails on the first code unit unless it can begin `DEALLOCATE`
@@ -69,6 +79,19 @@ const skipWs = (text: string, from: number): number => {
   let i = from;
   while (i < text.length && isWs(text.charCodeAt(i))) i++;
   return i;
+};
+
+/** Where the target begins after a command word ends at `keywordEnd`. Real
+ *  whitespace is the ordinary separator; a `"` immediately after the keyword
+ *  is also a boundary because a delimited identifier cannot continue the
+ *  preceding token (`DEALLOCATE"x"` is a command; `DEALLOCATEx` is one
+ *  identifier). Returns the target start, or -1 when no separator is present.
+ *  The explicit EOF bounds check keeps bare `DEALLOCATE PREPARE` on the
+ *  fallback path where PREPARE is itself the target. */
+const targetStartAfterKeyword = (text: string, keywordEnd: number): number => {
+  const afterWs = skipWs(text, keywordEnd);
+  if (afterWs > keywordEnd) return afterWs;
+  return keywordEnd < text.length && text.charCodeAt(keywordEnd) === 0x22 /* " */ ? keywordEnd : -1;
 };
 
 /** Match an UPPERCASE ASCII keyword case-insensitively at `from`; the match
@@ -186,17 +209,17 @@ export const decodeStatementCacheInvalidation = (
 
   const afterDealloc = matchKeyword(text, start, 'DEALLOCATE');
   if (afterDealloc === -1) return null;
-  const targetAt = skipWs(text, afterDealloc);
-  // Real whitespace between command words is required — `DEALLOCATE"x"` is
-  // valid SQL but deliberately outside the supported subset (fail closed).
-  if (targetAt === afterDealloc) return null;
+  // A separator — whitespace, or a `"` opening a delimited identifier — must
+  // follow the keyword; `DEALLOCATEfoo` is one identifier (fail closed).
+  const targetAt = targetStartAfterKeyword(text, afterDealloc);
+  if (targetAt === -1) return null;
 
   // Optional PREPARE: consumed as a keyword only when a complete target and
   // trailer follow; otherwise it is itself the target (see module comment).
   const afterPrepare = matchKeyword(text, targetAt, 'PREPARE');
   if (afterPrepare !== -1) {
-    const keywordTargetAt = skipWs(text, afterPrepare);
-    if (keywordTargetAt > afterPrepare) {
+    const keywordTargetAt = targetStartAfterKeyword(text, afterPrepare);
+    if (keywordTargetAt !== -1) {
       const target = scanTarget(text, keywordTargetAt);
       if (target !== null && isTrailer(text, target.next)) return target.invalidation;
     }

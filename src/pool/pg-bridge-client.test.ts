@@ -5,7 +5,11 @@ import pg from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setupPGlite } from '../__tests__/pglite.ts';
 import { SessionLock } from '../utils/session-lock.ts';
-import { PgBridgeClient } from './pg-bridge-client.ts';
+import {
+  PG_CONSUMED_QUERY_FIELDS,
+  PgBridgeClient,
+  snapshotQueryConfig,
+} from './pg-bridge-client.ts';
 
 // One shared PGlite for the whole describe — avoids ~1.3 s cold WASM boots per
 // test. Each test that uses a pool creates its own pg.Pool with its own
@@ -736,5 +740,274 @@ describe('PgBridgeClient', () => {
       w.includes('client.query() when the client is already executing'),
     );
     expect(racing).toEqual([]);
+  });
+});
+
+// Plan A3-A6 (promise-form rows) — the bridge must snapshot the supported
+// pg call shapes at query() invocation, reading each pg-consumed field
+// exactly once and never evaluating unrelated enumerable getters, matching
+// stock pg's synchronous `new Query(config)` construction. A busy predecessor
+// forces the deferred submission path where the pre-fix closure re-reads the
+// mutable config. These assert exact getter read counts, exact executed
+// values, and exact reference identity — not error codes.
+describe('PgBridgeClient — call-time query-config snapshot (promise forms)', () => {
+  it('A3 reads a text getter exactly once and executes the first value', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        let reads = 0;
+        // A valid-but-different SQL on the second read; the query must observe
+        // the FIRST read's value only. Pre-fix detect + name-injection +
+        // fastSubmit + pg's deferred Query construction each read `text`, so
+        // the count exceeds one and a later read's value is executed.
+        const config = {
+          get text(): string {
+            const value = reads === 0 ? 'SELECT 1 AS n' : 'SELECT 2 AS n';
+            reads++;
+            return value;
+          },
+        };
+        const predecessor = client.query('SELECT pg_sleep(0.05)');
+        const result = (await client.query(config as pg.QueryConfig)) as pg.QueryResult<{
+          n: number;
+        }>;
+        await predecessor;
+
+        expect(reads).toBe(1);
+        expect(result.rows[0]?.n).toBe(1);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('A4 snapshots a scalar config: a text reassigned after query() returns has no effect', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const predecessor = client.query('SELECT pg_sleep(0.05)');
+        const config = { text: 'SELECT 1 AS n' };
+        const pending = client.query(config) as Promise<pg.QueryResult<{ n: number }>>;
+        // Stock pg constructs the Query synchronously in query(); this
+        // reassignment must not reach the backend. Pre-fix the deferred
+        // closure re-reads config.text and runs the reassigned SELECT 2.
+        config.text = 'SELECT 2 AS n';
+        const result = await pending;
+        await predecessor;
+
+        expect(result.rows[0]?.n).toBe(1);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('A4 snapshots a scalar config on the positional-callback re-entry path', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        // A positional callback (NOT an embedded-callback config, which would
+        // take the rest-spread path and incidentally snapshot). The config's
+        // text is reassigned after query() returns; the callback must receive
+        // the FIRST value's rows. Pre-fix the deferred closure re-reads the
+        // mutated text.
+        const predecessor = client.query('SELECT pg_sleep(0.05)');
+        const config = { text: 'SELECT 1 AS n' };
+        const delivered = await new Promise<number>((resolve, reject) => {
+          (client.query as unknown as (...args: unknown[]) => unknown)(
+            config,
+            (err: unknown, res: pg.QueryResult<{ n: number }>) => {
+              if (err) reject(err);
+              // biome-ignore lint/style/noNonNullAssertion: SELECT n always yields one row
+              else resolve(res.rows[0]!.n);
+            },
+          );
+          config.text = 'SELECT 2 AS n';
+        });
+        await predecessor;
+
+        expect(delivered).toBe(1);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('A5 keeps a captured values array by reference and observes its later element mutation', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const capturedValues = [41];
+        const otherValues = [99];
+        const config = { text: 'SELECT $1::int AS v', values: capturedValues };
+        const predecessor = client.query('SELECT pg_sleep(0.05)');
+        const pending = client.query(config) as Promise<pg.QueryResult<{ v: number }>>;
+        // Reassigning config.values must NOT switch the query away from the
+        // originally captured array (stock pg's shared-reference semantics);
+        // mutating that captured array's element IS observed.
+        config.values = otherValues;
+        capturedValues[0] = 42;
+        const result = await pending;
+        await predecessor;
+
+        expect(result.rows[0]?.v).toBe(42);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('A5 positional values override config.values without mutating the caller config', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const configValues = [41];
+        const positionalValues = [42];
+        const config: { text: string; values: unknown[] } = {
+          text: 'SELECT $1::int AS v',
+          values: configValues,
+        };
+        const predecessor = client.query('SELECT pg_sleep(0.05)');
+        const pending = client.query(config, positionalValues) as Promise<
+          pg.QueryResult<{ v: number }>
+        >;
+        // Later reassignment of config.values must not win over the positional
+        // array; the positional element mutation IS observed.
+        const reassigned = [99];
+        config.values = reassigned;
+        positionalValues[0] = 7;
+        const result = await pending;
+        await predecessor;
+
+        expect(result.rows[0]?.v).toBe(7);
+        // The bridge owns a fresh record and must NOT reproduce pg's
+        // incidental in-place normalizeQueryConfig mutation of the caller's
+        // config: the caller's object holds exactly what the caller last
+        // wrote. Pre-fix pg rewrites config.values to the positional array.
+        expect(config.values).toBe(reassigned);
+        expect(configValues[0]).toBe(41);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('A6 ignores an unrelated throwing getter on the plain promise path', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        // No `types` — the plain object-form promise path. Pinned as a
+        // regression: it may already pass today, but must never regress into
+        // a general `{ ...config }` snapshot.
+        const config = {
+          text: 'SELECT 1 AS n',
+          get unrelated(): never {
+            throw new Error('unrelated getter boom');
+          },
+        };
+        const result = (await client.query(config as pg.QueryConfig)) as pg.QueryResult<{
+          n: number;
+        }>;
+        expect(result.rows[0]?.n).toBe(1);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('A6 ignores an unrelated throwing getter when types are wrapped', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        // `types` present → the bridge clones for fast-array-parser wrapping.
+        // Pre-fix that clone is `{ ...first }`, which evaluates the unrelated
+        // getter and throws synchronously out of query().
+        const config = {
+          text: 'SELECT 1 AS n',
+          types: pg.types,
+          get unrelated(): never {
+            throw new Error('unrelated getter boom');
+          },
+        };
+        const result = (await client.query(config as pg.QueryConfig)) as pg.QueryResult<{
+          n: number;
+        }>;
+        expect(result.rows[0]?.n).toBe(1);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  // A7 — mechanical pg field-consumption drift guard. The production snapshot
+  // field list must stay in lockstep with what the installed pg version's
+  // `Query` constructor actually consumes; a pg update that reads another
+  // config property would otherwise be silently dropped on deferred bridge
+  // submission. Record the property reads through `new pg.Query(proxy)` and
+  // compare the DEDUPED set (Query re-reads `callback` when `process.domain`
+  // is set) against the production list minus the separately-documented
+  // Client-level `query_timeout`. Known blind spot (tribunal-reviewed LOW):
+  // the proxy sees only the Query CONSTRUCTOR's reads — a future pg that
+  // starts reading a new config field inside `Client.query` itself (like
+  // `query_timeout` today) is outside the mechanical guard and is covered
+  // only by the hand-verified source citation on PG_CONSUMED_QUERY_FIELDS.
+  it('A7 production field list matches pg.Query constructor reads plus query_timeout', () => {
+    const reads: string[] = [];
+    const proxy = new Proxy(
+      // A minimally valid config so the Query constructor runs to completion.
+      { text: 'SELECT 1' } as Record<string, unknown>,
+      {
+        get(target, prop, receiver) {
+          if (typeof prop === 'string') reads.push(prop);
+          return Reflect.get(target, prop, receiver);
+        },
+      },
+    );
+    // biome-ignore lint/suspicious/noExplicitAny: Query's constructor typing rejects a Proxy view
+    new pg.Query(proxy as any);
+
+    const dedupedReads = [...new Set(reads)];
+    const productionMinusTimeout = PG_CONSUMED_QUERY_FIELDS.filter(
+      (field) => field !== 'query_timeout',
+    );
+
+    // Same fields, order-independent — the production list preserves pg's read
+    // order for correctness, but drift detection only cares about the set.
+    expect([...dedupedReads].sort()).toEqual([...productionMinusTimeout].sort());
+    // query_timeout is the sole Client-level (client.js) addition beyond the
+    // Query constructor's consumed fields.
+    expect(PG_CONSUMED_QUERY_FIELDS).toContain('query_timeout');
+    expect(dedupedReads).not.toContain('query_timeout');
+    // The snapshot record itself must stay in lockstep with the list — without
+    // this, the record literal could drop or add a field while A7 stays green.
+    // (The record defines every key even for absent config fields; `callback`
+    // is present exactly when the capture injects one.)
+    const record = snapshotQueryConfig(
+      { text: 'SELECT 1' },
+      { override: false },
+      { omit: false, value: undefined },
+    );
+    expect(Object.keys(record)).toEqual([...PG_CONSUMED_QUERY_FIELDS]);
   });
 });

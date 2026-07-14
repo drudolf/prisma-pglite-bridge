@@ -95,7 +95,12 @@ avoid session-wide deallocation outside the pools, or pass
 arrives in a form the bridge's bounded eviction decoder deliberately
 does not parse — inside comments or multi-statement text, via
 `U&"..."` syntax, or through a long-name spelling that differs from
-the one used to prepare. See the eviction-detection notes in
+the one used to prepare. (A quoted target adjacent to `DEALLOCATE` or
+`PREPARE`, e.g. `DEALLOCATE"name"`, *is* parsed.) In every such miss
+the server still deallocates the statement while the local cache stays
+stale — fail-closed only against *false* eviction, not harmless — so
+the affected name persistently fails 26000 on its next use until it is
+re-prepared or the session resets. See the eviction-detection notes in
 [api.md](./api.md#pgbridgepool) for the exact supported subset.
 
 ## `PGliteBridgeAbandonedTransactionWarning`

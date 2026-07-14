@@ -149,13 +149,18 @@ export interface PgBridgePoolOptions
    * `DEALLOCATE ALL` / `DISCARD ALL`, every bridge-injected name, quoted
    * identifiers including doubled-quote escapes (`"a""b"`), and non-ASCII
    * identifiers with PostgreSQL's ASCII-only case folding are all
-   * recognized. Still outside the subset (fail-closed — the SQL runs
-   * unchanged, only the local eviction is skipped): comments,
+   * recognized. A quoted target may be whitespace-separated or sit
+   * immediately adjacent to `DEALLOCATE` or the optional `PREPARE`
+   * (`DEALLOCATE"name"`, `DEALLOCATE PREPARE"name"`) — a double quote is an
+   * unambiguous token boundary. Still outside the subset (fail-closed — the
+   * SQL runs unchanged, only the local eviction is skipped): comments,
    * multi-statement text, `U&"..."` escape syntax, and long-name spellings
-   * that differ from the spelling used to prepare. A missed single-name
-   * command leaves that one name failing with error 26000 until it is
-   * re-prepared or the session resets; a missed session-wide reset can
-   * leave every cached name stale.
+   * that differ from the spelling used to prepare. A miss the backend still
+   * accepts is fail-closed only against *false* eviction, not harmless: the
+   * server deallocates while the local cache stays stale, so a missed
+   * single-name command leaves that one name failing with error 26000 until
+   * it is re-prepared or the session resets, and a missed session-wide reset
+   * can leave every cached name stale.
    */
   statementCaching?: boolean;
 
