@@ -192,6 +192,18 @@ export class PGliteDuplex extends Duplex {
    *  flight (e.g. an unawaited BEGIN at release time), and firing the
    *  portal recovery there would release ownership mid-transaction. */
   private portalSuspended = false;
+  /** Exactly-once latch for the release-path recovery delivery: set
+   *  synchronously before the async delivery, cleared when it settles.
+   *  Separate from `portalSuspended`, which must stay readable for
+   *  `rollbackAbandonedTransaction` across the async gap and is cleared
+   *  only by the framed RFQ (or a doomed-portal path). */
+  private portalRecoveryInFlight = false;
+  /** A pool release raced in-flight protocol work, so the suspended-or-not
+   *  judgment is deferred to the drain machinery: the INNERMOST drain
+   *  completion consumes it (see the drain `finally`). Bounded to that
+   *  release's conversation — a recycled borrower's later batches can never
+   *  trigger a spurious delivery. */
+  private portalRecoveryRequested = false;
   /** In-flight `op()` from the runExclusive callback, if any. Set only once
    *  the callback has actually entered `op()` — a queued callback that fires
    *  after `tornDown` returns immediately and is never registered here, so
@@ -447,6 +459,27 @@ export class PGliteDuplex extends Duplex {
       this.drainQueue = [];
       for (const cb of callbacks) {
         cb(error);
+      }
+
+      // Deferred portal-recovery judgment: a pool release that raced
+      // in-flight protocol work (an unawaited cursor.read at release time)
+      // could not know whether the conversation would leave the portal
+      // suspended — the flag is set only at flush-boundary completion, so
+      // releaseAbandonedPortalHold requested the judgment instead. Consume
+      // the request only when NO nested drain has taken over: a write
+      // callback above can synchronously re-enter _write → drain, and that
+      // inner drain (which carries the conversation's next batch) sets
+      // `draining` back to true before this tail code runs — the innermost
+      // drain's own finally then owns the judgment (probe-traced: the
+      // pg-cursor submit's P and B/D/H arrive as exactly such nested
+      // drains). Deliver if the portal ended up suspended; drop the request
+      // otherwise (e.g. the in-flight work was an unawaited BEGIN — the
+      // cleanup link owns that). An errored drain is already tearing the
+      // duplex down (failed write callbacks → teardown), where the destroy
+      // paths own the lock.
+      if (this.portalRecoveryRequested && !this.draining) {
+        this.portalRecoveryRequested = false;
+        if (error === null && this.portalSuspended) this.deliverRecoverySync();
       }
     }
   }
@@ -935,57 +968,98 @@ export class PGliteDuplex extends Duplex {
     }
   }
 
+  /** Whether the last completed batch left a suspended portal — read by
+   *  `rollbackAbandonedTransaction`'s recoverability guard: a suspended
+   *  portal's cleanup link CAN drain, because the release-path recovery Sync
+   *  below completes the abandoned cursor and unblocks pg's queue behind it.
+   *  @internal */
+  hasSuspendedPortal(): boolean {
+    return this.portalSuspended;
+  }
+
   /**
-   * Recover the session from ownership this duplex still holds at a
-   * suspended portal when its client is released.
+   * Recover from a suspended portal this duplex still holds when its client
+   * is released: manufacture the terminating Sync the abandoned cursor will
+   * never send, and DELIVER its response to pg through the framer.
    *
-   * Called by `PgBridgePool` when a client is released back to the pool: a
+   * Called by `PgBridgePool` when a client is released back to the pool. A
    * released client whose last query left a suspended portal open (an
-   * unclosed pg-cursor) will never produce the terminating Sync — so the
-   * backend keeps the dead portal AND its open implicit transaction, and
-   * the admission-acquired ownership would block every other pool client
-   * forever. Manufacture that Sync here (serialized behind any in-flight
-   * exec via runExclusive), then release ownership: the backend discards
-   * the portal and closes the implicit transaction, so the next client
-   * starts on a genuinely idle session. Without the Sync, a sibling's
-   * first ReadyForQuery reports the
-   * inherited `T` and its clean release fires a misattributed
-   * abandoned-transaction warning (probe-verified; plan, second amendment).
-   * Committing a partially executed writing portal via Sync is stock
-   * parity: with real Postgres + pg-pool, the next user's Sync on the
+   * unclosed pg-cursor) has a dead portal on the backend AND a wedged pg
+   * queue on the client (`activeQuery` is the cursor, which can only
+   * complete on a ReadyForQuery). The delivered Sync fixes both at once —
+   * pg's cursor completes on the framed RFQ and pg pulses its queue — and
+   * the response's own status byte drives the session lock through the
+   * standard `updateStatus` path:
+   *
+   * - outside a transaction the backend discards the portal, closes the
+   *   implicit transaction, and the framed `I` releases ownership (waiters
+   *   drain) — the recycled client is fully usable;
+   * - inside an explicit transaction the framed `T`/`E` RETAINS ownership,
+   *   pg's now-unblocked queue runs any chained work, and the cleanup link
+   *   `rollbackAbandonedTransaction` registered ends the transaction (its
+   *   ROLLBACK's idle RFQ releases; the ROLLBACK also reaps any named
+   *   portal — inside a transaction the Sync alone does not).
+   *
+   * Committing/rolling back partially executed portal effects this way is
+   * stock parity: with real Postgres + pg-pool, the next user's Sync on the
    * recycled connection commits the same partial effects.
    *
-   * A real transaction (last RFQ status T/E) keeps ownership — releasing a
-   * client mid-transaction is `rollbackAbandonedTransaction`'s job.
-   *
-   * The lock release rides a `finally` so waiters are unblocked on every
-   * path; a failed recovery Sync destroys the duplex (recoverySync's own
-   * contract), whose lock `cancel` supersedes the then-no-op release.
+   * A release can also arrive while the batch that WILL suspend the portal
+   * is still in flight (an unawaited cursor.read at release time): the flag
+   * is set only at flush-boundary completion, so the judgment is deferred
+   * to the drain machinery (see the drain `finally`) — bounded to that
+   * conversation, so a recycled borrower can never trigger a spurious
+   * delivery.
    */
   releaseAbandonedPortalHold(): void {
-    const lock = this.sessionLock;
-    if (
-      // The explicit suspension flag is load-bearing under admission-acquired
-      // ownership: isOwner without a T/E status is ALSO true while an
-      // ordinary operation is merely in flight (an unawaited BEGIN at
-      // release time) — firing the recovery there would release ownership
-      // mid-transaction and let a sibling in. Only a genuinely suspended
-      // portal gets the manufactured Sync; in-flight work is
-      // rollbackAbandonedTransaction's job.
-      this.portalSuspended &&
-      lock?.isOwner(this.duplexId) === true &&
-      this.lastSeenRfqStatus !== RFQ_STATUS_IN_TRANSACTION &&
-      this.lastSeenRfqStatus !== RFQ_STATUS_FAILED
-    ) {
-      this.portalSuspended = false;
-      void this.runUnderRunExclusive(() => this.recoverySync())
-        .finally(() => {
-          lock.release(this.duplexId);
-        })
-        /* v8 ignore start — reachable only when waitPGliteReady rejects before the exclusive turn */
-        .catch(() => {});
-      /* v8 ignore stop */
+    // Only a genuinely suspended portal gets the manufactured Sync: the flag
+    // is load-bearing under admission-acquired ownership, where isOwner
+    // alone is also true while an ordinary operation is merely in flight (an
+    // unawaited BEGIN at release time) — firing there would inject a Sync
+    // into a live operation. In-flight work is rollbackAbandonedTransaction's
+    // job. Lock-less (max: 1) pools have the same wedged-client problem and
+    // recover the same way.
+    if (this.portalSuspended) {
+      this.deliverRecoverySync();
+      return;
     }
+    // Mid-conversation release: request the deferred judgment from the drain
+    // completion hook when protocol work is draining or buffered.
+    if (this.draining || this.input.length > 0) {
+      this.portalRecoveryRequested = true;
+    }
+  }
+
+  /** Deliver the manufactured recovery Sync (see
+   *  {@link releaseAbandonedPortalHold}). 'passthrough': a bare Sync
+   *  response carries exactly one RFQ in every relevant state (idle /
+   *  post-portal / post-portal-in-tx, probe-verified) — nothing to
+   *  suppress, and pg needs the real frames to complete the cursor. The
+   *  `.catch` → destroy is the tribunal's named requirement: a failed
+   *  delivery must not leave a dead client owning the session (destroy's
+   *  lock `cancel` frees it for the healthy waiters). Exactly-once and
+   *  ownership are enforced HERE, locally, so every caller — present and
+   *  future — inherits them (tribunal hardening). */
+  private deliverRecoverySync(): void {
+    if (this.portalRecoveryInFlight) return;
+    if (this.sessionLock !== undefined && !this.sessionLock.isOwner(this.duplexId)) {
+      // Ownership was lost out-of-band (teardown races): the portal is no
+      // longer ours to recover. Clear the suspension so downstream readers
+      // (rollbackAbandonedTransaction's recoverability guard) don't act on
+      // a session this duplex does not own.
+      this.portalSuspended = false;
+      return;
+    }
+    this.portalRecoveryInFlight = true;
+    void this.runUnderRunExclusive(async () => {
+      await this.streamProtocol(SYNC_MESSAGE, 'passthrough');
+    })
+      .catch((err: unknown) => {
+        this.destroy(err instanceof Error ? err : new Error(String(err)));
+      })
+      .finally(() => {
+        this.portalRecoveryInFlight = false;
+      });
   }
 
   private async clearPGliteProtocolMessages(): Promise<void> {

@@ -341,6 +341,7 @@ describe('PgBridgePool — session isolation (admission reservation)', () => {
 
     let a: pg.PoolClient | undefined;
     let b: pg.PoolClient | undefined;
+    let recycled: pg.PoolClient | undefined;
     try {
       a = await pool.connect();
       b = await pool.connect();
@@ -352,16 +353,30 @@ describe('PgBridgePool — session isolation (admission reservation)', () => {
       probe.catch(() => {});
       expect(await settledOrPending(probe, 300)).toBe('pending');
 
-      // Abandon mid-portal: the flag-gated recovery manufactures the Sync
-      // and releases ownership — the queued sibling drains. (The abandoned
-      // client itself stays wedged on its never-completing cursor — the
-      // documented pre-existing residual; the recovery frees the SESSION,
-      // not that client. It is not reused below.)
+      // Abandon mid-portal: the flag-gated recovery DELIVERS the Sync to pg
+      // (not discarded) and releases ownership — the queued sibling drains AND
+      // the abandoned cursor completes on the delivered RFQ, so pg's
+      // activeQuery clears and the client is usable when the pool recycles it.
       a.release();
       a = undefined;
       const afterAbandon = await settledOrPending(probe, 1_500);
       expect(afterAbandon).not.toBe('pending');
       expect((afterAbandon as pg.QueryResult<{ one: number }>).rows[0]?.one).toBe(1);
+
+      // Recycled reuse (delivered recovery): pg-pool hands the recycled A
+      // client back on the next checkout; a query on it must SETTLE with
+      // correct rows. Pre-fix this wedged ('pending') — the discarded Sync left
+      // pg's activeQuery pointing at the dead cursor. Sentinel-raced so a
+      // pre-fix wedge fails fast.
+      recycled = await pool.connect();
+      const reused = await settledOrPending(
+        recycled.query<{ four: number }>('SELECT 4 AS four'),
+        1_500,
+      );
+      expect(reused).not.toBe('pending');
+      expect((reused as pg.QueryResult<{ four: number }>).rows[0]?.four).toBe(4);
+      recycled.release();
+      recycled = undefined;
 
       // The sibling's own flag transitions: a normal query (flag never set →
       // RFQ keeps it clear), then a fresh cursor — flag sets at the flush
@@ -382,7 +397,49 @@ describe('PgBridgePool — session isolation (admission reservation)', () => {
     } finally {
       await pglite.query('ROLLBACK').catch(() => {});
       a?.release();
+      recycled?.release();
       b?.release();
+      await endPoolAndClose(pool);
+      await resetSharedSession();
+    }
+  });
+
+  // ─── max: 1 reuse during in-flight recovery (tribunal MEDIUM) ───
+
+  it('max: 1 (RED): the sole client is usable again after a non-tx abandoned-cursor release', async () => {
+    // No SessionLock exists at max: 1, so recovery cannot ride the lock — the
+    // delivered Sync's serialization comes from runExclusive alone. Abandon a
+    // cursor on the sole client, release, then immediately re-checkout (pg-pool
+    // hands back the SAME recycled client) and query. Post-fix it settles with
+    // correct rows: the new borrower's first query serializes behind the
+    // in-flight delivery via runExclusive, and the delivered RFQ has completed
+    // the abandoned cursor so pg's activeQuery is clear. Pre-fix the recycled
+    // client is wedged ('pending', probe-recorded) — the discarded Sync left
+    // pg's activeQuery pointing at the dead cursor. If the in-flight overlap is
+    // not deterministically observable, the settle assertion alone is the test:
+    // it is RED pre-fix regardless, because the recycled client is wedged.
+    const pool = new PgBridgePool({ pglite, max: 1 });
+    await pglite.exec('CREATE TABLE m1_recov AS SELECT g AS i FROM generate_series(1, 50) g');
+
+    let next: pg.PoolClient | undefined;
+    try {
+      const a = await pool.connect();
+      const cursor = a.query(new Cursor<{ i: number }>('SELECT i FROM m1_recov ORDER BY i'));
+      expect(await cursor.read(5)).toHaveLength(5);
+      // Release, then IMMEDIATELY re-checkout — no await between, so the new
+      // borrower's admission overlaps the in-flight recovery delivery.
+      a.release();
+
+      next = await pool.connect();
+      const reused = await settledOrPending(
+        next.query<{ five: number }>('SELECT 5 AS five'),
+        1_500,
+      );
+      expect(reused).not.toBe('pending');
+      expect((reused as pg.QueryResult<{ five: number }>).rows[0]?.five).toBe(5);
+    } finally {
+      await pglite.query('ROLLBACK').catch(() => {});
+      next?.release();
       await endPoolAndClose(pool);
       await resetSharedSession();
     }

@@ -80,19 +80,17 @@ export interface PgBridgePoolOptions
    * out multiple `pg` clients or you are deliberately exercising wait-queue
    * behaviour in a test.
    *
-   * A client queued behind another client's open transaction or suspended
+   * A client queued behind a HELD client's open transaction or suspended
    * portal waits **unboundedly** — the {@link timeout} option bounds per-
-   * operation PGlite readiness, not the session-lock queue wait.
-   *
-   * At `max: 1` a client released with an unconsumed pg-cursor stays
-   * permanently wedged pg-side (its in-flight query never completes — same
-   * as real Postgres, no session lock involved); close cursors before
-   * releasing. At `max > 1` the pool recovers the shared session for the
-   * OTHER clients, but the abandoning client itself is equally wedged. The
-   * one shape release does not recover is a cursor abandoned inside an
-   * explicit transaction: the transaction's ROLLBACK cannot reach the wire
-   * behind the suspended portal, so the session stays held until the pool
-   * closes (probe-pinned by the composite-window test).
+   * operation PGlite readiness, not the session-lock queue wait. Releasing
+   * such a client recovers it: an abandoned suspended cursor gets a
+   * manufactured terminating Sync whose response completes the cursor
+   * pg-side (the recycled client stays usable), an abandoned transaction is
+   * rolled back — including the composite of both, a cursor abandoned
+   * inside an explicit transaction — and queued siblings drain. A tail
+   * `COMMIT`/`ROLLBACK` the user queued before releasing wins over the
+   * cleanup (its command runs in order; no warning). Close cursors and end
+   * transactions promptly anyway: recovery is a repair path, not a pattern.
    */
   max?: number;
 

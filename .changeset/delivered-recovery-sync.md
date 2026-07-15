@@ -1,0 +1,5 @@
+---
+"prisma-pglite-bridge": patch
+---
+
+Deliver the abandoned-portal recovery Sync to pg instead of discarding its response, closing the composite-window wedge. Releasing a client with a suspended cursor inside an explicit transaction previously left the session lock held until `pool.end()` — the cleanup ROLLBACK sat behind a cursor that could never complete, and every sibling in the pool blocked (the documented "waits unboundedly" contract). The manufactured terminating Sync's response is now framed through to pg: the abandoned cursor completes, pg's queue unblocks, the cleanup ROLLBACK ends the transaction, and queued siblings drain. The same delivery fixes the non-transactional residual where an abandoned-cursor client stayed permanently wedged pg-side — a recycled client is now fully usable — and applies to `max: 1` pools too. A `COMMIT`/`ROLLBACK` the user queued behind the cursor before releasing wins over the cleanup (it runs in order; the cleanup detects the closed transaction and no-ops without a warning). A failed recovery delivery destroys the client's connection so a dead client can never retain session ownership.

@@ -18,7 +18,11 @@
   connections within a single test. An open cursor (`pg-cursor`,
   `rows: N`) holds the session the same way an open transaction
   does — read or close it promptly, or other clients queue behind
-  it. `resetDb()`
+  it. Releasing a client with an open cursor or transaction now
+  recovers the session (the bridge manufactures the terminating
+  Sync and rolls back an abandoned transaction; the client stays
+  usable when recycled) — but recovery is a repair path, not a
+  pattern. `resetDb()`
   clears more of this between tests (everything `DISCARD ALL`
   covers except named prepared statements, which are kept so the
   statement cache stays warm). The default

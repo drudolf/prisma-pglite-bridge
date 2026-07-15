@@ -228,34 +228,35 @@ export class PgBridgeClient extends pg.Client {
    *  chain drains, not at release time — see the chained cleanup link below. */
   rollbackAbandonedTransaction(): void {
     // A released client whose active query is a bare Submittable with no
-    // chained bridge-managed work behind it is wedged for good if that
-    // Submittable never completes (an abandoned cursor): a chained ROLLBACK
-    // could never reach the wire — it would only sit queued until teardown
-    // and then arm a destroy-time race against a closing PGlite (the
-    // dead-WASM event-loop spin). Skip silently — the destroy-time
-    // rollbackIfInTransaction goes through pglite.query directly, bypassing
-    // pg's queue, and remains the backstop. Abandoned-cursor releases never
-    // reach the transaction check below anyway: the forced mid-portal
-    // ReadyForQuery reports `I` (probe-verified; plan, second amendment),
-    // and their dangling implicit transaction is closed by
-    // releaseAbandonedPortalHold's recovery Sync.
-    if (getPgActiveQuery(this) != null && this.querySubmissionChain === undefined) return;
-    // Known residual (probe-pinned by the composite-window test): chained
-    // work queued BEHIND a wedged Submittable inside an explicit transaction
-    // registers a link that never runs before teardown — the tail can only
-    // settle after a terminating Sync the abandoned cursor will never send,
-    // and releaseAbandonedPortalHold deliberately keeps ownership on T/E.
-    // The link stays dormant (its run-time re-check finds the duplex
-    // destroyed at teardown drain), so the cost is the documented
-    // unbounded sibling wait, bounded by the pool's lifetime. Lifting it
-    // means manufacturing the recovery Sync inside an explicit transaction
-    // too — a duplex-level change deferred to its own design round.
-    //
-    // Idle client outside a transaction: nothing abandoned. A client WITH
+    // chained bridge-managed work behind it is wedged for good ONLY when no
+    // suspended portal is recorded (e.g. a Submittable whose submit hung):
+    // there, a chained ROLLBACK could never reach the wire — it would only
+    // sit queued until teardown and then arm a destroy-time race against a
+    // closing PGlite (the dead-WASM event-loop spin). Skip silently — the
+    // destroy-time rollbackIfInTransaction goes through pglite.query
+    // directly, bypassing pg's queue, and remains the backstop. A SUSPENDED
+    // PORTAL is recoverable and must fall through: releaseAbandonedPortalHold
+    // (which ran just before this in the same pool 'release' listener)
+    // delivers the recovery Sync that completes the abandoned cursor, so
+    // pg's queue unblocks and a cleanup link CAN drain — that is what closes
+    // the former composite-window wedge (plan:
+    // .claude/plans/composite-window-delivered-sync.md).
+    if (
+      getPgActiveQuery(this) != null &&
+      this.querySubmissionChain === undefined &&
+      this.#duplexBox.current?.hasSuspendedPortal() !== true
+    ) {
+      return;
+    }
+    // Idle client outside a transaction: nothing abandoned. This also covers
+    // the non-transactional abandoned cursor (the delivered recovery Sync
+    // closes its implicit transaction; no cleanup needed). A client WITH
     // chained work is deliberately not screened on inTransaction here — the
     // verdict belongs to AFTER that work settles (an unawaited BEGIN opens
     // a transaction, an unawaited COMMIT closes one), so the cleanup link
-    // re-checks when it runs.
+    // re-checks when it runs — which is also why a user-queued COMMIT tail
+    // legitimately wins over the cleanup: the re-check finds the transaction
+    // closed and no-ops silently.
     if (this.querySubmissionChain === undefined && !this.#duplexBox.current?.inTransaction) {
       return;
     }

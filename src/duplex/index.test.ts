@@ -1357,6 +1357,10 @@ describe('PGliteDuplex flush portal boundary', () => {
     const { pglite } = createScriptedPGlite([
       [RFQ_IDLE_MESSAGE],
       [DATA_ROW_MESSAGE, PORTAL_SUSPENDED_MESSAGE],
+      // The delivered recovery Sync's response: its framed idle RFQ is what
+      // releases ownership (updateStatus), completing pg's abandoned cursor
+      // on the way — no explicit lock release exists on this path anymore.
+      [RFQ_IDLE_MESSAGE],
     ]);
     const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
     duplex.on('error', () => {});
@@ -1373,7 +1377,8 @@ describe('PGliteDuplex flush portal boundary', () => {
     expect(otherResolved).toBe(false);
 
     // The pool calls this when the client is released with the cursor
-    // still open — no Sync is coming, so the hold must be dropped here.
+    // still open — no Sync is coming from pg, so the bridge manufactures
+    // one and delivers its response.
     duplex.releaseAbandonedPortalHold();
     await settle();
     expect(otherResolved).toBe(true);
@@ -1405,6 +1410,207 @@ describe('PGliteDuplex flush portal boundary', () => {
 
     duplex.destroy();
     await duplex.onClose;
+  });
+
+  it('destroys the duplex and cancels waiters when the delivered recovery Sync fails', async () => {
+    // Delivered-recovery failure (plan: composite-window-delivered-sync.md,
+    // tribunal HIGH). With the discard recovery replaced by a DELIVERED one,
+    // deleting the finally(release) means a failed delivery could otherwise
+    // leave the lock held by a dead client — a full-pool wedge worse than
+    // today's. The named .catch(err => destroy(err)) requirement makes a
+    // failed delivery DESTROY the duplex, whose lock cancel SUPERSEDES: queued
+    // waiters must be UNBLOCKED by rejection (cancelled), not handed the dead
+    // client's session via a plain release. This drives a suspended portal on
+    // a mock (flush-boundary batch, no RFQ → portalSuspended = true), then
+    // rejects the recovery execProtocolRawStream.
+    let call = 0;
+    const execProtocolRawStream = vi.fn(
+      async (_message: Uint8Array, options: { onRawData: (chunk: Uint8Array) => void }) => {
+        call += 1;
+        if (call === 1) {
+          options.onRawData(RFQ_IDLE_MESSAGE); // startup
+          return;
+        }
+        if (call === 2) {
+          // Flush-boundary batch, no RFQ: the portal is left suspended.
+          options.onRawData(DATA_ROW_MESSAGE);
+          options.onRawData(PORTAL_SUSPENDED_MESSAGE);
+          return;
+        }
+        // The delivered recovery Sync fails.
+        throw new Error('recovery delivery boom');
+      },
+    );
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const lock = new SessionLock();
+    const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, flushBatch())).resolves.toBeUndefined();
+
+    // A waiter queued behind the still-suspended portal.
+    const other = Symbol('other-bridge');
+    let otherState: 'pending' | 'granted' | 'cancelled' = 'pending';
+    void lock.acquire(other).then(
+      () => {
+        otherState = 'granted';
+      },
+      () => {
+        otherState = 'cancelled';
+      },
+    );
+    await settle();
+    expect(otherState).toBe('pending');
+
+    // Fire the recovery; its delivery rejects.
+    duplex.releaseAbandonedPortalHold();
+    await duplex.onClose;
+    await settle();
+
+    // The failed delivery destroyed the duplex…
+    expect(duplex.destroyed).toBe(true);
+    // …and its lock cancel FREED the session: the healthy waiter is GRANTED
+    // ownership (cancel rejects only the cancelling duplex's own queued
+    // waiters and drains the rest). What must never happen is the waiter
+    // staying pending — a dead client keeping ownership would be a
+    // full-pool wedge, the exact hazard the named .catch(destroy)
+    // requirement exists to prevent.
+    expect(otherState).toBe('granted');
+  });
+
+  it('delivers the recovery Sync exactly once across a double release (no double-delivery)', async () => {
+    // Double-delivery latch (plan: composite-window-delivered-sync.md, tribunal
+    // MEDIUM). Two releaseAbandonedPortalHold invocations in the same tick must
+    // drive the recovery delivery only ONCE. Pre-fix this holds because the fired
+    // branch clears portalSuspended synchronously; the fix keeps portalSuspended
+    // true across the async gap (so rollbackAbandonedTransaction can read it) and
+    // relies on the portalRecoveryInFlight latch instead — this pins one delivery
+    // either way. Recovery Syncs are counted directly by their bare-Sync frame
+    // ([0x53,0,0,0,4]).
+    let recoveryCalls = 0;
+    const execProtocolRawStream = vi.fn(
+      async (message: Uint8Array, options: { onRawData: (chunk: Uint8Array) => void }) => {
+        if (message.length === 5 && message[0] === 0x53) {
+          recoveryCalls += 1;
+          options.onRawData(RFQ_IDLE_MESSAGE);
+          return;
+        }
+        if (message.length === 8) {
+          options.onRawData(RFQ_IDLE_MESSAGE); // startup
+          return;
+        }
+        // Flush-boundary batch, no RFQ → portal suspended.
+        options.onRawData(DATA_ROW_MESSAGE);
+        options.onRawData(PORTAL_SUSPENDED_MESSAGE);
+      },
+    );
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const lock = new SessionLock();
+    const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, flushBatch())).resolves.toBeUndefined();
+
+    // Two invocations in the same tick — the pool's 'release' path can fire it,
+    // and a checkout+release race could fire it again.
+    duplex.releaseAbandonedPortalHold();
+    duplex.releaseAbandonedPortalHold();
+    await settle();
+    await settle();
+    await settle();
+
+    // Exactly one recovery Sync reached PGlite, with no error.
+    expect(recoveryCalls).toBe(1);
+    expect(duplex.destroyed).toBe(false);
+
+    duplex.destroy();
+    await duplex.onClose;
+  });
+
+  it('never delivers a recovery Sync into a session this duplex no longer owns', async () => {
+    // Safety pin on deliverRecoverySync's ownership guard: a suspended-portal
+    // flag paired with LOST ownership (constructible only through teardown
+    // races) must not inject a Sync into a session another duplex now owns —
+    // the frames would interleave with the new owner's conversation.
+    const { pglite, execProtocolRawStream } = createScriptedPGlite([
+      [RFQ_IDLE_MESSAGE],
+      [DATA_ROW_MESSAGE, PORTAL_SUSPENDED_MESSAGE],
+    ]);
+    const lock = new SessionLock();
+    // Capture the duplex's private id through its first acquire — the public
+    // lock surface is the only sanctioned window into it.
+    let duplexId: symbol | undefined;
+    const originalAcquire = lock.acquire.bind(lock);
+    vi.spyOn(lock, 'acquire').mockImplementation((id: symbol) => {
+      duplexId ??= id;
+      return originalAcquire(id);
+    });
+    const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, flushBatch())).resolves.toBeUndefined();
+    const callsBefore = execProtocolRawStream.mock.calls.length;
+
+    // Ownership moves to another duplex out-of-band (a teardown-race shape).
+    expect(duplexId).toBeDefined();
+    lock.release(duplexId as symbol);
+    const other = Symbol('other-bridge');
+    await lock.acquire(other);
+
+    duplex.releaseAbandonedPortalHold();
+    await settle();
+
+    // No delivery: the exec-call count is unchanged, the interloper's
+    // ownership is untouched, and the orphaned suspension flag is cleared so
+    // rollbackAbandonedTransaction's recoverability guard cannot act on a
+    // session this duplex no longer owns.
+    expect(execProtocolRawStream.mock.calls.length).toBe(callsBefore);
+    expect(lock.isOwner(other)).toBe(true);
+    expect(duplex.hasSuspendedPortal()).toBe(false);
+
+    duplex.destroy();
+    await duplex.onClose;
+  });
+
+  it('wraps a non-Error recovery-delivery failure before destroying', async () => {
+    // The .catch(destroy) requirement must hold for non-Error throws too —
+    // destroy() needs a real Error instance.
+    let call = 0;
+    const execProtocolRawStream = vi.fn(
+      async (_message: Uint8Array, options: { onRawData: (chunk: Uint8Array) => void }) => {
+        call += 1;
+        if (call === 1) {
+          options.onRawData(RFQ_IDLE_MESSAGE);
+          return;
+        }
+        if (call === 2) {
+          options.onRawData(DATA_ROW_MESSAGE);
+          options.onRawData(PORTAL_SUSPENDED_MESSAGE);
+          return;
+        }
+        // biome-ignore lint/style/useThrowOnlyError: the non-Error throw IS the case under test
+        throw 'recovery delivery string boom';
+      },
+    );
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite, { sessionLock: new SessionLock() });
+    const errors: unknown[] = [];
+    duplex.on('error', (err) => {
+      errors.push(err);
+    });
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, flushBatch())).resolves.toBeUndefined();
+
+    duplex.releaseAbandonedPortalHold();
+    await duplex.onClose;
+
+    expect(duplex.destroyed).toBe(true);
+    expect(errors[0]).toBeInstanceOf(Error);
+    expect((errors[0] as Error).message).toContain('recovery delivery string boom');
   });
 
   it('issues ROLLBACK on teardown after flush-boundary batches inside a transaction', async () => {
