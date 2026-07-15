@@ -454,6 +454,28 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     await created.close();
   });
 
+  it('forwards query_timeout as a top-level pg option and keeps timeout bridge-private', async () => {
+    const mockPglite = createMockPGlite();
+    const { PoolCtor, module } = await loadClassWithMocks();
+
+    const created = new module.PGliteBridge({
+      pglite: mockPglite,
+      query_timeout: 9_876,
+      timeout: 4_321,
+    });
+
+    const poolConfig = PoolCtor.mock.calls[0]?.[0] as Record<PropertyKey, unknown>;
+    const optionsKey = Object.getOwnPropertySymbols(poolConfig).find(
+      (sym) => sym.description === 'PgBridgeClientOptions',
+    );
+    expect(poolConfig.query_timeout).toBe(9_876);
+    expect(poolConfig.timeout).toBeUndefined();
+    expect(optionsKey).toBeDefined();
+    expect((poolConfig[optionsKey!] as { timeout?: number }).timeout).toBe(4_321);
+
+    await created.close();
+  });
+
   it.each([
     {},
     { preparedStatements: true },

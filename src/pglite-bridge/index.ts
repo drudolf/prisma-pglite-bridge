@@ -119,6 +119,15 @@ export interface PGliteBridgeOptions {
   timeout?: number;
 
   /**
+   * Maximum milliseconds from an ordinary Prisma/pg query call on a checked-out
+   * client until its caller rejects with `Query read timeout`. A truthy
+   * per-query `query_timeout` overrides this default; per-query `0` falls back
+   * to it, matching pg. Includes this bridge's submission-chain wait, but not
+   * pool checkout, and does not cancel work already admitted to PGlite.
+   */
+  query_timeout?: number;
+
+  /**
    * Cache Prisma queries as named prepared statements, so PGlite parses
    * and plans each query shape once per client session instead of on every
    * execution (~7% lower read p50, ~18% lower p99 in the reference

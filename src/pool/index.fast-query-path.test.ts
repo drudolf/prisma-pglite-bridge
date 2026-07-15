@@ -602,14 +602,10 @@ describe('PgBridgePool — fastQueryPath', () => {
     });
   });
 
-  // Plan "Honor query_timeout on the fast path" (finding #2). The fast-path
-  // disqualifier list omits config.query_timeout, so a timeout-bearing
-  // adapter-shaped query rides the fast path and runs unbounded — the only
-  // timeout route the bridge exposes (the pool never sets the connection-level
-  // fallback) is exactly the one the fast path drops. A truthy query_timeout
-  // must reroute to the stock pg path, which owns the read-timeout timer and
-  // its error delivery; a falsy query_timeout (stock pg treats 0 as unset)
-  // must stay on the fast path with identical behavior.
+  // Plan "Honor query_timeout on the fast path" (finding #2). PgBridgeClient's
+  // outer timer now covers explicit and default values without changing the
+  // selected query implementation, so the fast path keeps a stable result
+  // shape and its submission chain follows actual ReadyForQuery.
   describe('query_timeout', () => {
     const isStockResult = (result: unknown): boolean =>
       (result as { constructor: { name: string } }).constructor.name === 'Result';
@@ -632,12 +628,9 @@ describe('PgBridgePool — fastQueryPath', () => {
           // timed query's duplex op queues behind it with an idle loop, the
           // shared-instance contention the timeout exists to bound.
           //
-          // Settle the client's submission chain FIRST: pool.connect() can
-          // leave connect-time work (the 0→1 statement-namespace cleanup) in
-          // flight, and a populated chain defers the timed query's ADMISSION —
-          // pg installs the read-timeout timer only at super.query, so a
-          // deferred admission behind the gate would mean no timer at all
-          // (finding #3's start-time deviation, out of scope here).
+          // Settle the client's submission chain first so this case isolates
+          // an admitted query's deadline. Queued-budget coverage lives in the
+          // PgBridgeClient submission-chain tests.
           await client.query('SELECT 1 AS warmup');
           let releaseGate!: () => void;
           const gateHeld = new Promise<void>((resolve) => {
@@ -649,13 +642,11 @@ describe('PgBridgePool — fastQueryPath', () => {
           // Let the gate acquire the mutex before the timed query.
           await new Promise((resolve) => setTimeout(resolve, 10));
 
-          // Adapter-shaped fast-path config carrying a 20 ms read timeout,
-          // admitted immediately (no same-client predecessor) so pg installs
-          // its timer while the gate holds the mutex. A regressed fast path
-          // (query_timeout dropped again) has no timer, so the query would
-          // wait on the held gate forever — the 300 ms sentinel turns that
-          // into a clean 'pending' assertion failure instead of a test
-          // timeout.
+          // Adapter-shaped config carrying a 20 ms read timeout. The fast path
+          // stays selected while PgBridgeClient's outer timer starts at the
+          // public call and remains live as the gate holds the mutex. The
+          // 300 ms sentinel turns a missing timer into a clean 'pending'
+          // assertion failure instead of a test timeout.
           const slow = {
             name: 'fq_timeout_gated',
             text: 'SELECT 1',
@@ -685,11 +676,8 @@ describe('PgBridgePool — fastQueryPath', () => {
           expect(elapsed).toBeLessThan(150);
 
           // The same client still accepts a new query. This is NOT backend
-          // cancellation — PGlite still ran the gated statement to completion;
-          // the guarantee is only that pg's read-timeout handler left the
-          // client usable (it errors the promise but does not tear down the
-          // stream). A future pg that destroys the stream on timeout must fail
-          // this assertion loudly.
+          // cancellation — PGlite still ran the gated statement to completion,
+          // and the bridge kept its internal chain behind that late drain.
           const followUp = await client.query({
             name: 'fq_timeout_followup',
             text: 'SELECT $1::int AS n',
@@ -706,15 +694,30 @@ describe('PgBridgePool — fastQueryPath', () => {
       }
     });
 
+    it('a truthy query_timeout keeps the fast-path result shape', async () => {
+      const pool = new PgBridgePool({ pglite });
+      try {
+        const result = await pool.query({
+          ...fastShapeQuery(),
+          name: 'fq_timeout_truthy',
+          query_timeout: 30_000,
+        } as never);
+        expect(isStockResult(result)).toBe(false);
+        expect((result as object) instanceof pg.Result).toBe(false);
+        expect((result as { rows: unknown[] }).rows).toEqual([[7]]);
+      } finally {
+        await pool.end();
+      }
+    });
+
     it('query_timeout: 0 stays on the fast path', async () => {
       const pool = new PgBridgePool({ pglite });
       try {
         const client = await pool.connect();
         try {
           // Stock pg reads `config.query_timeout || connectionParameters
-          // .query_timeout`, so 0 is unset; the pool never sets the
-          // connection-level fallback. `.some(Boolean)` keeps a falsy
-          // query_timeout on the fast path — identical behavior on both paths.
+          // .query_timeout`, so 0 is unset when no pool fallback exists.
+          // `.some(Boolean)` keeps this call on the fast path.
           // `query_timeout` is a Client-level option, not a pg QueryConfig
           // field, so the config type rejects it (`as never`) — mirroring the
           // very omission that let the fast path drop it. It is nonetheless the

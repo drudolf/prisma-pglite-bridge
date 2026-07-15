@@ -86,6 +86,8 @@ const bridge = new PGliteBridge({
   max: 1,                     // pool connections (default: 1)
   statsLevel: 'off',          // 'off' | 'basic' | 'full' (default: 'off')
   syncToFs: 'auto',           // 'auto' | true | false (default: 'auto')
+  timeout: 10_000,            // wait for PGlite readiness (default: unbounded)
+  query_timeout: 30_000,      // checked-out query deadline (default: unbounded)
   preparedStatements: true,   // cache queries as named statements (default: on)
 });
 
@@ -97,6 +99,13 @@ const bridge = new PGliteBridge({ pglite });
 ```
 
 The constructor takes a `PGliteBridgeOptions` (also exported).
+`query_timeout` is forwarded as pg's connection-level default, making a
+caller deadline available to Prisma queries even though `adapter-pg` does
+not attach per-query timeout fields. It starts after pool checkout and
+includes this bridge's submission-chain wait. It rejects the caller but
+does not cancel work already admitted to PGlite. This is distinct from
+`timeout`, which bounds only the wait for PGlite readiness before a bridge
+operation.
 Prepared-statement caching is on by default — each Prisma query
 shape is parsed and planned once per pool client; statements
 survive `resetDb`. Statement names are unique per client, so any
@@ -324,17 +333,17 @@ positive integer — the constructor throws a `TypeError` for `0`,
 negative, or fractional values rather than inheriting pg-pool's
 silent `max || 10` fallback, which would run ten clients without
 shared-session transaction isolation), `bridgeId`, `syncToFs`,
-`timeout`, `idleTimeoutMillis` (default `0`: in-process clients are
+`timeout`, `query_timeout`, `idleTimeoutMillis` (default `0`: in-process clients are
 never evicted, so their prepared-statement state survives idle gaps),
 and `fastQueryPath` (default `true`: named `rowMode: 'array'` queries
 with a caller-supplied `types` — the shape `@prisma/adapter-pg`
 emits — run through a lean submittable that skips the Describe
 round-trip on repeat executions; such queries resolve to a plain
 `{ rows, fields, rowCount, command, oid }` object instead of a
-`pg.Result` instance, and every other shape uses the stock pg path —
-including a matching shape carrying a truthy `query_timeout`, which
-runs through stock pg so the timeout is honored and a `pg.Result` is
-returned; since PGlite executes on the JS thread, the timer can only
+`pg.Result` instance, and every other shape uses the stock pg path.
+Explicit and pool-default `query_timeout` values preserve the fast path
+and are enforced by the bridge's outer timer. Since PGlite executes on
+the JS thread, the timer can only
 fire while the event loop is free, such as while the query waits on
 the shared instance — never against its own WASM execution).
 Use `pool.end()` to shut the pool down. Ownership
@@ -343,6 +352,17 @@ the pool created its own PGlite, `end()` closes it; when you
 supplied one, it is left open. The instance also exposes `pglite`
 and a `bridgeId` field (a unique `symbol`) for filtering events
 from the [diagnostics channels](./stats.md#diagnostics-channels).
+
+`query_timeout` uses pg's truthy precedence: a truthy per-query value
+overrides the pool default, while per-query `0` falls back to it. For
+ordinary promise/callback queries, the deadline starts at `client.query()`
+after checkout and includes this bridge's submission-chain wait. A query
+that expires before bridge admission is skipped permanently. If it has
+already been admitted, only the caller settles early; the bridge keeps
+later queries ordered behind the real completion. PGlite work is not
+cancelled. Pool checkout remains governed separately by
+`connectionTimeoutMillis`. Caller-supplied Submittables receive the default
+only when stock pg admits them, so their bridge-chain wait is not included.
 
 Since 1.7 the pool supports pg's full query surface including
 portal suspension: `rows: N` query configs, pg-cursor, and

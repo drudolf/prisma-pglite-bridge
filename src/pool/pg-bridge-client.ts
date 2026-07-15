@@ -48,6 +48,34 @@ type PgBridgeClientConfig = pg.ClientConfig & {
 const isSubmittable = (value: unknown): value is pg.Submittable =>
   typeof (value as { submit?: unknown }).submit === 'function';
 
+const QUERY_READ_TIMEOUT_MESSAGE = 'Query read timeout';
+
+type QueryTimeout = {
+  error: Error;
+  rejection: Promise<never>;
+  hasFired: () => boolean;
+  clear: () => void;
+};
+
+const createQueryTimeout = (delay: unknown): QueryTimeout => {
+  const error = new Error(QUERY_READ_TIMEOUT_MESSAGE);
+  let fired = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const rejection = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      fired = true;
+      timer = undefined;
+      reject(error);
+    }, delay as number);
+  });
+  const clear = (): void => {
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    timer = undefined;
+  };
+  return { error, rejection, hasFired: () => fired, clear };
+};
+
 /**
  * The exact runtime query-config fields pg 8.x consumes, in pg's own
  * consumption order. Sources of truth (verified against the installed
@@ -487,15 +515,42 @@ export class PgBridgeClient extends pg.Client {
     };
 
     const prior = this.querySubmissionChain;
+    // Every object form was replaced above by snapshotQueryConfig's fresh,
+    // mutable plain record. This is never the caller's object (which may be
+    // frozen); only this owned snapshot is suppressed around stock admission.
+    const ownedConfig = isObject(args[0]) ? args[0] : undefined;
+    // pg's public Client type omits this runtime-owned object even though
+    // Client.query reads it for every stock timeout (pg 8.22 client.js:660).
+    const connectionParameters = (
+      this as unknown as { connectionParameters: { query_timeout: unknown } }
+    ).connectionParameters;
+    const effectiveQueryTimeout = ownedConfig?.query_timeout || connectionParameters.query_timeout;
+    const timeout = effectiveQueryTimeout ? createQueryTimeout(effectiveQueryTimeout) : undefined;
+    const execute = (): Promise<unknown> => {
+      if (timeout?.hasFired()) return Promise.reject(timeout.error);
+      if (timeout === undefined) return submitWithCloses();
+
+      const perQueryTimeout = ownedConfig?.query_timeout;
+      if (ownedConfig !== undefined) ownedConfig.query_timeout = 0;
+      const connectionTimeout = connectionParameters.query_timeout;
+      connectionParameters.query_timeout = 0;
+      try {
+        return submitWithCloses();
+      } finally {
+        if (ownedConfig !== undefined) ownedConfig.query_timeout = perQueryTimeout;
+        connectionParameters.query_timeout = connectionTimeout;
+      }
+    };
+
     let rawQueryPromise: Promise<unknown>;
     if (prior === undefined) {
       try {
-        rawQueryPromise = submitWithCloses();
+        rawQueryPromise = execute();
       } catch (err) {
-        return Promise.reject(err);
+        rawQueryPromise = Promise.reject(err);
       }
     } else {
-      rawQueryPromise = prior.then(submitWithCloses);
+      rawQueryPromise = prior.then(execute);
     }
 
     // After PGlite confirms a DEALLOCATE / DISCARD ALL, evict matching entries
@@ -504,7 +559,7 @@ export class PgBridgeClient extends pg.Client {
     // invalidates names any of them may hold, not just the issuer's. Without
     // this, a sibling would skip Parse for a name PGlite forgot and fail its
     // next Bind with Postgres error 26000.
-    const queryPromise =
+    const executionPromise =
       dealloc === null
         ? rawQueryPromise
         : rawQueryPromise.then((result: unknown) => {
@@ -516,6 +571,14 @@ export class PgBridgeClient extends pg.Client {
             return result;
           });
 
+    if (timeout !== undefined) {
+      void executionPromise.then(timeout.clear, timeout.clear);
+    }
+    const publicPromise =
+      timeout === undefined
+        ? executionPromise
+        : Promise.race([executionPromise, timeout.rejection]);
+
     // Register this query's tail on the submission chain; each query clears
     // only its own slot (identity check) so concurrent queries never stomp.
     let chainTail: Promise<void>;
@@ -524,9 +587,9 @@ export class PgBridgeClient extends pg.Client {
         this.querySubmissionChain = undefined;
       }
     };
-    chainTail = queryPromise.then(releaseChainTail, releaseChainTail);
+    chainTail = executionPromise.then(releaseChainTail, releaseChainTail);
     this.querySubmissionChain = chainTail;
-    return queryPromise;
+    return publicPromise;
   }
 
   /** Discover pg's single callback slot ONCE: the last positional function
@@ -712,22 +775,11 @@ export class PgBridgeClient extends pg.Client {
       (values !== undefined && !Array.isArray(values)) ||
       !isTypesLike(types) ||
       // Disqualifiers stock pg gives meaning to that FastQuery does not.
-      // query_timeout reroutes to stock pg, which owns the read-timeout
-      // lifecycle end to end — timer, success-time cancellation, error
-      // delivery. Its handler errors the promise but leaves activeQuery and
-      // the stream intact (pg 8.22 client.js), so the client stays usable;
-      // the timeout test pins that behaviorally. Falsy values (incl. 0) stay
-      // fast: stock pg's `config.query_timeout || connectionParameters.…`
-      // treats them as unset, and the pool never sets the connection-level
-      // fallback, so both paths agree.
-      [
-        config.binary,
-        config.rows,
-        config.portal,
-        config.queryMode,
-        config.callback,
-        config.query_timeout,
-      ].some(Boolean)
+      // query_timeout is deliberately absent: PgBridgeClient's outer timer
+      // wraps FastQuery for both explicit values and connection defaults,
+      // without asking FastQuery to implement early timeout settlement or
+      // clearing the execution chain before ReadyForQuery.
+      [config.binary, config.rows, config.portal, config.queryMode, config.callback].some(Boolean)
     ) {
       return undefined;
     }

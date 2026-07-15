@@ -114,6 +114,15 @@ export interface PgBridgePoolOptions
   timeout?: number;
 
   /**
+   * Maximum milliseconds from an ordinary query call on a checked-out client
+   * until its caller rejects with `Query read timeout`. A truthy per-query
+   * `query_timeout` overrides this default; per-query `0` falls back to it,
+   * matching pg. Includes this bridge's submission-chain wait, but not pool
+   * checkout, and does not cancel work already admitted to PGlite.
+   */
+  query_timeout?: number;
+
+  /**
    * Milliseconds an idle pool client lives before eviction. Defaults to
    * `0` (never evict) — an in-process duplex client holds no socket or
    * server resource, and evicting it would discard its prepared-statement
@@ -172,15 +181,14 @@ export interface PgBridgePoolOptions
    * latency and a much tighter worst case in the reference probe). Result
    * values are identical; the resolved object is a plain
    * `{ rows, fields, rowCount, command, oid }` rather than a `pg.Result`
-   * instance. Every other query shape uses the stock pg path — including a
-   * matching shape that carries a truthy `query_timeout`, so the timeout is
-   * honored by stock pg (such a query resolves to a `pg.Result` like any
-   * stock query; note PGlite executes on the JS thread, so the timer can
-   * only fire while the event loop is free — e.g. while the query waits on
-   * the shared instance — never against its own WASM execution). Set
-   * `false` to route everything through stock pg. Neither
-   * the bridge nor adapter-pg uses pg's query-cancellation API, which the
-   * fast path does not implement. Default `true`.
+   * instance. Every other query shape uses the stock pg path. Explicit or
+   * pool-default `query_timeout` values do not disqualify this fast path; the
+   * bridge's outer timer covers both stock and fast queries. PGlite executes
+   * on the JS thread, so that timer can fire only while the event loop is free
+   * — e.g. while the query waits on the shared instance — never against its
+   * own WASM execution. Set `false` to route everything through stock pg.
+   * Neither the bridge nor adapter-pg uses pg's query-cancellation API.
+   * Default `true`.
    */
   fastQueryPath?: boolean;
 }
@@ -249,6 +257,7 @@ export class PgBridgePool extends pg.Pool {
     pglite,
     telemetry,
     timeout,
+    query_timeout,
     syncToFs,
     idleTimeoutMillis = 0,
     fastQueryPath,
@@ -271,6 +280,7 @@ export class PgBridgePool extends pg.Pool {
       Client: PgBridgeClient,
       max,
       idleTimeoutMillis,
+      query_timeout,
       [PgBridgeClient.OptionsKey]: {
         pglite: resolvedPglite,
         sessionLock: max > 1 ? new SessionLock() : undefined,

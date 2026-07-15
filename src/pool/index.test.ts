@@ -95,6 +95,35 @@ describe('PgBridgePool — idleTimeoutMillis default', () => {
   });
 });
 
+describe('PgBridgePool — query_timeout forwarding', () => {
+  it('forwards query_timeout as a pg client default without conflating readiness timeout', async () => {
+    const pool = new PgBridgePool({
+      pglite,
+      query_timeout: 30_000,
+      timeout: 1_234,
+    });
+    try {
+      expect(pool.options.query_timeout).toBe(30_000);
+      expect((pool.options as { timeout?: number }).timeout).toBeUndefined();
+
+      const client = await pool.connect();
+      try {
+        expect(
+          (
+            client as unknown as {
+              connectionParameters: { query_timeout: number };
+            }
+          ).connectionParameters.query_timeout,
+        ).toBe(30_000);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+});
+
 describe('PgBridgePool — syncToFs', () => {
   it('defaults to false for in-memory PGlite', async () => {
     const spy = vi.spyOn(pglite, 'execProtocolRawStream');
