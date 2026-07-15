@@ -1,11 +1,10 @@
 /**
  * Statement-name cache tradeoff benchmark: gated LRU (shipped) vs frozen
- * cap (pre-gate policy) vs pure LRU (parked on `draft/lru-statement-cache`,
- * 2026-07-02).
+ * cap (pre-gate policy) vs pure LRU (parked on the LRU branch, 2026-07-02).
  *
  * Port of the parked branch's benchmark to the per-client architecture,
  * with its Prisma section replaced by the measurement that decided the
- * revival: WIRE-LEVEL EVICTION COST. The parked tribunal's blocking
+ * revival: WIRE-LEVEL EVICTION COST. The parked branch's blocking design
  * finding was "LRU adds a serialized DEALLOCATE round-trip per miss —
  * under thrash that is pure overhead". The modern duplex offers a
  * cheaper eviction: a protocol `Close(statement)` message piggybacked

@@ -1035,11 +1035,11 @@ export class PGliteDuplex extends Duplex {
    *  response carries exactly one RFQ in every relevant state (idle /
    *  post-portal / post-portal-in-tx, probe-verified) — nothing to
    *  suppress, and pg needs the real frames to complete the cursor. The
-   *  `.catch` → destroy is the tribunal's named requirement: a failed
+   *  `.catch` → destroy is a hard design requirement: a failed
    *  delivery must not leave a dead client owning the session (destroy's
    *  lock `cancel` frees it for the healthy waiters). Exactly-once and
    *  ownership are enforced HERE, locally, so every caller — present and
-   *  future — inherits them (tribunal hardening). */
+   *  future — inherits them. */
   private deliverRecoverySync(): void {
     if (this.portalRecoveryInFlight) return;
     if (this.sessionLock !== undefined && !this.sessionLock.isOwner(this.duplexId)) {

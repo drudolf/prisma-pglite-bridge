@@ -1,15 +1,12 @@
 /**
  * Session-lock admission microbenchmark — the pinned yardstick for the
- * admission-reservation tradeoff (plan:
- * .claude/plans/session-lock-admission-reservation.md, amendment of
- * 2026-07-15).
+ * admission-reservation tradeoff.
  *
  * Worst case for admission serialization: a max-8 pool firing concurrent
  * tiny point-lookups, so the additive per-admission cost (~+30 µs measured
  * on the reference machine: drain hop + ready-wait + runExclusive enqueue
  * that no longer overlaps the predecessor's execution) is maximal relative
- * to op time. Reservation-vs-baseline reference numbers live in the plan's
- * amendment record; rerun A/B (this tree vs a pre-change worktree,
+ * to op time. Rerun A/B (this tree vs a pre-change worktree,
  * interleaved rounds, medians of run-medians) before optimizing the drain
  * path or accepting any further regression here.
  *

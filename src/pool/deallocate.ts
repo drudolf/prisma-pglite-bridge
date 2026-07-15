@@ -1,7 +1,7 @@
 /**
  * Bounded decoder for the statement-cache invalidation commands the bridge
  * intercepts: `DEALLOCATE [PREPARE] <name>`, `DEALLOCATE [PREPARE] ALL`, and
- * `DISCARD ALL` (design: .claude/plans/bounded-deallocate-identifier-decoder.md).
+ * `DISCARD ALL`.
  *
  * Recognized grammar — deliberately bounded, everything else fails CLOSED
  * (returns null, no cache mutation; the SQL still runs unchanged):

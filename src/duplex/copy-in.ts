@@ -11,7 +11,7 @@
  * never lets PGlite see it), even in orderings that might assemble
  * correctly.
  *
- * A regex is not enough (tribunal 2026-07-10): `WITH (FORMAT csv,
+ * A regex is not enough: `WITH (FORMAT csv,
  * DELIMITER ';')` puts a semicolon inside quotes, and string literals /
  * dollar-quotes / comments can contain the phrase `COPY ... FROM STDIN`
  * without meaning it. The scan strips quoted regions and comments

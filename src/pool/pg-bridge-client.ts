@@ -239,8 +239,7 @@ export class PgBridgeClient extends pg.Client {
     // (which ran just before this in the same pool 'release' listener)
     // delivers the recovery Sync that completes the abandoned cursor, so
     // pg's queue unblocks and a cleanup link CAN drain — that is what closes
-    // the former composite-window wedge (plan:
-    // .claude/plans/composite-window-delivered-sync.md).
+    // the former composite-window wedge.
     if (
       getPgActiveQuery(this) != null &&
       this.querySubmissionChain === undefined &&
