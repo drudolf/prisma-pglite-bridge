@@ -365,22 +365,113 @@ describe('PGliteDuplex error paths', () => {
     await expect(writeResult).resolves.toBe(destroyErr);
   });
 
-  it('releases the session lock and surfaces the error when runExclusive throws', async () => {
+  it('destroys the bridge and admits a lock waiter when runExclusive throws', async () => {
+    const failure = new Error('pglite kaput');
     const pglite = createMockPGlite({
       runExclusive: vi.fn(async () => {
-        throw new Error('pglite kaput');
+        throw failure;
       }),
     });
     const lock = new SessionLock();
-    const releaseSpy = vi.spyOn(lock, 'release');
     const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
-    duplex.on('error', () => {});
+    const emittedErrors: Error[] = [];
+    duplex.on('error', (error) => emittedErrors.push(error));
 
-    const err = await writeAndAwait(duplex, startupBytes());
-    expect(err?.message).toBe('pglite kaput');
-    expect(releaseSpy).toHaveBeenCalled();
+    const writeResult = writeAndAwait(duplex, startupBytes());
+    const waiter = Symbol('waiting-bridge');
+    const waiterGranted = lock.acquire(waiter);
 
-    duplex.destroy();
+    await expect(writeResult).resolves.toBe(failure);
+    await duplex.onClose;
+    await waiterGranted;
+
+    expect(emittedErrors).toEqual([failure]);
+    expect(duplex.destroyed).toBe(true);
+    expect(lock.isOwner(waiter)).toBe(true);
+  });
+
+  it('rolls back before admitting a waiter when a drain fails mid-transaction', async () => {
+    const failure = new Error('protocol processing failed');
+    const rfqInTransaction = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x54]);
+    let protocolCall = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      protocolCall += 1;
+      if (protocolCall === 1) {
+        options.onRawData(RFQ_IDLE_MESSAGE);
+      } else if (protocolCall === 2) {
+        options.onRawData(rfqInTransaction);
+      } else {
+        throw failure;
+      }
+    });
+
+    let finishRollback!: () => void;
+    const rollbackGate = new Promise<void>((resolve) => {
+      finishRollback = resolve;
+    });
+    const query = vi.fn(async (sql: string) => {
+      expect(sql).toBe('ROLLBACK');
+      await rollbackGate;
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream, query });
+    const lock = new SessionLock();
+    const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
+
+    const emittedErrors: Error[] = [];
+    let closeCount = 0;
+    duplex.on('error', (error) => emittedErrors.push(error));
+    duplex.on('close', () => {
+      closeCount += 1;
+    });
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, simpleQuery('BEGIN'))).resolves.toBeUndefined();
+    expect(duplex.inTransaction).toBe(true);
+
+    const waiter = Symbol('waiting-bridge');
+    let waiterState: 'pending' | 'granted' = 'pending';
+    void lock.acquire(waiter).then(() => {
+      waiterState = 'granted';
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(waiterState).toBe('pending');
+
+    let writeCallbackCount = 0;
+    const writeErrors: Error[] = [];
+    const writeSettled = new Promise<void>((resolve) => {
+      duplex.write(simpleQuery('SELECT broken'), (error) => {
+        writeCallbackCount += 1;
+        if (error) writeErrors.push(error);
+        resolve();
+      });
+    });
+    await writeSettled;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const waiterStateBeforeRollbackFinished = waiterState;
+    const closeCountBeforeRollbackFinished = closeCount;
+    const rollbackStarted = query.mock.calls.length;
+
+    finishRollback();
+    await duplex.onClose;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect({
+      rollbackStarted,
+      waiterStateBeforeRollbackFinished,
+      closeCountBeforeRollbackFinished,
+    }).toEqual({
+      rollbackStarted: 1,
+      waiterStateBeforeRollbackFinished: 'pending',
+      closeCountBeforeRollbackFinished: 0,
+    });
+    expect(query).toHaveBeenCalledOnce();
+    expect(waiterState).toBe('granted');
+    expect(writeCallbackCount).toBe(1);
+    expect(writeErrors).toEqual([failure]);
+    expect(emittedErrors).toEqual([failure]);
+    expect(duplex.destroyed).toBe(true);
+    expect(closeCount).toBe(1);
   });
 
   it('records a failed query and rethrows when runExclusive throws after startup', async () => {
@@ -780,49 +871,40 @@ describe('PGliteDuplex error paths', () => {
     duplex.destroy();
   });
 
-  it('recovers on the next protocol call after a framing error in the previous response', async () => {
-    // Regression guard for the single-reused-framer refactor: a protocol call
-    // whose response bytes throw mid-frame must not poison the next call.
-    // This passes TODAY because streamProtocol builds a fresh
-    // BackendMessageFramer per call; once the duplex reuses one framer,
-    // reset() at the start of each call must preserve this behavior.
+  it('explicitly destroys the bridge after a backend framing error', async () => {
     let calls = 0;
     const pglite = createMockPGlite({
       execProtocolRawStream: vi.fn(async (_message, options) => {
         calls += 1;
-        if (calls === 1) {
-          // Deliver the type byte alone so the framer enters mid-message
-          // state, then a malformed length header (< 4) that makes it throw.
-          options.onRawData(Buffer.from([0x44]));
-          options.onRawData(Buffer.from([0x00, 0x00, 0x00, 0x03]));
-          return;
-        }
-        options.onRawData(RFQ_IDLE_MESSAGE);
+        // Deliver the type byte alone so the framer enters mid-message state,
+        // then a malformed length header (< 4) that makes it throw.
+        options.onRawData(Buffer.from([0x44]));
+        options.onRawData(Buffer.from([0x00, 0x00, 0x00, 0x03]));
       }),
     });
     const duplex = new PGliteDuplex(pglite);
-    duplex.on('error', () => {});
+    const emittedErrors: Error[] = [];
+    duplex.on('error', (error) => emittedErrors.push(error));
 
-    // duplex.write() auto-destroys the stream once a write callback errors,
-    // so drive _write directly (same pattern as the drain-queueing test
-    // above) to observe the duplex's own per-call isolation.
+    // Drive _write directly so Writable's automatic error teardown cannot
+    // satisfy the assertion on the drain loop's behalf.
+    let writeCallbackCount = 0;
     const rawWriteAndAwait = (chunk: Buffer): Promise<Error | undefined> =>
       new Promise((resolve) => {
-        duplex._write(chunk, 'utf-8', (err) => resolve(err ?? undefined));
+        duplex._write(chunk, 'utf-8', (err) => {
+          writeCallbackCount += 1;
+          resolve(err ?? undefined);
+        });
       });
 
     const firstErr = await rawWriteAndAwait(startupBytes());
     expect(firstErr?.message).toMatch(/Malformed backend message length: 3/);
+    await duplex.onClose;
 
-    // The first startup message was consumed but the error kept the phase at
-    // pre_startup, so a second startup write is the next protocol call.
-    const secondErr = await rawWriteAndAwait(startupBytes());
-    expect(secondErr).toBeUndefined();
-
-    const emitted: Buffer = duplex.read() ?? Buffer.alloc(0);
-    expect(emitted.equals(RFQ_IDLE_MESSAGE)).toBe(true);
-
-    duplex.destroy();
+    expect(calls).toBe(1);
+    expect(writeCallbackCount).toBe(1);
+    expect(emittedErrors).toEqual([firstErr]);
+    expect(duplex.destroyed).toBe(true);
   });
 
   it('drops onRawData invocations that arrive outside an active protocol call', async () => {

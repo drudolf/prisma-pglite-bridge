@@ -448,9 +448,6 @@ export class PGliteDuplex extends Duplex {
       }
     } catch (err) {
       error = err instanceof Error ? err : new Error(String(err));
-      // Release session lock on error — prevents permanent deadlock if
-      // PGlite crashes mid-transaction (other bridges would wait forever)
-      this.sessionLock?.release(this.duplexId);
     } finally {
       this.draining = false;
 
@@ -460,6 +457,11 @@ export class PGliteDuplex extends Duplex {
       for (const cb of callbacks) {
         cb(error);
       }
+
+      // Every failed drain is terminal. Destroy explicitly so teardown does
+      // not depend on Writable's auto-destroy timing, and retain any admission
+      // claim until _destroy has rolled back before cancelling it.
+      if (error !== null) this.destroy(error);
 
       // Deferred portal-recovery judgment: a pool release that raced
       // in-flight protocol work (an unawaited cursor.read at release time)
@@ -475,8 +477,8 @@ export class PGliteDuplex extends Duplex {
       // drains). Deliver if the portal ended up suspended; drop the request
       // otherwise (e.g. the in-flight work was an unawaited BEGIN — the
       // cleanup link owns that). An errored drain is already tearing the
-      // duplex down (failed write callbacks → teardown), where the destroy
-      // paths own the lock.
+      // duplex down via the explicit destroy above, whose teardown path owns
+      // the lock.
       if (this.portalRecoveryRequested && !this.draining) {
         this.portalRecoveryRequested = false;
         if (error === null && this.portalSuspended) this.deliverRecoverySync();
