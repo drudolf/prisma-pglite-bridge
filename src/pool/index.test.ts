@@ -380,6 +380,125 @@ describe('PgBridgePool — shared-PGlite warning', () => {
       await local.close();
     }
   });
+
+  it('a draining pool with a checked-out client still counts', async () => {
+    // Finding #4: end() releases the live slot synchronously, but pg-pool's
+    // end() waits for checked-out clients to be released — such a client keeps
+    // querying the shared PGlite during the drain while livePoolCounts no
+    // longer counts the pool. A second pool constructed in that window sees no
+    // overlap and emits no warning, though real cross-pool interleaving is
+    // possible. Pre-fix: zero warnings.
+    const local = new PGlite();
+    await local.waitReady;
+    const { warnings, stop } = captureSharedWarnings();
+    let b: PgBridgePool | undefined;
+    try {
+      const a = new PgBridgePool({ pglite: local });
+      const client = await a.connect();
+      // Start the drain WITHOUT awaiting; the checked-out client keeps the
+      // pool alive.
+      const ending = a.end();
+      // The hazard is real: the held client still answers a query mid-drain.
+      const held = await client.query('SELECT 1');
+      expect(held.rows).toEqual([{ '?column?': 1 }]);
+
+      // A second pool joins on the same PGlite while pool A is still draining
+      // with a live client — it must warn.
+      b = new PgBridgePool({ pglite: local });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(warnings.length).toBeGreaterThanOrEqual(1);
+      expect(warnings[0]?.message ?? '').toMatch(/WASM mutex/i);
+
+      client.release();
+      await ending;
+    } finally {
+      stop();
+      await b?.end();
+      await local.close();
+    }
+  });
+
+  it('a pool whose force-destroyed client is still tearing down still counts', async () => {
+    // Tribunal condition on finding #4's fix: pg-pool decrements totalCount
+    // SYNCHRONOUSLY when it destroys a client (release with an error), but
+    // that client's duplex teardown — with its ROLLBACK against the shared
+    // instance — settles asynchronously. end() called in that window must not
+    // take the synchronous-release arm on totalCount alone: the slot stays
+    // held until the teardown barrier settles.
+    const local = new PGlite();
+    await local.waitReady;
+    const { warnings, stop } = captureSharedWarnings();
+    let b: PgBridgePool | undefined;
+    try {
+      const a = new PgBridgePool({ pglite: local });
+      const client = await a.connect();
+      // Force-destroy: pg-pool removes the client synchronously
+      // (totalCount → 0) while the duplex teardown is still in flight.
+      client.release(new Error('force-destroy for teardown-window probe'));
+      const ending = a.end();
+
+      // A pool constructed while the teardown drains must still see pool A.
+      b = new PgBridgePool({ pglite: local });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(warnings.length).toBeGreaterThanOrEqual(1);
+      expect(warnings[0]?.message ?? '').toMatch(/WASM mutex/i);
+
+      await ending;
+    } finally {
+      stop();
+      await b?.end();
+      await local.close();
+    }
+  });
+
+  it('a draining pool still counts through the end(callback) overload', async () => {
+    // Callback-overload parity for finding #4: a pool constructed while the
+    // held client drains must warn (the slot is still held), and a pool
+    // constructed INSIDE the callback — after the deferred release completes —
+    // must NOT warn. Pre-fix: the mid-drain pool does not warn (slot released
+    // synchronously). The callback runs after the pool's internal
+    // drainAndClose, so wrap it in a promise.
+    const local = new PGlite();
+    await local.waitReady;
+    const { warnings, stop } = captureSharedWarnings();
+    let midDrain: PgBridgePool | undefined;
+    let afterDrain: PgBridgePool | undefined;
+    try {
+      const a = new PgBridgePool({ pglite: local });
+      const client = await a.connect();
+
+      const drained = new Promise<void>((resolve) => {
+        // end(callback) fires after drainAndClose completes.
+        a.end(() => resolve());
+      });
+
+      // Mid-drain: the held client keeps pool A alive, so this pool warns.
+      const held = await client.query('SELECT 1');
+      expect(held.rows).toEqual([{ '?column?': 1 }]);
+      midDrain = new PgBridgePool({ pglite: local });
+      await new Promise((resolve) => setImmediate(resolve));
+      const midDrainCount = warnings.length;
+      expect(midDrainCount).toBeGreaterThanOrEqual(1);
+      expect(warnings[0]?.message ?? '').toMatch(/WASM mutex/i);
+
+      // Let the drain finish, then construct a pool after the deferred release.
+      await midDrain.end();
+      client.release();
+      await drained;
+
+      afterDrain = new PgBridgePool({ pglite: local });
+      await new Promise((resolve) => setImmediate(resolve));
+      // Pool A's slot was released before its callback fired, so a pool
+      // constructed now sees no live pool A — no new warning.
+      expect(warnings.length).toBe(midDrainCount);
+    } finally {
+      stop();
+      await afterDrain?.end();
+      await local.close();
+    }
+  });
 });
 
 describe('PgBridgePool — rollback on forced client release', () => {

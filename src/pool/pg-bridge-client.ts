@@ -712,7 +712,22 @@ export class PgBridgeClient extends pg.Client {
       (values !== undefined && !Array.isArray(values)) ||
       !isTypesLike(types) ||
       // Disqualifiers stock pg gives meaning to that FastQuery does not.
-      [config.binary, config.rows, config.portal, config.queryMode, config.callback].some(Boolean)
+      // query_timeout reroutes to stock pg, which owns the read-timeout
+      // lifecycle end to end — timer, success-time cancellation, error
+      // delivery. Its handler errors the promise but leaves activeQuery and
+      // the stream intact (pg 8.22 client.js), so the client stays usable;
+      // the timeout test pins that behaviorally. Falsy values (incl. 0) stay
+      // fast: stock pg's `config.query_timeout || connectionParameters.…`
+      // treats them as unset, and the pool never sets the connection-level
+      // fallback, so both paths agree.
+      [
+        config.binary,
+        config.rows,
+        config.portal,
+        config.queryMode,
+        config.callback,
+        config.query_timeout,
+      ].some(Boolean)
     ) {
       return undefined;
     }

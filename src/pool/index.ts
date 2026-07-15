@@ -172,10 +172,15 @@ export interface PgBridgePoolOptions
    * latency and a much tighter worst case in the reference probe). Result
    * values are identical; the resolved object is a plain
    * `{ rows, fields, rowCount, command, oid }` rather than a `pg.Result`
-   * instance. Every other query shape uses the stock pg path. Set `false`
-   * to route everything through stock pg. Neither the bridge nor
-   * adapter-pg uses pg's query-cancellation API, which the fast path does
-   * not implement. Default `true`.
+   * instance. Every other query shape uses the stock pg path — including a
+   * matching shape that carries a truthy `query_timeout`, so the timeout is
+   * honored by stock pg (such a query resolves to a `pg.Result` like any
+   * stock query; note PGlite executes on the JS thread, so the timer can
+   * only fire while the event loop is free — e.g. while the query waits on
+   * the shared instance — never against its own WASM execution). Set
+   * `false` to route everything through stock pg. Neither
+   * the bridge nor adapter-pg uses pg's query-cancellation API, which the
+   * fast path does not implement. Default `true`.
    */
   fastQueryPath?: boolean;
 }
@@ -384,13 +389,32 @@ export class PgBridgePool extends pg.Pool {
   override end(): Promise<void>;
   override end(callback: () => void): void;
   override end(callback?: () => void): Promise<void> | void {
-    // Release the shared-instance slot synchronously: once end() is called
-    // the pool accepts no new connections, so it can no longer run
-    // connect-time cleanup against the session and stops counting toward
-    // the concurrent-pool hazard immediately. Synchronous release also lets
-    // PGliteBridge's constructor-failure path free the slot before it
-    // rethrows (it cannot await).
-    this.#releaseLiveSlot();
+    // Shared-instance slot release is latched to the FIRST end() call: a
+    // repeated end() must not re-evaluate pool state — pg-pool may have
+    // drained the clients by then, and a fresh totalCount === 0 read here
+    // would release the slot before the first call's teardown barrier
+    // settles. pg-pool's end() waits for checked-out clients, which keep
+    // querying the shared PGlite during the drain, so a pool that ever held
+    // a client stays counted until drainAndClose finishes (both overload
+    // forms run it; the deferred release precedes a callback-form callback).
+    // Only a pool with no clients AND no unsettled duplex teardowns releases
+    // synchronously — totalCount alone is not enough, because pg-pool
+    // decrements it synchronously when it destroys a client while that
+    // client's teardown ROLLBACK may still be in flight against the shared
+    // instance (the same gap the #pendingTeardowns tracker exists for). The
+    // synchronous arm serves PGliteBridge's constructor-failure path, which
+    // frees the slot before it rethrows and cannot await; a never-connected
+    // pool has neither clients nor teardowns. From this check to super.end()
+    // is one tick: pg-pool cannot admit a first client in between.
+    let releaseAfterDrain = false;
+    if (!this.#endStarted) {
+      this.#endStarted = true;
+      if (this.totalCount === 0 && this.#pendingTeardowns.size === 0) {
+        this.#releaseLiveSlot();
+      } else {
+        releaseAfterDrain = true;
+      }
+    }
     const drainAndClose = async (): Promise<void> => {
       // Teardown barrier: pg-pool's end() resolves without waiting for
       // client teardown, but each duplex teardown ends with an awaited
@@ -413,6 +437,12 @@ export class PgBridgePool extends pg.Pool {
         for (const teardown of this.#pendingTeardowns) teardown.abort(reason);
       }
       /* v8 ignore stop */
+      // A pool that held clients releases its slot only now — after pg-pool
+      // drained every client AND their duplex teardowns settled, so nothing
+      // from this pool (user query or teardown ROLLBACK) can still touch the
+      // shared instance. Runs on the abort arm too: the slot must not leak
+      // when a teardown outlives the drain bound.
+      if (releaseAfterDrain) this.#releaseLiveSlot();
       if (this.#ownsPglite && !this.pglite.closed) {
         await this.pglite.close();
       }
@@ -426,16 +456,17 @@ export class PgBridgePool extends pg.Pool {
     return super.end().then(drainAndClose);
   }
 
-  #liveSlotReleased = false;
+  /** Set by the first end() call — the only one that decides between the
+   *  synchronous and post-drain slot release. Repeated end() calls skip the
+   *  decision entirely (pg-pool rejects them), which is also what makes the
+   *  release exactly-once: each arm is reachable from one latched decision. */
+  #endStarted = false;
 
-  /** Decrement this pool's slot in the shared-instance counter exactly once.
-   *  end() calls this synchronously before pg-pool rejects a repeated end()
-   *  — promise and callback form alike — so without the guard a double
-   *  end() would double-decrement the counter and understate later
-   *  concurrent-pool overlap. */
+  /** Decrement this pool's slot in the shared-instance counter. Called
+   *  exactly once per pool, guaranteed by the #endStarted latch: either
+   *  synchronously from the first end() (never-connected pool) or from that
+   *  call's drainAndClose (pool that held clients). */
   #releaseLiveSlot(): void {
-    if (this.#liveSlotReleased) return;
-    this.#liveSlotReleased = true;
     const count = livePoolCounts.get(this.pglite) as number;
     livePoolCounts.set(this.pglite, count - 1);
   }

@@ -331,7 +331,12 @@ with a caller-supplied `types` — the shape `@prisma/adapter-pg`
 emits — run through a lean submittable that skips the Describe
 round-trip on repeat executions; such queries resolve to a plain
 `{ rows, fields, rowCount, command, oid }` object instead of a
-`pg.Result` instance, and every other shape uses the stock pg path).
+`pg.Result` instance, and every other shape uses the stock pg path —
+including a matching shape carrying a truthy `query_timeout`, which
+runs through stock pg so the timeout is honored and a `pg.Result` is
+returned; since PGlite executes on the JS thread, the timer can only
+fire while the event loop is free, such as while the query waits on
+the shared instance — never against its own WASM execution).
 Use `pool.end()` to shut the pool down. Ownership
 follows the same rule as `PGliteBridge` and `PGliteServer`: when
 the pool created its own PGlite, `end()` closes it; when you
