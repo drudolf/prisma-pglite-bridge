@@ -457,7 +457,11 @@ const client = new pg.Client({
 ## `SessionLock`
 
 An async mutex that serializes PGlite access across multiple
-duplex streams sharing one PGlite instance. `PGliteBridge` and
+duplex streams sharing one PGlite instance. Ownership is taken at
+admission — `acquire` claims the session before an operation's
+first byte reaches PGlite, waiters queue FIFO — and is released at
+the owner's idle ReadyForQuery, so a transaction (or a suspended
+cursor) holds the session until it completes. `PGliteBridge` and
 `PgBridgePool` install one automatically when `max > 1`; export
 it for custom multi-duplex setups built on top of `PGliteDuplex`.
 

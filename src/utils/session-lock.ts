@@ -2,32 +2,46 @@
  * Session-level lock for PGlite's single-session model.
  *
  * PGlite runs PostgreSQL in single-user mode — one session shared by all
- * bridges. runExclusive serializes individual operations, but transactions
- * span multiple operations. Without session-level locking, Bridge A's BEGIN
- * and Bridge B's query interleave, corrupting transaction boundaries.
+ * bridges of a pool. runExclusive serializes individual operations, but
+ * transactions span multiple operations. Without session-level locking,
+ * Bridge A's BEGIN and Bridge B's query interleave, corrupting transaction
+ * boundaries.
  *
- * The session lock tracks which bridge owns the session. When PGlite enters
- * transaction state (ReadyForQuery status 'T' or 'E'), the owning bridge
- * gets exclusive access until the transaction completes (status returns to 'I').
+ * Ownership model: ownership is acquired AT ADMISSION — `acquire` takes the
+ * session before the first byte of an operation reaches PGlite — and is
+ * released at the first ReadyForQuery `I` (idle) the owner observes, or by
+ * explicit `release`/`cancel` on teardown paths. Response processing never
+ * GRANTS ownership: `T`/`E` (in-transaction / failed) mean the owner keeps
+ * the session across operations, so a transaction simply extends the hold
+ * its BEGIN's admission took, and a suspended row-limited portal (which
+ * emits no RFQ until Sync) keeps it the same way. Waiters queue FIFO and
+ * are granted ownership one at a time.
  *
- * Non-transactional operations from any bridge are allowed when no transaction
- * is active — they serialize naturally through runExclusive.
+ * Operations from different bridges therefore serialize in ADMISSION order.
+ * They were always serial in execution (runExclusive); reservation moves the
+ * decision to admission so an operation can never execute inside a sibling's
+ * transaction, and a sibling's ReadyForQuery can never "steal" the session
+ * from its rightful owner (both probe-verified failure modes of the earlier
+ * response-time ownership model).
+ *
+ * The guarantee is per pool (one lock per `max > 1` pool): raw PGlite
+ * consumers and other pools sharing the instance are outside it — see the
+ * shared-instance advisory.
  */
 
-// ReadyForQuery status bytes
+// ReadyForQuery status byte
 const STATUS_IDLE = 0x49; // 'I' — no transaction
-const STATUS_IN_TRANSACTION = 0x54; // 'T' — in transaction block
-const STATUS_FAILED = 0x45; // 'E' — failed transaction block
 
 /**
  * Coordinates PGlite access across concurrent pool connections.
  *
  * @remarks
  * PGlite runs PostgreSQL in single-user mode — one session shared by all
- * bridges. The session lock tracks which bridge owns the session during
- * transactions, preventing interleaving. Used internally by {@link PGliteDuplex}
- * and created automatically by {@link PgBridgePool}. Only instantiate directly
- * if building a custom pool setup.
+ * bridges. Ownership is taken at `acquire` (admission) and released on the
+ * owner's idle ReadyForQuery, preventing cross-bridge transaction
+ * interleaving. Used internally by {@link PGliteDuplex} and created
+ * automatically by {@link PgBridgePool}. Only instantiate directly if
+ * building a custom pool setup.
  */
 export class SessionLock {
   private owner?: symbol;
@@ -35,12 +49,23 @@ export class SessionLock {
     [];
 
   /**
-   * Acquire access to PGlite. Resolves immediately if no transaction is
-   * active or if this bridge owns the current transaction. Queues otherwise.
+   * Acquire the session: TAKES ownership when the session is free, is
+   * re-entrant for the current owner, and queues FIFO otherwise. A resolved
+   * acquire IS the right to submit to PGlite — no operation may reach the
+   * backend without it.
+   *
+   * Re-entrancy admits only the owner's NEXT operation, never a concurrent
+   * one: the duplex's protocol calls are strictly sequential per duplex (the
+   * single-flight drain loop awaits each call before consuming more input —
+   * see the framer-state invariant in `PGliteDuplex`), and pg runs one
+   * active query per connection.
    */
   async acquire(id: symbol): Promise<void> {
-    // Free slot or re-entrant — pass through
-    if (this.owner === undefined || this.owner === id) return;
+    if (this.owner === undefined) {
+      this.owner = id;
+      return;
+    }
+    if (this.owner === id) return;
 
     // Another bridge owns the session — wait
     return new Promise<void>((resolve, reject) => {
@@ -58,23 +83,13 @@ export class SessionLock {
   }
 
   /**
-   * Claim the session outside ReadyForQuery-status tracking. Used for
-   * portal-suspension windows (row-limited executions), where the backend
-   * emits no RFQ until Sync so `updateStatus` cannot engage ownership.
-   * Non-stealing: never displaces another holder — an interleaver that
-   * won the acquire race keeps its (possibly transactional) ownership.
-   * Released by the existing paths: `updateStatus` with IDLE, `release`,
-   * or `cancel`.
+   * Take the session if free, without queueing.
    *
-   * The hold has no timeout: a client that idles on an open cursor holds
-   * the session exactly like a client idling in an open transaction, and
-   * blocks other pool clients for as long. Cursor consumers in `max > 1`
-   * pools should read promptly or close; a timeout here would instead
-   * strip legitimately slow cursors of the very hold that protects their
-   * suspended portal.
-   *
-   * @returns `true` if `id` now holds the session, `false` if another
-   *   bridge already holds it.
+   * @deprecated Ownership has been acquired at admission (`acquire`) since
+   * the admission-reservation fix, and the bridge no longer calls this. Kept
+   * as a behavior-identical shim for custom multi-duplex setups that used
+   * the portal-hold API; scheduled for removal in the next major.
+   * @returns `true` if `id` now holds (or already held) the session.
    */
   hold(id: symbol): boolean {
     if (this.owner === undefined) {
@@ -85,21 +100,19 @@ export class SessionLock {
   }
 
   /**
-   * Update session state based on the ReadyForQuery status byte.
-   * Call after every PGlite response that contains RFQ.
+   * Update session state from a ReadyForQuery status byte. Call after every
+   * PGlite response that contains an RFQ.
    *
-   * @returns `true` if ownership transitioned on this call (acquired or
-   *   released). `false` for no-op updates (e.g., re-entrant status within
-   *   the same transaction, or IDLE from a non-owning bridge).
+   * The ONLY mutation is release-on-idle by the current owner (which drains
+   * the next FIFO waiter). Ownership is never granted here: a `T`/`E` is an
+   * inert confirmation that the admission-acquired hold continues, and any
+   * status from a non-owner — reachable only when a torn-down duplex's late
+   * response frames after `cancel` cleared its claim — must neither steal
+   * the session from a drained successor nor resurrect the cancelled claim.
+   *
+   * @returns `true` if ownership was released on this call.
    */
   updateStatus(id: symbol, status: number): boolean {
-    if (status === STATUS_IN_TRANSACTION || status === STATUS_FAILED) {
-      if (this.owner === id) return false;
-      this.owner = id;
-      return true;
-    }
-
-    // Transaction complete — release ownership
     if (status === STATUS_IDLE && this.owner === id) {
       this.owner = undefined;
       this.drainWaitQueue();

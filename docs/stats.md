@@ -79,7 +79,10 @@ described below. That path is more flexible, but also more advanced.
   `process.resourceUsage` (Bun, Deno, edge workers).
 - `totalSessionLockWaitMs`, `sessionLockAcquisitionCount`,
   `avgSessionLockWaitMs`, `maxSessionLockWaitMs` — session-lock
-  contention across pool connections
+  contention across pool connections. Ownership is taken at
+  admission, so waits include queueing behind a sibling's
+  in-flight operation, not only behind open transactions — expect
+  nonzero waits under plain concurrent load on `max > 1` pools
 
 `statsLevel` is echoed on the returned object. Any field typed
 `T | undefined` in the returned `Stats` is the exhaustive list of

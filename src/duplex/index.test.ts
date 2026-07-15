@@ -631,7 +631,9 @@ describe('PGliteDuplex error paths', () => {
   it('destroy while waiting on the session lock does not poison the next bridge', async () => {
     const owner = Symbol('owner');
     const lock = new SessionLock();
-    lock.updateStatus(owner, 0x54); // 'T'
+    // Ownership is admission-acquired: a free-lock acquire takes ownership
+    // synchronously (the returned promise only matters for queued waiters).
+    void lock.acquire(owner);
 
     let destroyedBridgeRan = false;
     const blockedBridge = new PGliteDuplex(

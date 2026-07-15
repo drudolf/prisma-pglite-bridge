@@ -3,10 +3,12 @@
  *
  * Each pool connection gets its own PGliteDuplex stream, all sharing the
  * same PGlite WASM instance. Pools with multiple connections also share a
- * SessionLock. The session lock ensures transaction isolation: when one
- * bridge starts a transaction (BEGIN), it gets exclusive PGlite access until
- * COMMIT/ROLLBACK. Non-transactional operations from any bridge serialize
- * through PGlite's runExclusive mutex.
+ * SessionLock. The session lock ensures transaction isolation: ownership is
+ * taken when an operation is admitted (before its first byte reaches
+ * PGlite) and released at the owner's idle ReadyForQuery — so a transaction
+ * holds exclusive access from its BEGIN's admission until COMMIT/ROLLBACK,
+ * and operations from different bridges serialize in admission order (their
+ * execution was always serialized by PGlite's runExclusive mutex).
  */
 import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import pg from 'pg';

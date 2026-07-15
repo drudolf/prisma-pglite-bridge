@@ -10,27 +10,61 @@ const drainMicrotasks = async () => {
   await Promise.resolve();
 };
 
-// ─── Unit tests for SessionLock ───
+// ReadyForQuery status bytes.
+const IDLE = 0x49; // 'I'
+const IN_TRANSACTION = 0x54; // 'T'
+const FAILED = 0x45; // 'E'
+
+// ─── Unit tests for SessionLock (admission-reservation semantics) ───
+//
+// Rewritten for the session-lock admission-reservation change (design:
+// .claude/plans/session-lock-admission-reservation.md §B). The OLD suite
+// pinned the pre-fix semantics — acquire passing everyone while owner is
+// unset, and updateStatus('T'|'E') taking/stealing ownership. This suite
+// pins the NEW contract:
+//   - acquire on a free lock TAKES ownership (a resolved acquire IS the
+//     execution right); re-entrant for the owner; FIFO queue otherwise.
+//   - updateStatus NEVER assigns ownership: 'I' from the owner releases +
+//     drains; 'T'/'E' never mutate (no steal, no late-response resurrection).
+//   - hold() is DELETED (admission subsumes it) — no rows call it.
+// The acquire-takes and no-steal/no-resurrect rows are RED until the
+// production change lands.
 
 describe('SessionLock', () => {
-  it('allows any bridge when idle', async () => {
+  it('acquire on a free lock TAKES ownership', async () => {
     const lock = new SessionLock();
     const a = Symbol('bridge');
-    const b = Symbol('bridge');
 
-    await lock.acquire(a); // should resolve immediately
-    await lock.acquire(b); // should resolve immediately
+    await lock.acquire(a);
+    // Post-fix: a resolved acquire on a free lock means a now owns the session.
+    expect(lock.isOwner(a)).toBe(true);
   });
 
-  it('blocks other bridges during a transaction', async () => {
+  it('re-entrant acquire resolves immediately for the current owner', async () => {
+    const lock = new SessionLock();
+    const a = Symbol('bridge');
+
+    await lock.acquire(a); // takes ownership
+    // A second acquire by the owner must resolve synchronously — multi-batch
+    // operations (cursor continuations, mid-transaction queries) must not
+    // self-deadlock.
+    let reentered = false;
+    const reentry = lock.acquire(a).then(() => {
+      reentered = true;
+    });
+    await drainMicrotasks();
+    expect(reentered).toBe(true);
+    await reentry;
+    expect(lock.isOwner(a)).toBe(true);
+  });
+
+  it('a second bridge acquiring a held lock queues until the owner releases on idle', async () => {
     const lock = new SessionLock();
     const a = Symbol('bridge');
     const b = Symbol('bridge');
 
-    // Bridge A starts a transaction
-    lock.updateStatus(a, 0x54); // 'T' = in transaction
+    await lock.acquire(a); // a owns
 
-    // Bridge B should be blocked
     let bResolved = false;
     const bPromise = lock.acquire(b).then(() => {
       bResolved = true;
@@ -39,109 +73,161 @@ describe('SessionLock', () => {
     await drainMicrotasks();
     expect(bResolved).toBe(false);
 
-    // Bridge A commits — status back to idle
-    lock.updateStatus(a, 0x49); // 'I' = idle
+    // Owner idle → release + drain grants b.
+    lock.updateStatus(a, IDLE);
 
     await bPromise;
     expect(bResolved).toBe(true);
+    expect(lock.isOwner(b)).toBe(true);
   });
 
-  it('allows the owning bridge to continue during its transaction', async () => {
+  it('FIFO: two waiters behind an owner drain one at a time in arrival order on each idle RFQ', async () => {
+    const lock = new SessionLock();
+    const a = Symbol('owner');
+    const b = Symbol('first-waiter');
+    const c = Symbol('second-waiter');
+
+    await lock.acquire(a); // a owns
+
+    const order: symbol[] = [];
+    const bPromise = lock.acquire(b).then(() => order.push(b));
+    const cPromise = lock.acquire(c).then(() => order.push(c));
+
+    await drainMicrotasks();
+    expect(order).toEqual([]);
+
+    // a idles → b (first in arrival order) is granted, c still waits.
+    lock.updateStatus(a, IDLE);
+    await bPromise;
+    expect(order).toEqual([b]);
+    expect(lock.isOwner(b)).toBe(true);
+    await drainMicrotasks();
+    // c must not barge in while b holds.
+    expect(order).toEqual([b]);
+
+    // b idles → c is granted.
+    lock.updateStatus(b, IDLE);
+    await cPromise;
+    expect(order).toEqual([b, c]);
+    expect(lock.isOwner(c)).toBe(true);
+  });
+
+  it('updateStatus IDLE from a non-owner does not release the current owner', async () => {
+    const lock = new SessionLock();
+    const a = Symbol('owner');
+    const b = Symbol('other');
+
+    await lock.acquire(a); // a owns
+    // A stray IDLE attributed to a non-owner must not release a's ownership.
+    lock.updateStatus(b, IDLE);
+    expect(lock.isOwner(a)).toBe(true);
+    expect(lock.isOwner(b)).toBe(false);
+  });
+
+  it("updateStatus('T') with a FOREIGN owner does not steal ownership", async () => {
+    const lock = new SessionLock();
+    const a = Symbol('owner');
+    const b = Symbol('interleaver');
+
+    await lock.acquire(a); // a owns
+
+    // Pre-fix this reassigned owner to b (the steal). Post-fix it is inert:
+    // a keeps ownership, b never gains it.
+    lock.updateStatus(b, IN_TRANSACTION);
+    expect(lock.isOwner(a)).toBe(true);
+    expect(lock.isOwner(b)).toBe(false);
+  });
+
+  it("updateStatus('E') with a FOREIGN owner does not steal ownership", async () => {
+    const lock = new SessionLock();
+    const a = Symbol('owner');
+    const b = Symbol('interleaver');
+
+    await lock.acquire(a); // a owns
+
+    lock.updateStatus(b, FAILED);
+    expect(lock.isOwner(a)).toBe(true);
+    expect(lock.isOwner(b)).toBe(false);
+  });
+
+  it("updateStatus('T') with NO owner does not assign ownership (late-response-after-cancel guard)", () => {
     const lock = new SessionLock();
     const a = Symbol('bridge');
 
-    lock.updateStatus(a, 0x54); // 'T'
-
-    // Same bridge should not block
-    await lock.acquire(a);
+    // A late 'T' response framing after a cancel cleared the owner must not
+    // resurrect a claim on the now-free session.
+    lock.updateStatus(a, IN_TRANSACTION);
+    expect(lock.isOwner(a)).toBe(false);
   });
 
-  it('blocks during failed transaction state', async () => {
+  it("updateStatus('E') with NO owner does not assign ownership", () => {
     const lock = new SessionLock();
     const a = Symbol('bridge');
-    const b = Symbol('bridge');
 
-    lock.updateStatus(a, 0x45); // 'E' = failed transaction
-
-    let bResolved = false;
-    lock.acquire(b).then(
-      () => {
-        bResolved = true;
-      },
-      () => undefined,
-    );
-
-    await drainMicrotasks();
-    expect(bResolved).toBe(false);
-
-    // Rollback brings status back to idle
-    lock.updateStatus(a, 0x49);
-    await drainMicrotasks();
-    expect(bResolved).toBe(true);
+    lock.updateStatus(a, FAILED);
+    expect(lock.isOwner(a)).toBe(false);
   });
 
-  it('release() unblocks waiting bridges', async () => {
+  it("updateStatus('T'|'E') by the current owner is an inert confirmation", async () => {
     const lock = new SessionLock();
-    const a = Symbol('bridge');
-    const b = Symbol('bridge');
+    const a = Symbol('owner');
 
-    lock.updateStatus(a, 0x54);
+    await lock.acquire(a); // a owns
+    lock.updateStatus(a, IN_TRANSACTION);
+    expect(lock.isOwner(a)).toBe(true);
+    lock.updateStatus(a, FAILED);
+    expect(lock.isOwner(a)).toBe(true);
 
-    let bResolved = false;
-    lock.acquire(b).then(
-      () => {
-        bResolved = true;
-      },
-      () => undefined,
-    );
-
-    await drainMicrotasks();
-    expect(bResolved).toBe(false);
-
-    // Force release (e.g., bridge destroyed mid-transaction)
-    lock.release(a);
-    await drainMicrotasks();
-    expect(bResolved).toBe(true);
+    // The transaction ends at the first owner-idle RFQ.
+    lock.updateStatus(a, IDLE);
+    expect(lock.isOwner(a)).toBe(false);
   });
 
-  it('release() unblocks waiting bridges on crash (no COMMIT)', async () => {
+  it('release() by the owner drains the next waiter; release() by a non-owner returns false', async () => {
     const lock = new SessionLock();
-    const bridgeA = Symbol('bridge');
-    const bridgeB = Symbol('bridge');
+    const a = Symbol('owner');
+    const b = Symbol('waiter');
 
-    // Bridge A starts a transaction
-    lock.updateStatus(bridgeA, 0x54); // 'T'
+    await lock.acquire(a); // a owns
 
-    // Bridge B is blocked
     let bResolved = false;
-    const bPromise = lock.acquire(bridgeB).then(() => {
+    const bPromise = lock.acquire(b).then(() => {
       bResolved = true;
     });
 
     await drainMicrotasks();
     expect(bResolved).toBe(false);
 
-    // Bridge A is destroyed (crash) — release without COMMIT
-    lock.release(bridgeA);
+    // A non-owner release is a no-op.
+    expect(lock.release(b)).toBe(false);
+    await drainMicrotasks();
+    expect(bResolved).toBe(false);
+    expect(lock.isOwner(a)).toBe(true);
 
+    // The owner release unblocks the waiting bridge and grants it ownership.
+    expect(lock.release(a)).toBe(true);
     await bPromise;
     expect(bResolved).toBe(true);
+    expect(lock.isOwner(b)).toBe(true);
   });
 
-  it('cancel() removes a destroyed waiter so the next bridge can proceed', async () => {
+  it('cancel() rejects only the cancelling id’s waiters and leaves others to drain', async () => {
     const lock = new SessionLock();
-    const a = Symbol('bridge');
-    const b = Symbol('bridge');
-    const c = Symbol('bridge');
+    const a = Symbol('owner');
+    const b = Symbol('cancelled');
+    const c = Symbol('survivor');
 
-    lock.updateStatus(a, 0x54); // 'T'
+    await lock.acquire(a); // a owns
 
     let bResolved = false;
+    let bRejected = false;
     const bPromise = lock.acquire(b).then(
       () => {
         bResolved = true;
       },
-      () => undefined,
+      () => {
+        bRejected = true;
+      },
     );
 
     let cResolved = false;
@@ -153,21 +239,24 @@ describe('SessionLock', () => {
     expect(bResolved).toBe(false);
     expect(cResolved).toBe(false);
 
+    // Cancel b's waiter; a then idles → c (not b) is granted.
     lock.cancel(b);
-    lock.updateStatus(a, 0x49); // 'I'
+    lock.updateStatus(a, IDLE);
 
     await bPromise;
     await cPromise;
+    expect(bRejected).toBe(true);
     expect(bResolved).toBe(false);
     expect(cResolved).toBe(true);
+    expect(lock.isOwner(c)).toBe(true);
   });
 
-  it('cancel() on the current owner drains the next waiter', async () => {
+  it('cancel() on the current owner releases and drains the next waiter', async () => {
     const lock = new SessionLock();
-    const a = Symbol('bridge');
-    const b = Symbol('bridge');
+    const a = Symbol('owner');
+    const b = Symbol('waiter');
 
-    lock.updateStatus(a, 0x54); // 'T' — a owns
+    await lock.acquire(a); // a owns
 
     let bResolved = false;
     const bPromise = lock.acquire(b).then(() => {
@@ -178,63 +267,95 @@ describe('SessionLock', () => {
 
     await bPromise;
     expect(bResolved).toBe(true);
-  });
-});
-
-// ─── Unit tests for SessionLock.hold (flush portal-boundary hold) ───
-
-describe('SessionLock portal hold', () => {
-  it('hold() on a free lock claims ownership', () => {
-    const lock = new SessionLock();
-    const a = Symbol('bridge');
-
-    expect(lock.hold(a)).toBe(true);
-    expect(lock.isOwner(a)).toBe(true);
+    expect(lock.isOwner(b)).toBe(true);
   });
 
-  it('hold() is a no-op success when the id already owns the session', () => {
+  // ─── Mid-queue destroy cases (tribunal-named, common path under reservation) ───
+
+  it('mid-queue destroy (a): cancelling the MIDDLE waiter rejects it and preserves FIFO order for survivors', async () => {
     const lock = new SessionLock();
-    const a = Symbol('bridge');
+    const a = Symbol('owner');
+    const b = Symbol('first');
+    const mid = Symbol('middle');
+    const d = Symbol('last');
 
-    lock.hold(a);
+    await lock.acquire(a); // a owns
 
-    expect(lock.hold(a)).toBe(true);
-    expect(lock.isOwner(a)).toBe(true);
+    const order: symbol[] = [];
+    const bPromise = lock.acquire(b).then(() => order.push(b));
+    let midRejected = false;
+    const midPromise = lock.acquire(mid).then(
+      () => order.push(mid),
+      () => {
+        midRejected = true;
+      },
+    );
+    const dPromise = lock.acquire(d).then(() => order.push(d));
+
+    await drainMicrotasks();
+
+    // Destroy the middle waiter mid-queue.
+    lock.cancel(mid);
+    await midPromise;
+    expect(midRejected).toBe(true);
+
+    // Drain the survivors in their original arrival order: b then d.
+    lock.updateStatus(a, IDLE); // → b
+    await bPromise;
+    lock.updateStatus(b, IDLE); // → d (mid was removed)
+    await dPromise;
+
+    expect(order).toEqual([b, d]);
+    expect(lock.isOwner(d)).toBe(true);
   });
 
-  it('hold() does not steal ownership from another id', () => {
+  it('mid-queue destroy (b): a waiter granted ownership by drain, then torn down before executing, passes ownership on', async () => {
     const lock = new SessionLock();
-    const a = Symbol('bridge');
-    const b = Symbol('bridge');
+    const a = Symbol('owner');
+    const b = Symbol('granted-then-destroyed');
+    const c = Symbol('next');
 
-    lock.hold(a);
+    await lock.acquire(a); // a owns
 
-    expect(lock.hold(b)).toBe(false);
-    expect(lock.isOwner(a)).toBe(true);
-    expect(lock.isOwner(b)).toBe(false);
-  });
-
-  it('updateStatus IDLE after hold() releases and grants the next waiter', async () => {
-    const lock = new SessionLock();
-    const a = Symbol('bridge');
-    const b = Symbol('bridge');
-
-    lock.hold(a);
-
-    let bResolved = false;
-    const bPromise = lock.acquire(b).then(() => {
-      bResolved = true;
+    const bPromise = lock.acquire(b).then(
+      () => undefined,
+      () => undefined,
+    );
+    let cResolved = false;
+    const cPromise = lock.acquire(c).then(() => {
+      cResolved = true;
     });
 
     await drainMicrotasks();
-    expect(bResolved).toBe(false);
 
-    // The next real RFQ with status 'I' releases the hold via the
-    // existing updateStatus path.
-    lock.updateStatus(a, 0x49);
-
+    // a idles → drain grants ownership to b (but b has not "executed" yet).
+    lock.updateStatus(a, IDLE);
     await bPromise;
-    expect(bResolved).toBe(true);
+    expect(lock.isOwner(b)).toBe(true);
+    expect(cResolved).toBe(false);
+
+    // b is torn down before it runs — cancel must release AND drain c (no
+    // dead-owner deadlock).
+    lock.cancel(b);
+    await cPromise;
+    expect(cResolved).toBe(true);
+    expect(lock.isOwner(c)).toBe(true);
+  });
+
+  // The deprecated compatibility shim for external multi-duplex setups: the
+  // bridge itself no longer calls hold() (admission acquires), but the
+  // exported surface keeps its exact pre-reservation behavior — take if
+  // free, re-entrant true, never steal.
+  it('hold() shim: takes a free session, is re-entrant, never steals', () => {
+    const lock = new SessionLock();
+    const a = Symbol('a');
+    const b = Symbol('b');
+
+    expect(lock.hold(a)).toBe(true);
+    expect(lock.isOwner(a)).toBe(true);
+    expect(lock.hold(a)).toBe(true);
+    expect(lock.hold(b)).toBe(false);
+    expect(lock.isOwner(a)).toBe(true);
   });
 });
 

@@ -181,9 +181,17 @@ export class PGliteDuplex extends Duplex {
    *  never reassigned. */
   private readonly pipeline: Uint8Array[] = [];
   /** Last RFQ status byte observed in a backend response — independent of
-   *  SessionLock so rollback works for max=1 pools (no lock) and survives
-   *  the in-flight BEGIN race (lock owner is set only on RFQ arrival). */
+   *  SessionLock so rollback works for max=1 pools (no lock). */
   private lastSeenRfqStatus?: number;
+  /** Whether the last completed batch left the unnamed portal suspended (a
+   *  clean flush-boundary batch — rows-mode/pg-cursor between reads).
+   *  Cleared by any real RFQ and by the doomed-portal paths. Load-bearing
+   *  for `releaseAbandonedPortalHold`: under admission-acquired ownership,
+   *  "owns the session without a T/E status" no longer implies a suspended
+   *  portal — it is also true while an ordinary operation is merely in
+   *  flight (e.g. an unawaited BEGIN at release time), and firing the
+   *  portal recovery there would release ownership mid-transaction. */
+  private portalSuspended = false;
   /** In-flight `op()` from the runExclusive callback, if any. Set only once
    *  the callback has actually entered `op()` — a queued callback that fires
    *  after `tornDown` returns immediately and is never registered here, so
@@ -265,6 +273,10 @@ export class PGliteDuplex extends Duplex {
       onReadyForQuery: (status) => {
         this.rfqSeenInCall = true;
         this.lastSeenRfqStatus = status;
+        // A real RFQ means the backend reached a batch boundary — any
+        // previously suspended portal chain has ended (terminating Sync
+        // response, or the RFQ PGlite appends to an error).
+        this.portalSuspended = false;
         if (this.sessionLock) {
           this.sessionLock.updateStatus(this.duplexId, status);
         }
@@ -871,19 +883,19 @@ export class PGliteDuplex extends Duplex {
       await this.recoverySync();
     }
 
-    if (rfqMode === 'flush-boundary' && this.sessionLock) {
-      if (!this.errSeen) {
-        // The unnamed portal may be suspended awaiting a continuation
-        // Execute+Flush from pg. Claim the session so no other duplex can
-        // clobber the portal between batches; the next real RFQ (the Sync
-        // response, or the RFQ PGlite appends to an error) releases it via
-        // the onReadyForQuery → updateStatus path. Non-stealing: a duplex
-        // that won the acquire race keeps its ownership and this portal is
-        // doomed anyway (its continuation surfaces a portal error, not a
-        // hang) — the same acquire-before-own window the transaction path
-        // tolerates.
-        this.sessionLock.hold(this.duplexId);
-      } else if (
+    // A suspended portal needs no session CLAIM here: admission already took
+    // ownership before this batch's first byte reached PGlite, and a
+    // flush-boundary batch emits no RFQ, so updateStatus cannot have released
+    // it — the portal stays protected between batches until the terminating
+    // Sync's idle RFQ (or a release/cancel path) lets siblings in. What must
+    // be recorded is the SUSPENSION itself: a clean flush-boundary batch
+    // leaves the unnamed portal suspended, an errored one dooms it (a real
+    // RFQ, if PGlite appended one, already cleared the flag).
+    if (rfqMode === 'flush-boundary') {
+      this.portalSuspended = !this.errSeen;
+      if (
+        this.sessionLock &&
+        this.errSeen &&
         !this.rfqSeenInCall &&
         // Intentionally stale read: rfqSeenInCall is false, so
         // lastSeenRfqStatus predates this call — exactly the pre-batch
@@ -894,7 +906,8 @@ export class PGliteDuplex extends Duplex {
         // Errored without any RFQ (unobserved on PGlite 0.4.6/0.5.3, which
         // both append one — defensive for future versions): pg cannot
         // recover this connection (stock pg sends no Sync in rows mode), so
-        // drop a hold this duplex took for the now-dead portal rather than
+        // release the admission-acquired ownership for a doomed
+        // non-transactional portal that will never emit its RFQ, rather than
         // blocking every other client behind a wedged connection. A real
         // transaction (status T/E) keeps ownership — it still needs its
         // COMMIT/ROLLBACK.
@@ -923,18 +936,19 @@ export class PGliteDuplex extends Duplex {
   }
 
   /**
-   * Recover the session from a portal-suspension hold this duplex still has
-   * at release time.
+   * Recover the session from ownership this duplex still holds at a
+   * suspended portal when its client is released.
    *
    * Called by `PgBridgePool` when a client is released back to the pool: a
    * released client whose last query left a suspended portal open (an
    * unclosed pg-cursor) will never produce the terminating Sync — so the
    * backend keeps the dead portal AND its open implicit transaction, and
-   * the hold would block every other pool client forever. Manufacture that
-   * Sync here (serialized behind any in-flight exec via runExclusive), then
-   * release the hold: the backend discards the portal and closes the
-   * implicit transaction, so the next client starts on a genuinely idle
-   * session. Without the Sync, a sibling's first ReadyForQuery reports the
+   * the admission-acquired ownership would block every other pool client
+   * forever. Manufacture that Sync here (serialized behind any in-flight
+   * exec via runExclusive), then release ownership: the backend discards
+   * the portal and closes the implicit transaction, so the next client
+   * starts on a genuinely idle session. Without the Sync, a sibling's
+   * first ReadyForQuery reports the
    * inherited `T` and its clean release fires a misattributed
    * abandoned-transaction warning (probe-verified; plan, second amendment).
    * Committing a partially executed writing portal via Sync is stock
@@ -951,10 +965,19 @@ export class PGliteDuplex extends Duplex {
   releaseAbandonedPortalHold(): void {
     const lock = this.sessionLock;
     if (
+      // The explicit suspension flag is load-bearing under admission-acquired
+      // ownership: isOwner without a T/E status is ALSO true while an
+      // ordinary operation is merely in flight (an unawaited BEGIN at
+      // release time) — firing the recovery there would release ownership
+      // mid-transaction and let a sibling in. Only a genuinely suspended
+      // portal gets the manufactured Sync; in-flight work is
+      // rollbackAbandonedTransaction's job.
+      this.portalSuspended &&
       lock?.isOwner(this.duplexId) === true &&
       this.lastSeenRfqStatus !== RFQ_STATUS_IN_TRANSACTION &&
       this.lastSeenRfqStatus !== RFQ_STATUS_FAILED
     ) {
+      this.portalSuspended = false;
       void this.runUnderRunExclusive(() => this.recoverySync())
         .finally(() => {
           lock.release(this.duplexId);

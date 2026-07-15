@@ -11,11 +11,14 @@
   calls in the same process reuse the compiled module.
 - **Single PostgreSQL session** — PGlite runs in single-user mode.
   All pool connections share one session. With `max > 1`, a
-  `SessionLock` serializes transactions (one at a time), but `SET`
-  variables leak between connections within a single test. An open
-  cursor (`pg-cursor`, `rows: N`) holds the session the same way an
-  open transaction does — read or close it promptly, or other
-  clients queue behind it. `resetDb()`
+  `SessionLock` serializes clients' operations in admission order —
+  ownership is taken when an operation is admitted and released at
+  its idle ReadyForQuery, so a transaction holds the session from
+  BEGIN to COMMIT/ROLLBACK — but `SET` variables still leak between
+  connections within a single test. An open cursor (`pg-cursor`,
+  `rows: N`) holds the session the same way an open transaction
+  does — read or close it promptly, or other clients queue behind
+  it. `resetDb()`
   clears more of this between tests (everything `DISCARD ALL`
   covers except named prepared statements, which are kept so the
   statement cache stays warm). The default
