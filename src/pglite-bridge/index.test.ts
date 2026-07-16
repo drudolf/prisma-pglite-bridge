@@ -6,6 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
 import { createMockPGlite } from '../__tests__/mocks.ts';
+import type { PgBridgePool } from '../pool';
 import { pushMigrations } from '../schema/migrations.ts';
 import type { PGliteBridgeOptions } from './index.ts';
 import { emitBridgeLeakWarning, PGliteBridge } from './index.ts';
@@ -25,6 +26,38 @@ const setupSuite = async (
 };
 
 const { prisma, bridge } = await setupSuite({ statsLevel: 'basic' });
+
+/** The exact `#assertPoolIdle` rejection message. */
+const poolBusyMessage = (method: string, busy: number): string =>
+  `${method}() requires no in-flight or waiting pool checkouts; got ${busy}. ` +
+  'Await all pending Prisma queries (or end an open `$transaction`) before calling.';
+
+/**
+ * Reach the bridge's internal pool: `#pool` is private, but the adapter
+ * holds the same instance as `externalPool` (typed private in
+ * `@prisma/adapter-pg`, present at runtime).
+ */
+const bridgePool = (target: PGliteBridge): PgBridgePool => {
+  const pool = (target.adapter as unknown as { externalPool?: PgBridgePool }).externalPool;
+  if (!pool) throw new Error('PrismaPg.externalPool not found — adapter internals changed');
+  return pool;
+};
+
+/**
+ * Settle the floating half of a same-tick pair without leaking handles:
+ * rejections are swallowed and the wait is bounded, so a pathological hang
+ * cannot take the suite down with it.
+ */
+const settleFloating = async (floating: Promise<unknown>): Promise<void> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    floating.catch(() => undefined),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, 5_000);
+    }),
+  ]);
+  clearTimeout(timer);
+};
 
 describe('PGliteBridge', () => {
   beforeEach(async () => {
@@ -186,14 +219,87 @@ describe('PGliteBridge', () => {
 
     await started;
 
-    await expect(bridge.snapshotDb()).rejects.toThrow(/in-flight pool queries/);
-    await expect(bridge.resetSnapshot()).rejects.toThrow(/in-flight pool queries/);
-    await expect(bridge.resetDb()).rejects.toThrow(/in-flight pool queries/);
-
-    resolveGate();
-    await txP;
+    try {
+      await expect(bridge.snapshotDb()).rejects.toThrow(poolBusyMessage('snapshotDb', 1));
+      await expect(bridge.resetSnapshot()).rejects.toThrow(poolBusyMessage('resetSnapshot', 1));
+      await expect(bridge.resetDb()).rejects.toThrow(poolBusyMessage('resetDb', 1));
+    } finally {
+      // Release the transaction even when an assertion fails — a dangling
+      // checked-out client would cascade into every later beforeEach reset.
+      resolveGate();
+      await txP;
+    }
 
     await expect(bridge.snapshotDb()).resolves.toBeUndefined();
+  });
+
+  it('resetDb rejects a same-tick un-awaited pool.query() whose checkout is still waiting for dispatch', async () => {
+    const pool = bridgePool(bridge);
+    // Awaited setup: the probe table exists and the pool holds one idle
+    // client, so the checkout below queues instead of growing the pool.
+    await pool.query('CREATE TABLE "GuardProbe" ("id" TEXT PRIMARY KEY)');
+
+    // Same tick as the guard: pg-pool pushes the checkout onto its pending
+    // queue and defers dispatch by one process.nextTick(_pulseQueue), so at
+    // guard time the pool reads waiting=1 / in-flight=0. Un-guarded, the
+    // INSERT lands after resetDb's TRUNCATE — a phantom row in the "fresh"
+    // DB.
+    const floatingInsert = pool
+      .query(`INSERT INTO "GuardProbe" ("id") VALUES ('phantom')`)
+      .catch(() => undefined);
+    try {
+      await expect(bridge.resetDb()).rejects.toThrow(poolBusyMessage('resetDb', 1));
+    } finally {
+      // The guard does not cancel the queued INSERT — it fulfills today
+      // (that is the bug) and post-fix alike. Settle it before dropping the
+      // probe table so the suite never leaks a pending checkout.
+      await settleFloating(floatingInsert);
+      await pool.query('DROP TABLE IF EXISTS "GuardProbe"').catch(() => undefined);
+    }
+  });
+
+  it('snapshotDb rejects a same-tick pool.connect() checkout that is waiting for dispatch', async () => {
+    const pool = bridgePool(bridge);
+    // Awaited warm-up: one idle client, so connect() queues (waiting=1)
+    // rather than synchronously opening a new connection (in-flight=1, which
+    // even the checked-out-client guard arm catches).
+    await pool.query('SELECT 1');
+
+    // Same tick: the checkout sits in pg-pool's pending queue until the
+    // next tick — waiting=1, in-flight=0 at guard time.
+    const floatingClient = pool.connect();
+    try {
+      await expect(bridge.snapshotDb()).rejects.toThrow(poolBusyMessage('snapshotDb', 1));
+    } finally {
+      // The guard does not cancel the checkout — it resolves on the next
+      // tick either way. Release it so the pool drains.
+      const client = await floatingClient.catch(() => undefined);
+      client?.release();
+      // Red state only: snapshotDb ran and replaced the active snapshot —
+      // discard it so later tests never restore from this test's state.
+      await bridge.resetSnapshot().catch(() => undefined);
+    }
+  });
+
+  it.each([
+    'resetDb',
+    'snapshotDb',
+    'resetSnapshot',
+  ] as const)('%s rejects while a same-tick pool checkout is still waiting for dispatch', async (method) => {
+    const pool = bridgePool(bridge);
+    // Awaited warm-up so the same-tick checkout queues behind an idle
+    // client (waiting=1, in-flight=0) instead of growing the pool.
+    await pool.query('SELECT 1');
+
+    const floating = pool.query('SELECT 1').catch(() => undefined);
+    try {
+      await expect(bridge[method]()).rejects.toThrow(poolBusyMessage(method, 1));
+    } finally {
+      await settleFloating(floating);
+      // Red state only: snapshotDb/resetSnapshot ran and mutated snapshot
+      // state — normalize to "no snapshot" so later tests are unaffected.
+      await bridge.resetSnapshot().catch(() => undefined);
+    }
   });
 
   it('emitBridgeLeakWarning emits a typed process warning', () => {

@@ -257,10 +257,10 @@ export class PGliteBridge {
    * via {@link snapshotDb}, restores from that snapshot instead of
    * truncating to empty.
    *
-   * Throws if any pool client is currently checked out — the operation
-   * runs raw SQL on the PGlite instance bypassing the pool, so concurrent
-   * pool traffic would interleave unsafely. Await all pending Prisma
-   * queries first.
+   * Throws if any pool client is currently checked out or a checkout is
+   * still waiting for dispatch — the operation runs raw SQL on the PGlite
+   * instance bypassing the pool, so concurrent pool traffic would
+   * interleave unsafely. Await all pending Prisma queries first.
    */
   resetDb = async (): Promise<void> => {
     this.#assertPoolIdle('resetDb');
@@ -273,10 +273,11 @@ export class PGliteBridge {
    * schema. Subsequent `resetDb` calls restore from this snapshot instead
    * of truncating to empty.
    *
-   * Throws if any pool client is currently checked out — the operation
-   * runs multiple `exec()` statements directly against the PGlite
-   * instance, bypassing the pool's `SessionLock`. Call from a test
-   * `beforeAll` after migrations but before Prisma traffic starts.
+   * Throws if any pool client is currently checked out or a checkout is
+   * still waiting for dispatch — the operation runs multiple `exec()`
+   * statements directly against the PGlite instance, bypassing the pool's
+   * `SessionLock`. Call from a test `beforeAll` after migrations but
+   * before Prisma traffic starts.
    */
   snapshotDb = async (): Promise<void> => {
     this.#assertPoolIdle('snapshotDb');
@@ -286,7 +287,7 @@ export class PGliteBridge {
   /**
    * Discard the current snapshot. Subsequent `resetDb` calls truncate to
    * empty. Same concurrency requirements as {@link snapshotDb} — throws if
-   * any pool client is currently checked out.
+   * any pool client is checked out or a checkout is waiting for dispatch.
    */
   resetSnapshot = async (): Promise<void> => {
     this.#assertPoolIdle('resetSnapshot');
@@ -294,10 +295,16 @@ export class PGliteBridge {
   };
 
   #assertPoolIdle(method: string): void {
-    const inFlight = this.#pool.totalCount - this.#pool.idleCount;
-    if (inFlight > 0) {
+    // waitingCount covers the same-tick window: pg-pool defers dispatch of a
+    // queued checkout by one tick, so an un-awaited query/connect fired in
+    // the calling tick is a waiter, not yet a checkout — invisible to
+    // totalCount - idleCount. A query behind a caller-side async hop is
+    // invisible to EVERY pool counter; "await all queries first" remains the
+    // contract, this guard just converts the observable misuse into a throw.
+    const busy = this.#pool.totalCount - this.#pool.idleCount + this.#pool.waitingCount;
+    if (busy > 0) {
       throw new Error(
-        `${method}() requires no in-flight pool queries; got ${inFlight}. ` +
+        `${method}() requires no in-flight or waiting pool checkouts; got ${busy}. ` +
           'Await all pending Prisma queries (or end an open `$transaction`) before calling.',
       );
     }

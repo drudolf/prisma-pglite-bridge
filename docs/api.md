@@ -143,6 +143,15 @@ Instance members:
   truncating to empty.
 - `resetSnapshot()` — discards the current snapshot so later
   `resetDb()` calls truncate back to empty again.
+
+  All three methods above run raw SQL directly against the PGlite
+  instance, bypassing the pool — concurrent pool traffic would
+  interleave unsafely. Await every pending query (and end any open
+  `$transaction`) before calling; each method throws when a pool
+  client is checked out or a checkout is still waiting for dispatch.
+  The guard catches same-tick misuse, but a query still inside a
+  caller-side `await` hop is invisible to it — awaiting your queries
+  first is the contract, not an optimization.
 - `stats()` — returns telemetry when `statsLevel` is `'basic'` or
   `'full'`, else `undefined`. See [stats collection](./stats.md#stats-collection).
 - `close()` — shuts down the pool. When the bridge created its own
