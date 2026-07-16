@@ -476,7 +476,7 @@ const runCallbackThrowProbe = async (
 describe(`callback-throw channel parity with pg@${CALLBACK_THROW_PG_VERSION}`, () => {
   const outcomes = ['success', 'error'] as const;
 
-  it.each(outcomes)('pins stock pg asynchronous $0-callback throws', async (outcome) => {
+  it.each(outcomes)('pins stock pg asynchronous %s-callback throws', async (outcome) => {
     const stock = await runCallbackThrowProbe('stock', outcome);
 
     expect(stock).toMatchObject({
@@ -494,7 +494,7 @@ describe(`callback-throw channel parity with pg@${CALLBACK_THROW_PG_VERSION}`, (
     ]);
   });
 
-  it.each(outcomes)('matches stock pg for asynchronous $0-callback throws', async (outcome) => {
+  it.each(outcomes)('matches stock pg for asynchronous %s-callback throws', async (outcome) => {
     const [stock, bridge] = await Promise.all([
       runCallbackThrowProbe('stock', outcome),
       runCallbackThrowProbe('bridge', outcome),

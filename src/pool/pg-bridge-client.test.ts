@@ -1131,6 +1131,10 @@ describe('PgBridgeClient — submission-chain query_timeout budget', () => {
     const config = { text: 'SELECT boom', query_timeout: 15 };
     const observed: Array<{ perQuery: unknown; fallback: number }> = [];
     let shouldThrow = true;
+    // Armed-timer delays are the only observable a leaked suppression stash
+    // has: a stale stash resurrects the old 40ms default for the follow-up
+    // query, whose timer is cleared before getTimerCount() could see it.
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
 
     try {
       pg.Client.prototype.query = vi.fn((ownedConfig: unknown) => {
@@ -1161,7 +1165,9 @@ describe('PgBridgeClient — submission-chain query_timeout budget', () => {
         { perQuery: undefined, fallback: 0 },
       ]);
       expect(vi.getTimerCount()).toBe(0);
+      expect(setTimeoutSpy.mock.calls.map(([, delay]) => delay)).toEqual([15]);
     } finally {
+      setTimeoutSpy.mockRestore();
       pg.Client.prototype.query = origQuery;
       vi.useRealTimers();
     }
