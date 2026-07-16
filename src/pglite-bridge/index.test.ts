@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
 import { createMockPGlite } from '../__tests__/mocks.ts';
 import type { PgBridgePool } from '../pool';
+import { PgBridgeClient } from '../pool/pg-bridge-client.ts';
 import { pushMigrations } from '../schema/migrations.ts';
 import type { PGliteBridgeOptions } from './index.ts';
 import { emitBridgeLeakWarning, PGliteBridge } from './index.ts';
@@ -98,6 +99,64 @@ describe('PGliteBridge', () => {
 
   it('exposes the underlying pglite instance', () => {
     expect(bridge.pglite).toBeInstanceOf(PGlite);
+  });
+
+  it('declares connectionTimeoutMillis, idleTimeoutMillis, and fastQueryPath on PGliteBridgeOptions', () => {
+    // Compile-time pins: the literal assignment fails tsc (TS2353) while the
+    // interface omits these properties, and each annotated read pins the
+    // exact declared type. The runtime assertions are trivially true — tsc
+    // is the red gate for this test, not vitest.
+    const options: PGliteBridgeOptions = {
+      connectionTimeoutMillis: 75,
+      idleTimeoutMillis: 30_000,
+      fastQueryPath: false,
+    };
+    const connectionTimeoutMillis: number | undefined = options.connectionTimeoutMillis;
+    const idleTimeoutMillis: number | undefined = options.idleTimeoutMillis;
+    const fastQueryPath: boolean | undefined = options.fastQueryPath;
+
+    expect(connectionTimeoutMillis).toBe(75);
+    expect(idleTimeoutMillis).toBe(30_000);
+    expect(fastQueryPath).toBe(false);
+  });
+
+  it('forwards connectionTimeoutMillis, idleTimeoutMillis, and fastQueryPath to its pool', async () => {
+    // Reuse the shared pglite (caller-supplied) to avoid a redundant WASM boot.
+    const localBridge = new PGliteBridge({
+      pglite: bridge.pglite,
+      connectionTimeoutMillis: 75,
+      idleTimeoutMillis: 30_000,
+      fastQueryPath: false,
+    });
+    try {
+      const pool = bridgePool(localBridge);
+      // pg-pool copies its config verbatim onto `pool.options`
+      // (Object.assign in the pg-pool constructor), so values landing there
+      // prove the bridge constructor's spread forwarded them.
+      expect(pool.options.connectionTimeoutMillis).toBe(75);
+      expect(pool.options.idleTimeoutMillis).toBe(30_000);
+      // fastQueryPath travels inside the symbol-keyed client-options object;
+      // Object.assign copies symbol keys, so it is visible on pool.options.
+      const clientOptions = (
+        pool.options as unknown as Record<symbol, { fastQueryPath?: boolean } | undefined>
+      )[PgBridgeClient.OptionsKey];
+      expect(clientOptions?.fastQueryPath).toBe(false);
+    } finally {
+      await localBridge.close();
+    }
+  });
+
+  it('leaves the pool checkout timeout unbounded when connectionTimeoutMillis is omitted', async () => {
+    // Reuse the shared pglite (caller-supplied) to avoid a redundant WASM boot.
+    const localBridge = new PGliteBridge({ pglite: bridge.pglite });
+    try {
+      const pool = bridgePool(localBridge);
+      // pg-pool treats a falsy connectionTimeoutMillis as "no checkout
+      // timeout" — declaring the option must not change the default.
+      expect(pool.options.connectionTimeoutMillis).toBeUndefined();
+    } finally {
+      await localBridge.close();
+    }
   });
 
   it('resetDb clears user data', async () => {

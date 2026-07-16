@@ -119,6 +119,34 @@ export interface PGliteBridgeOptions {
   timeout?: number;
 
   /**
+   * Maximum milliseconds pg-pool waits for its entire checkout path:
+   * creating and connecting a logical client, or waiting for one when all
+   * `max` clients are checked out. Defaults to an unbounded wait. Distinct
+   * from {@link query_timeout} on a checked-out client and the bridge
+   * readiness {@link timeout}; on an initial checkout,
+   * `connectionTimeoutMillis` and `timeout` may bound different portions of
+   * the operation. Forwarded to the pool unchanged.
+   */
+  connectionTimeoutMillis?: number;
+
+  /**
+   * Milliseconds an idle pool client lives before eviction. Defaults to `0`
+   * (never evict) — an in-process duplex client holds no socket or server
+   * resource, and evicting it would discard its prepared-statement cache
+   * for no benefit. Forwarded to the pool unchanged.
+   */
+  idleTimeoutMillis?: number;
+
+  /**
+   * Route adapter-pg-shaped queries through the pool's lean fast path that
+   * skips the Describe round-trip on repeat executions. Default `true`.
+   * See `PgBridgePoolOptions.fastQueryPath` for the full contract. Set
+   * `false` to route everything through stock pg. Forwarded to the pool
+   * unchanged.
+   */
+  fastQueryPath?: boolean;
+
+  /**
    * Maximum milliseconds from an ordinary Prisma/pg query call on a checked-out
    * client until its caller rejects with `Query read timeout`. A truthy
    * per-query `query_timeout` overrides this default; per-query `0` falls back

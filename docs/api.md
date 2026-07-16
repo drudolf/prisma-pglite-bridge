@@ -88,6 +88,9 @@ const bridge = new PGliteBridge({
   syncToFs: 'auto',           // 'auto' | true | false (default: 'auto')
   timeout: 10_000,            // wait for PGlite readiness (default: unbounded)
   query_timeout: 30_000,      // checked-out query deadline (default: unbounded)
+  connectionTimeoutMillis: 5_000, // pool checkout deadline (default: unbounded)
+  idleTimeoutMillis: 0,       // idle client eviction (default: 0 = never)
+  fastQueryPath: true,        // lean repeat-execution path (default: on)
   preparedStatements: true,   // cache queries as named statements (default: on)
 });
 
