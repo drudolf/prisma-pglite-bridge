@@ -10,6 +10,7 @@ import { FastQuery } from './fast-query.ts';
 import {
   PG_CONSUMED_QUERY_FIELDS,
   PgBridgeClient,
+  type PgBridgeClientOptions,
   snapshotQueryConfig,
 } from './pg-bridge-client.ts';
 import { liveClients } from './session-registry.ts';
@@ -1611,6 +1612,150 @@ describe('PgBridgeClient — call-time query-config snapshot (promise forms)', (
       }
     } finally {
       await endPoolAndBarrier(close);
+    }
+  });
+});
+
+// The duplex-teardown handle contract. pg runs the client's stream factory
+// synchronously inside the PgBridgeClient constructor, so the duplex — and
+// its teardown — exist long before any connect attempt. `teardown` (getter)
+// is the public view; `onTeardownCreated` hands the caller the same handle
+// synchronously AT CONSTRUCTION, which is what lets PgBridgePool's end()
+// close barrier cover a client whose connect fails before pg-pool ever
+// emits 'connect'.
+describe('PgBridgeClient — duplex teardown handle', () => {
+  type TeardownHandle = { settled: Promise<void>; abort: (reason: Error) => void };
+
+  const duplexOf = (client: PgBridgeClient): PGliteDuplex => {
+    const stream = client.connection.stream;
+    if (!(stream instanceof PGliteDuplex)) throw new Error('expected a PGliteDuplex stream');
+    return stream;
+  };
+
+  it('teardown.settled is the created duplex onClose, and abort(reason) destroys the duplex', async () => {
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    const duplex = duplexOf(client);
+    try {
+      // `settled` IS the duplex's resolve-only close promise — identity, not
+      // just same-settlement, so a barrier awaiting it can never observe an
+      // earlier-resolving proxy.
+      const teardown = client.teardown;
+      expect(teardown.settled).toBe(duplex.onClose);
+
+      // A never-connected duplex has no 'error' listener (pg's Connection
+      // attaches its stream listeners in connect()), so capture the destroy
+      // error — this keeps the emit from crashing the worker AND pins that
+      // abort forwards its reason into destroy().
+      const errors: unknown[] = [];
+      duplex.on('error', (err) => {
+        errors.push(err);
+      });
+      const reason = new Error('teardown abort probe');
+      teardown.abort(reason);
+      expect(duplex.destroyed).toBe(true);
+      await expect(settledOrPending(teardown.settled, 2_000)).resolves.toBeUndefined();
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBe(reason);
+    } finally {
+      client.deregisterLiveClient();
+      if (!duplex.destroyed) duplex.destroy();
+      await settledOrPending(duplex.onClose, 2_000).catch(() => {});
+    }
+  });
+
+  it('invokes onTeardownCreated exactly once, synchronously at construction, with the duplex teardown handle', async () => {
+    const handles: TeardownHandle[] = [];
+    const bridge: PgBridgeClientOptions & {
+      onTeardownCreated?: (teardown: TeardownHandle) => void;
+    } = {
+      pglite,
+      bridgeId: Symbol('bridge'),
+      syncToFs: false,
+      onTeardownCreated: (teardown) => {
+        handles.push(teardown);
+      },
+    };
+    const client = new PgBridgeClient({ [PgBridgeClient.OptionsKey]: bridge });
+    const duplex = duplexOf(client);
+    try {
+      // Synchronous: the handle exists by the time the constructor returns,
+      // before any connect attempt.
+      expect(handles).toHaveLength(1);
+      const [handle] = handles;
+      if (handle === undefined) throw new Error('unreachable: length asserted above');
+      // The callback handle exposes the SAME duplex teardown as the public
+      // getter: `settled` is the created duplex's onClose.
+      expect(handle.settled).toBe(duplex.onClose);
+      expect(client.teardown.settled).toBe(handle.settled);
+
+      // And the handle's abort destroys the duplex, settling `settled`.
+      const errors: unknown[] = [];
+      duplex.on('error', (err) => {
+        errors.push(err);
+      });
+      const reason = new Error('onTeardownCreated abort probe');
+      handle.abort(reason);
+      expect(duplex.destroyed).toBe(true);
+      await expect(settledOrPending(handle.settled, 2_000)).resolves.toBeUndefined();
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBe(reason);
+      // Still exactly once — construction is the only invocation point.
+      expect(handles).toHaveLength(1);
+    } finally {
+      client.deregisterLiveClient();
+      if (!duplex.destroyed) duplex.destroy();
+      await settledOrPending(duplex.onClose, 2_000).catch(() => {});
+    }
+  });
+
+  it.sequential('invokes onTeardownCreated even when construction fails after the duplex is created', async () => {
+    // Mirror of the assertPgInternals-failure test above: break a required
+    // connection prototype member so the constructor throws AFTER pg has
+    // synchronously run the stream factory. The handle must still reach the
+    // callback — a construction throw must not orphan the already-created
+    // duplex from the pool's end() barrier.
+    const connectionPrototype = Object.getPrototypeOf(
+      new pg.Client({ host: 'localhost' }).connection,
+    ) as { close?: unknown };
+    const closeDescriptor = Object.getOwnPropertyDescriptor(connectionPrototype, 'close');
+    if (closeDescriptor === undefined) throw new Error('pg Connection.prototype.close is absent');
+
+    const handles: TeardownHandle[] = [];
+    Object.defineProperty(connectionPrototype, 'close', {
+      ...closeDescriptor,
+      value: undefined,
+    });
+    try {
+      const bridge: PgBridgeClientOptions & {
+        onTeardownCreated?: (teardown: TeardownHandle) => void;
+      } = {
+        pglite,
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+        statementCaching: true,
+        onTeardownCreated: (teardown) => {
+          handles.push(teardown);
+        },
+      };
+      expect(() => new PgBridgeClient({ [PgBridgeClient.OptionsKey]: bridge })).toThrowError(
+        /Unsupported pg internals/,
+      );
+
+      // The callback fired exactly once — inside the stream factory, before
+      // the assertion threw — and the constructor's cleanup destroy settles
+      // the handle it delivered (no error argument, so no 'error' emission).
+      expect(handles).toHaveLength(1);
+      const [handle] = handles;
+      if (handle === undefined) throw new Error('unreachable: length asserted above');
+      await expect(settledOrPending(handle.settled, 2_000)).resolves.toBeUndefined();
+    } finally {
+      Object.defineProperty(connectionPrototype, 'close', closeDescriptor);
     }
   });
 });

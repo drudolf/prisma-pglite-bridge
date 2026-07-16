@@ -36,7 +36,22 @@ export interface PgBridgeClientOptions {
    * PgBridgePoolOptions.statementCaching.
    */
   statementCaching?: boolean | { capacity?: number; minUsages?: number };
+  /**
+   * Invoked synchronously inside the stream factory — while `super()` runs,
+   * before any connect attempt and before construction can still fail — with
+   * the fresh duplex's teardown handle. Must not throw: it runs inside pg's
+   * Connection constructor, where a throw would leak the created duplex.
+   */
+  onTeardownCreated?: (teardown: DuplexTeardown) => void;
 }
+
+/** Duplex-teardown handle: `settled` is the duplex's resolve-only `onClose`
+ *  (never rejects — `PgBridgePool.end()`'s Promise.all barrier relies on
+ *  that), `abort` force-destroys a straggler. */
+export type DuplexTeardown = {
+  settled: Promise<void>;
+  abort: (reason: Error) => void;
+};
 
 type PgBridgeClientConfig = pg.ClientConfig & {
   [PgBridgeClient.OptionsKey]: PgBridgeClientOptions;
@@ -210,6 +225,10 @@ export class PgBridgeClient extends pg.Client {
       stream: () => {
         const duplex = new PGliteDuplex(bridge.pglite, bridge);
         duplexBox.current = duplex;
+        bridge.onTeardownCreated?.({
+          settled: duplex.onClose,
+          abort: (reason) => duplex.destroy(reason),
+        });
         return duplex;
       },
     });
@@ -365,12 +384,12 @@ export class PgBridgeClient extends pg.Client {
    *  straggling duplex when the barrier's drain bound expires. Settled
    *  immediately when the stream factory never ran (client never
    *  connected). */
-  get teardown(): { settled: Promise<void>; abort: (reason: Error) => void } {
+  get teardown(): DuplexTeardown {
     const duplex = this.#duplexBox.current;
     return {
-      /* v8 ignore next — the pool reads this on 'connect', where the factory has always run */
+      /* v8 ignore next — pg runs the stream factory synchronously in super(), so a constructed client always has a duplex */
       settled: duplex?.onClose ?? Promise.resolve(),
-      /* v8 ignore next — invoked only from end()'s defensive drain-bound expiry */
+      /* v8 ignore next — same guarantee: the `?.` undefined arm is unreachable post-construction */
       abort: (reason) => duplex?.destroy(reason),
     };
   }

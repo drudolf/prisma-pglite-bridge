@@ -16,7 +16,11 @@ import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import { pgliteNeedsProtocolCleanup } from '../utils/pglite-capabilities.ts';
 import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SessionLock } from '../utils/session-lock.ts';
-import { PgBridgeClient, type PgBridgeClientOptions } from './pg-bridge-client.ts';
+import {
+  type DuplexTeardown,
+  PgBridgeClient,
+  type PgBridgeClientOptions,
+} from './pg-bridge-client.ts';
 import { liveClientCounts, livePoolCounts } from './session-registry.ts';
 
 /** Bound on `end()`'s wait for client duplex teardowns before it closes an
@@ -255,14 +259,18 @@ export class PgBridgePool extends pg.Pool {
 
   readonly #ownsPglite: boolean;
 
-  /** Unsettled duplex-teardown handles of this pool's clients — `end()`'s
-   *  close barrier. Entries self-prune on settle; tracking the handle (not
+  /** Unsettled duplex-teardown handles of this pool's CONSTRUCTED clients —
+   *  `end()`'s close barrier. pg-pool's end() resolves without waiting for
+   *  client teardown (pg-pool 3.14.0 _pulseQueue removes idle clients with
+   *  no callback and fires _endCallback synchronously), so end() must not
+   *  close an owned PGlite while destroy-path rollbacks may still be in
+   *  flight. Registered at duplex creation (inside the client constructor),
+   *  not on 'connect': pg-pool emits 'connect' only after a successful
+   *  connect, which would let a checkout- or readiness-timeout client tear
+   *  down untracked. Entries self-prune on settle; tracking the handle (not
    *  the client) means a client pg-pool removes inside `end()`'s microtask
    *  gap cannot escape the barrier. */
-  readonly #pendingTeardowns = new Set<{
-    settled: Promise<void>;
-    abort: (reason: Error) => void;
-  }>();
+  readonly #pendingTeardowns: Set<DuplexTeardown>;
 
   constructor({
     bridgeId = Symbol('bridge'),
@@ -287,6 +295,13 @@ export class PgBridgePool extends pg.Pool {
     }
     const resolvedPglite = pglite ?? new PGlite();
 
+    // A local (not `this.#pendingTeardowns`) so the onTeardownCreated
+    // closure below never touches `this`: it is created before super()
+    // runs, and a pg-pool that ever constructed a client eagerly would
+    // otherwise hit the derived-constructor TDZ. Assigned to the field
+    // right after super() returns.
+    const pendingTeardowns = new Set<DuplexTeardown>();
+
     // Load-bearing: pg.Pool forwards this config object verbatim to
     // `new Client(config)`, including the symbol-keyed property below.
     // PgBridgeClient reads its bridge options from the same symbol.
@@ -306,6 +321,12 @@ export class PgBridgePool extends pg.Pool {
         protocolCleanupNeeded: pgliteNeedsProtocolCleanup(),
         fastQueryPath,
         statementCaching: statementCaching !== false,
+        onTeardownCreated: (teardown: DuplexTeardown) => {
+          pendingTeardowns.add(teardown);
+          // `settled` is resolve-only by contract (DuplexTeardown), so a
+          // bare then() cannot leak the handle on rejection.
+          void teardown.settled.then(() => pendingTeardowns.delete(teardown));
+        },
       },
     };
 
@@ -314,6 +335,7 @@ export class PgBridgePool extends pg.Pool {
     this.bridgeId = bridgeId;
     this.pglite = resolvedPglite;
     this.#ownsPglite = !pglite;
+    this.#pendingTeardowns = pendingTeardowns;
 
     const liveCount = (livePoolCounts.get(resolvedPglite) ?? 0) + 1;
     livePoolCounts.set(resolvedPglite, liveCount);
@@ -344,15 +366,6 @@ export class PgBridgePool extends pg.Pool {
     this.on('connect', (client) => {
       /* v8 ignore next — the pool sets Client: PgBridgeClient, so every client it emits is one; instanceof narrows soundly where pg's PoolClient type cannot */
       if (!(client instanceof PgBridgeClient)) return;
-      // Track the client's duplex teardown for end()'s close barrier:
-      // pg-pool's end() resolves without waiting for client teardown
-      // (pg-pool 3.14.0 _pulseQueue removes idle clients with no callback
-      // and fires _endCallback synchronously), so end() must not close an
-      // owned PGlite while destroy-path rollbacks may still be in flight.
-      const teardown = client.teardown;
-      this.#pendingTeardowns.add(teardown);
-      void teardown.settled.then(() => this.#pendingTeardowns.delete(teardown));
-
       const prevClientCount = liveClientCounts.get(resolvedPglite) ?? 0;
       liveClientCounts.set(resolvedPglite, prevClientCount + 1);
       if (prevClientCount > 0) return;
@@ -467,6 +480,8 @@ export class PgBridgePool extends pg.Pool {
         const reason = new Error(
           'PgBridgePool.end(): a duplex teardown did not settle within the drain bound',
         );
+        // Includes handles of connect-failed clients whose duplex is already
+        // destroyed but still draining — destroy() there is a safe no-op.
         for (const teardown of this.#pendingTeardowns) teardown.abort(reason);
       }
       /* v8 ignore stop */

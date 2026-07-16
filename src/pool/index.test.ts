@@ -3,7 +3,9 @@ import type pg from 'pg';
 import { describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
+import { createMockPGlite } from '../__tests__/mocks.ts';
 import { setupPGlite } from '../__tests__/pglite.ts';
+import { PGliteDuplex } from '../duplex/index.ts';
 import { PgBridgePool, type PgBridgePoolOptions } from './index.ts';
 import { PgBridgeClient } from './pg-bridge-client.ts';
 
@@ -256,8 +258,7 @@ describe('PgBridgePool — connect-time statement cleanup', () => {
       // The listeners narrow with `instanceof PgBridgeClient`, so a synthetic
       // client must share the prototype. Object.create skips the real
       // (duplex-building) constructor; members are defined as own properties
-      // that shadow the prototype (teardown is a getter, hence defineProperty
-      // rather than assignment).
+      // that shadow the prototype.
       const fakeClient = (members: Record<string, unknown>): PgBridgeClient => {
         const client = Object.create(PgBridgeClient.prototype);
         for (const [key, value] of Object.entries(members)) {
@@ -267,12 +268,11 @@ describe('PgBridgePool — connect-time statement cleanup', () => {
       };
       // Emit the pool's own 'connect' event with a client whose cleanup
       // query rejects — the listener must swallow it (a broken session
-      // surfaces on real queries instead). The teardown stub feeds the
-      // end() close barrier, mirroring the deregisterLiveClient stub below.
-      pool.emit(
-        'connect',
-        fakeClient({ query, teardown: { settled: Promise.resolve(), abort: () => {} } }),
-      );
+      // surfaces on real queries instead). No teardown stub: end()'s
+      // close-barrier handles are registered at client construction via
+      // onTeardownCreated, so the 'connect' listener no longer reads
+      // client.teardown.
+      pool.emit('connect', fakeClient({ query }));
       await new Promise((resolve) => setImmediate(resolve));
       expect(query).toHaveBeenCalledWith('DEALLOCATE ALL');
       // Balance the liveClientCounts increment from the synthetic 'connect' above;
@@ -386,6 +386,101 @@ describe('PgBridgePool — pglite lifecycle', () => {
       if (drainTimer !== undefined) realClearTimeout(drainTimer);
       setTimeoutSpy.mockRestore();
       clearTimeoutSpy.mockRestore();
+    }
+  });
+});
+
+describe("PgBridgePool — end() teardown barrier for a client that never reached 'connect'", () => {
+  // Bounded blocked-promise detection (same shape as the pg-bridge-client
+  // suite): resolves to the settled value if `p` settles first, else the
+  // sentinel 'pending' after `ms`. The loser timer is unref'd so it never
+  // keeps the event loop alive after `p` wins.
+  const settledOrPending = <T>(p: Promise<T>, ms: number): Promise<T | 'pending'> =>
+    Promise.race([
+      p,
+      new Promise<'pending'>((resolve) => {
+        setTimeout(() => resolve('pending'), ms).unref();
+      }),
+    ]);
+
+  it("end() resolves only after the failed-connect client's duplex teardown settles", async () => {
+    // pg runs the client's stream factory synchronously inside the
+    // PgBridgeClient constructor — the duplex exists long before pg-pool
+    // could emit 'connect'. A client whose connect FAILS (here: the bridge
+    // readiness timeout against a never-ready PGlite stub) therefore has a
+    // live duplex tearing down that a 'connect'-time barrier registration
+    // never saw, and end() could close an owned PGlite while that duplex's
+    // destroy-path work is still in flight.
+    const stub = createMockPGlite({
+      ready: false,
+      waitReady: new Promise<void>(() => {}),
+    });
+
+    // Hold the teardown-settled signal open behind a controllable gate by
+    // wrapping once('close') registrations on the duplex prototype: the
+    // duplex constructor's own once('close') listener is what resolves
+    // `onClose` (= the teardown handle's `settled`). The stream's
+    // 'error'/'close' EVENTS still flow to pg unchanged (pg's Connection
+    // registers .on('error'/'close') and once('connect'/'data'), never
+    // once('close')), so the connect failure propagates naturally while the
+    // teardown stays deterministically un-settled until the gate opens. (A
+    // `function` expression: the wrapper needs `this` to route per-duplex.)
+    const closeGate = Promise.withResolvers<void>();
+    const gatedDuplexes: PGliteDuplex[] = [];
+    const originalOnce = PGliteDuplex.prototype.once;
+    PGliteDuplex.prototype.once = function gatedOnce(
+      this: PGliteDuplex,
+      event: string | symbol,
+      listener: (...args: unknown[]) => void,
+    ) {
+      if (event !== 'close') return originalOnce.call(this, event, listener);
+      gatedDuplexes.push(this);
+      return originalOnce.call(this, event, (...args: unknown[]) => {
+        void closeGate.promise.then(() => {
+          listener.apply(this, args);
+        });
+      });
+    } as typeof originalOnce;
+
+    const pool = new PgBridgePool({ pglite: stub, timeout: 25 });
+    const connectFired = vi.fn();
+    pool.on('connect', connectFired);
+    let ending: Promise<void> | undefined;
+    try {
+      // The checkout fails at the bridge readiness timeout, before pg-pool
+      // ever announces the client.
+      await expect(pool.connect()).rejects.toThrow(/PGlite instance not ready/);
+      expect(connectFired).not.toHaveBeenCalled();
+
+      // Exactly one duplex exists — created by the failed client's stream
+      // factory — and its teardown is held open by the gate.
+      expect(gatedDuplexes).toHaveLength(1);
+      let teardownSettled = false;
+      void gatedDuplexes[0]?.onClose.then(() => {
+        teardownSettled = true;
+      });
+
+      ending = pool.end();
+      // THE PIN: while that duplex's teardown is held open, end() must not
+      // resolve. Pre-fix, the teardown handle was registered only in the
+      // pool's 'connect' listener — which never fired for this client — so
+      // end() resolves here (observed as `undefined` instead of 'pending').
+      await expect(settledOrPending(ending, 250)).resolves.toBe('pending');
+      expect(teardownSettled).toBe(false);
+
+      // Releasing the held teardown is the only event between the two
+      // observations — end() resolving now pins the barrier to it.
+      closeGate.resolve();
+      await expect(settledOrPending(ending, 5_000)).resolves.toBeUndefined();
+      expect(teardownSettled).toBe(true);
+    } finally {
+      // Un-strand even in the red state: open the gate so the held close
+      // delivers, settle the pool, then unhook the prototype gate.
+      closeGate.resolve();
+      const held = gatedDuplexes[0];
+      if (held !== undefined) await settledOrPending(held.onClose, 2_000).catch(() => {});
+      await settledOrPending(ending ?? pool.end(), 5_000).catch(() => {});
+      PGliteDuplex.prototype.once = originalOnce;
     }
   });
 });
