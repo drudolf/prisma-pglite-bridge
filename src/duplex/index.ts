@@ -727,6 +727,10 @@ export class PGliteDuplex extends Duplex {
   /** SQL text of a simple-protocol Query message ('Q' + int32 length +
    *  NUL-terminated string). */
   private queryText(message: Uint8Array): string {
+    // The framer admits any declared length >= 4; a crafted 5-byte frame
+    // ('Q' + int32 4, no payload) sits below the 6-byte minimum of a
+    // well-formed Query and carries no text.
+    if (message.length < 6) return '';
     return Buffer.from(message.buffer, message.byteOffset + 5, message.length - 6).toString('utf8');
   }
 

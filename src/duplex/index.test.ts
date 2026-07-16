@@ -1190,6 +1190,45 @@ describe('PGliteDuplex error paths', () => {
 
     duplex.destroy();
   });
+
+  it('passes a minimal 5-byte Q frame (empty SQL text) through to the backend without error or COPY capture', async () => {
+    // The framing layer admits frames with declared length >= 4, so a 5-byte
+    // frame 0x51 ('Q') + int32(4) + no payload is well-formed enough to reach
+    // queryText(). message.length - 6 === -1, which Buffer.from clamps to 0,
+    // so the text decodes as '' and sniffCopyIn returns 'not-copy-in'. The
+    // frame must be forwarded to execProtocolRawStream unchanged and must not
+    // start a COPY capture. An upcoming explicit guard (`if (message.length < 6)
+    // return ''`) keeps the same observable contract; this test pins it.
+    const minimalQFrame = Buffer.from([0x51, 0x00, 0x00, 0x00, 0x04]);
+
+    const received: Uint8Array[] = [];
+    const execProtocolRawStream = vi.fn(async (message: Uint8Array) => {
+      received.push(Uint8Array.prototype.slice.call(message));
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    // Advance past startup so the next write enters processMessages().
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    expect(execProtocolRawStream).toHaveBeenCalledTimes(1); // startup call
+
+    const err = await writeAndAwait(duplex, minimalQFrame);
+
+    // (a) No throw / no stream error.
+    expect(err).toBeUndefined();
+    expect(duplex.destroyed).toBe(false);
+
+    // (b) The exact 5 bytes reached the backend (passthrough, not COPY capture).
+    expect(execProtocolRawStream).toHaveBeenCalledTimes(2);
+    const queryCall = execProtocolRawStream.mock.calls[1]?.[0] as Uint8Array;
+    expect(Buffer.from(queryCall).equals(minimalQFrame)).toBe(true);
+
+    // (c) No COPY capture was started.
+    expect((duplex as unknown as { copyCapture?: unknown }).copyCapture).toBeUndefined();
+
+    duplex.destroy();
+  });
 });
 
 describe('PGliteDuplex RowDescription rewrite option', () => {
