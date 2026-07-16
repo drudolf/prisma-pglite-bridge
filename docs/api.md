@@ -426,10 +426,14 @@ ASCII-only case folding are all recognized. A quoted target may be
 whitespace-separated or sit immediately adjacent to `DEALLOCATE` or
 the optional `PREPARE` (`DEALLOCATE"name"`,
 `DEALLOCATE PREPARE"name"`) — a double quote is an unambiguous token
-boundary. Still outside the subset (fail-closed — the SQL runs
-unchanged, only the local eviction is skipped): comments,
-multi-statement text, `U&"..."` escape syntax, and long-name
-spellings that differ from the spelling used to prepare. A miss the
+boundary. Detection also covers Submittables
+(`client.query(new pg.Query('DEALLOCATE ALL'))`), with eviction on
+the query's own completion channels. Still outside the subset
+(fail-closed — the SQL runs unchanged, only the local eviction is
+skipped): comments, multi-statement text, `U&"..."` escape syntax,
+long-name spellings that differ from the spelling used to prepare,
+Submittables exposing neither a `callback` nor `once('end', …)`, and
+custom Submittables that expose `once` but never emit `'end'`. A miss the
 backend still accepts is fail-closed only against *false* eviction,
 not harmless: the server deallocates while the local cache stays
 stale, so a missed single-name command leaves that one name failing

@@ -437,8 +437,12 @@ export class PgBridgeClient extends pg.Client {
       // query.callback = ...`), which is how pg-pool's release callback reaches
       // a pool.query(Submittable) — dropping it wedged the pool client forever.
       // (Not submitStock: stock returns the submittable here, not a promise.)
-      const admit = (): void =>
+      const admit = (): void => {
         void (super.query as (...a: unknown[]) => unknown).apply(this, args);
+        // Only after a successful admission: a throwing submit takes the
+        // recovery paths below and must never arm eviction.
+        this.#armSubmittableDeallocEviction(first);
+      };
       const prior = this.querySubmissionChain;
       if (prior === undefined) {
         admit();
@@ -623,11 +627,7 @@ export class PgBridgeClient extends pg.Client {
       dealloc === null
         ? rawQueryPromise
         : rawQueryPromise.then((result: unknown) => {
-            const clients = liveClients.get(this.#pglite);
-            /* v8 ignore next — the issuer stays registered until 'end'; a dealloc resolving after teardown is unreachable through the pool */
-            if (clients !== undefined) {
-              for (const client of clients) client.#clearStatementCaches(dealloc);
-            }
+            this.#evictStatementCachesEverywhere(dealloc);
             return result;
           });
 
@@ -802,6 +802,73 @@ export class PgBridgeClient extends pg.Client {
     } else {
       delete ps[scope.name];
       this.#fieldsCache.delete(scope.name);
+    }
+  }
+
+  /** Session-wide eviction after a confirmed DEALLOCATE / DISCARD ALL: the
+   *  backend wipe invalidates names ANY live client of this PGlite may hold,
+   *  not just the issuer's. */
+  #evictStatementCachesEverywhere(scope: StatementCacheInvalidation): void {
+    const clients = liveClients.get(this.#pglite);
+    /* v8 ignore next — the issuer stays registered until 'end'; a dealloc resolving after teardown is unreachable through the pool */
+    if (clients !== undefined) {
+      for (const client of clients) client.#clearStatementCaches(scope);
+    }
+  }
+
+  /** DEALLOCATE / DISCARD through a Submittable must evict the same caches
+   *  the plain-text path does, but the submission chain deliberately ends at
+   *  Submittables, so completion is observed through pg's own channels. Both
+   *  are armed behind one exactly-once guard because pg invokes
+   *  `query.callback` AND then unconditionally emits 'end' on success
+   *  (pg 8.22 lib/query.js handleReadyForQuery). The wrapped callback covers
+   *  pg-pool's release path; 'end' covers a fired query_timeout, where pg
+   *  noop-replaces the callback but 'end' still emits at REAL completion —
+   *  matching the plain path's evict-on-real-completion (it chains on the
+   *  raw promise, not the timeout race). Errors evict nothing: pg calls
+   *  callback(err) XOR emits 'error', and 'end' is not emitted. Fail-closed
+   *  like the plain path's lexical exclusions: an unreadable/undetectable
+   *  text or a Submittable exposing neither channel skips silently (the SQL
+   *  runs unchanged; only local eviction is skipped — documented in
+   *  PgBridgePoolOptions.statementCaching). */
+  #armSubmittableDeallocEviction(submittable: unknown): void {
+    let scope: StatementCacheInvalidation | null;
+    try {
+      scope = this.#detectStatementCacheInvalidation(submittable);
+    } catch {
+      // Stock pg never reads `.text` during query() for Submittables; a
+      // throwing accessor must not make the bridge throw where stock doesn't.
+      return;
+    }
+    if (scope === null) return;
+
+    let evicted = false;
+    const evict = (): void => {
+      if (evicted) return;
+      evicted = true;
+      this.#evictStatementCachesEverywhere(scope);
+    };
+
+    const target = submittable as { callback?: unknown; once?: unknown };
+    const original = target.callback;
+    if (typeof original === 'function') {
+      target.callback = (err: unknown, res: unknown): void => {
+        // Delegation is unconditional (finally): an eviction failure must
+        // never swallow pg-pool's release callback and leak the client.
+        try {
+          if (err == null) evict();
+        } finally {
+          // pg invokes query.callback on the query itself; preserve that.
+          (original as (...a: unknown[]) => void).call(submittable, err, res);
+        }
+      };
+    }
+    if (typeof target.once === 'function') {
+      (target.once as (event: string, listener: () => void) => void).call(
+        submittable,
+        'end',
+        evict,
+      );
     }
   }
 

@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import type { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
@@ -64,6 +65,31 @@ const settledOrPending = <T>(p: Promise<T>, ms: number): Promise<T | 'pending'> 
       setTimeout(() => resolve('pending'), ms).unref();
     }),
   ]);
+
+// pg's parse-skip cache on a live pool client. The Connection augmentation in
+// pg-internals.ts types `parsedStatements`; PoolClient merely hides the
+// `connection` property behind its narrower public type.
+const parsedStatementsOf = (client: pg.PoolClient): Record<string, string | undefined> =>
+  (client as unknown as pg.Client).connection.parsedStatements;
+
+// Warm a user-named statement into pg's parse-skip cache: the first run
+// Parses and records connection.parsedStatements[name]; the second run skips
+// Parse (extended protocol — `name` forces it). No statementCaching needed:
+// pg's own parsedStatements guard is the cache under test, same as the
+// user-named shapes in index.statement-cache.test.ts. After an unintercepted
+// session-wide DEALLOCATE, this shape's next run Binds a name PGlite forgot
+// and fails with Postgres error 26000.
+const warmNamedStatement = async (
+  client: pg.PoolClient,
+  name: string,
+  marker: number,
+): Promise<{ name: string; text: string }> => {
+  const shape = { name, text: `SELECT ${marker} AS n` };
+  await client.query(shape);
+  await client.query(shape);
+  expect(parsedStatementsOf(client)[name]).toBeDefined();
+  return shape;
+};
 
 // Return the shared session to a clean slate between tests. The pool.end()
 // (and barrier) in each test's finally block drain any in-flight teardown
@@ -879,6 +905,554 @@ describe('PgBridgeClient', () => {
       process.removeListener('unhandledRejection', onRejection);
       await settledOrPending(close(), 10_000).catch(() => {});
       await pglite.query('SELECT 1').catch(() => {});
+    }
+  });
+
+  // ————— Submittable DEALLOCATE/DISCARD — statement-cache eviction —————
+  // The plain-text and promise forms detect DEALLOCATE/DISCARD at admission
+  // and evict every live client's parse-skip caches after REAL completion.
+  // A Submittable carrying the same SQL executes on the backend but bypasses
+  // that intercept entirely, leaving pg's parsedStatements pointing at names
+  // PGlite forgot — every later warm named run fails 26000, persistently.
+  // These tests pin the contract: detection on the submittable's `.text`
+  // after admission (ONE read, fail-closed), eviction armed on BOTH
+  // completion channels — the callback (evict on err == null, then delegate)
+  // and 'end' — behind a shared exactly-once guard, and the same live-client
+  // fan-out as the plain-text path. pg 8.22 fact (lib/query.js
+  // handleReadyForQuery): on success the callback fires AND THEN 'end' is
+  // emitted unconditionally; on error callback(err) XOR emit('error'), and
+  // 'end' never fires.
+
+  it("evicts every warm parse-skip entry after a Submittable DEALLOCATE ALL completes ('end' channel)", async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const shape = await warmNamedStatement(client, 'sub_end_evict_stmt', 41);
+
+        const q = new pg.Query('DEALLOCATE ALL');
+        expect(client.query(q)).toBe(q);
+        const ended = new Promise<void>((resolve, reject) => {
+          q.once('end', () => resolve());
+          q.once('error', reject);
+        });
+        await expect(settledOrPending(ended, 5_000)).resolves.toBeUndefined();
+
+        // Both warm re-runs succeed: the eviction forced a clean re-Parse.
+        // Unfixed, pg skips Parse for a name PGlite forgot and BOTH runs
+        // fail 26000 — the poisoning is persistent, not transient.
+        const first = await client.query(shape);
+        expect(first.rows).toEqual([{ n: 41 }]);
+        const second = await client.query(shape);
+        expect(second.rows).toEqual([{ n: 41 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it("evicts through pg-pool's release callback when pool.query runs a Submittable DEALLOCATE ALL", async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      // Warm on a checked-out client, then release: pg-pool keeps the client
+      // (and its parse-skip cache) for the next checkout.
+      const warmClient = await pool.connect();
+      let shape: { name: string; text: string };
+      try {
+        shape = await warmNamedStatement(warmClient, 'sub_pool_cb_stmt', 42);
+      } finally {
+        warmClient.release();
+      }
+
+      // pool.query(Submittable): pg-pool attaches its release callback as
+      // query.callback inside stock pg's submittable arm — the CALLBACK
+      // channel is the completion signal that must carry the eviction here.
+      // (@types/pg types the pool submittable form as returning the
+      // submittable, but pg-pool's runtime always returns a promise.)
+      const deallocP = (pool.query as unknown as (arg: unknown) => Promise<unknown>)(
+        new pg.Query('DEALLOCATE ALL'),
+      );
+      const dealloc = await settledOrPending(deallocP, 5_000);
+      expect(dealloc).not.toBe('pending');
+
+      // A fresh checkout hands back the same warm client (max: 1); its
+      // re-run must re-Parse instead of skipping into a 26000.
+      const fresh = await pool.connect();
+      try {
+        const rerun = await fresh.query(shape);
+        expect(rerun.rows).toEqual([{ n: 42 }]);
+      } finally {
+        fresh.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it("fans a Submittable DEALLOCATE ALL out to a sibling client's parse-skip cache (max: 2)", async () => {
+    // Session-wide invalidation must reach EVERY live client of the PGlite
+    // instance, not just the issuer — same registry fan-out as plain text.
+    const poolConfig = {
+      Client: PgBridgeClient,
+      max: 2,
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    };
+    const pool = new pg.Pool(poolConfig);
+    try {
+      const a = await pool.connect();
+      const b = await pool.connect();
+      try {
+        const shape = await warmNamedStatement(b, 'sub_sibling_stmt', 43);
+
+        // The wipe travels through A as a Submittable, so neither the
+        // plain-text intercept nor the promise path sees it — B's cache
+        // still has to be evicted through the live-client registry.
+        const q = new pg.Query('DEALLOCATE ALL');
+        expect(a.query(q)).toBe(q);
+        const ended = new Promise<void>((resolve, reject) => {
+          q.once('end', () => resolve());
+          q.once('error', reject);
+        });
+        await expect(settledOrPending(ended, 5_000)).resolves.toBeUndefined();
+
+        const rerun = await b.query(shape);
+        expect(rerun.rows).toEqual([{ n: 43 }]);
+      } finally {
+        a.release();
+        b.release();
+      }
+    } finally {
+      await endPoolAndBarrier(() => pool.end());
+    }
+  });
+
+  it('evicts exactly once when both completion channels fire on one Submittable DEALLOCATE ALL', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const shape = await warmNamedStatement(client, 'sub_once_stmt', 44);
+
+        // On success pg fires the callback AND THEN emits 'end'. The
+        // eviction must run BEFORE the delegated callback and exactly once.
+        // The sentinel inserted INSIDE the callback — i.e. after the
+        // callback-channel eviction — can only disappear if the 'end'
+        // channel wipes a second time, so its survival pins the shared
+        // exactly-once guard.
+        let warmEntryAtCallback: string | undefined = 'unread';
+        const calls: Array<{ err: unknown }> = [];
+        const q = new pg.Query('DEALLOCATE ALL');
+        const returned = (client.query as unknown as (...args: unknown[]) => unknown)(
+          q,
+          (err: unknown) => {
+            calls.push({ err });
+            warmEntryAtCallback = parsedStatementsOf(client)[shape.name];
+            parsedStatementsOf(client).sub_once_sentinel = 'SELECT 1';
+          },
+        );
+        expect(returned).toBe(q);
+        // Attached AFTER query() so a bridge-armed 'end' listener runs
+        // first: by the time this resolves, any (buggy) second eviction has
+        // already run and would have deleted the sentinel.
+        const ended = new Promise<void>((resolve, reject) => {
+          q.once('end', () => resolve());
+          q.once('error', reject);
+        });
+        await expect(settledOrPending(ended, 5_000)).resolves.toBeUndefined();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(calls).toEqual([{ err: null }]);
+        // The callback-channel eviction ran before the delegated callback —
+        // red while unfixed: the entry is still there because no eviction
+        // happened at all.
+        expect(warmEntryAtCallback).toBeUndefined();
+        // Exactly once: the 'end' channel must NOT wipe again.
+        expect(parsedStatementsOf(client).sub_once_sentinel).toBe('SELECT 1');
+
+        // Coherence: the warm shape re-runs cleanly after the wipe.
+        const rerun = await client.query(shape);
+        expect(rerun.rows).toEqual([{ n: 44 }]);
+      } finally {
+        delete parsedStatementsOf(client).sub_once_sentinel;
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('evicts exactly once when a configured query_timeout arms but does not fire on the Submittable', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const shape = await warmNamedStatement(client, 'sub_timer_stmt', 49);
+
+        // pg reads query_timeout off the SUBMITTABLE itself (client.js:660,
+        // config === the Query object). A generous budget arms pg's timer
+        // and wraps query.callback in the clearTimeout shim WITHOUT firing —
+        // the bridge's own wrapper must sit around pg's shim and still
+        // deliver evict-then-delegate exactly once.
+        let warmEntryAtCallback: string | undefined = 'unread';
+        const calls: Array<{ err: unknown }> = [];
+        const q = new pg.Query('DEALLOCATE ALL');
+        (q as unknown as { query_timeout?: number }).query_timeout = 5_000;
+        const returned = (client.query as unknown as (...args: unknown[]) => unknown)(
+          q,
+          (err: unknown) => {
+            calls.push({ err });
+            warmEntryAtCallback = parsedStatementsOf(client)[shape.name];
+            parsedStatementsOf(client).sub_timer_sentinel = 'SELECT 1';
+          },
+        );
+        expect(returned).toBe(q);
+        const ended = new Promise<void>((resolve, reject) => {
+          q.once('end', () => resolve());
+          q.once('error', reject);
+        });
+        await expect(settledOrPending(ended, 5_000)).resolves.toBeUndefined();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(calls).toEqual([{ err: null }]);
+        expect(warmEntryAtCallback).toBeUndefined();
+        expect(parsedStatementsOf(client).sub_timer_sentinel).toBe('SELECT 1');
+
+        const rerun = await client.query(shape);
+        expect(rerun.rows).toEqual([{ n: 49 }]);
+      } finally {
+        delete parsedStatementsOf(client).sub_timer_sentinel;
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it("evicts via 'end' after a fired query_timeout silenced the Submittable's callback channel (simulated pg sequence)", async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const shape = await warmNamedStatement(client, 'sub_timeout_stmt', 45);
+
+        // pg 8.22 fact (lib/client.js): when a configured query_timeout
+        // FIRES, pg invokes the PRE-WRAP callback with the timeout Error and
+        // replaces query.callback with a noop — the callback channel goes
+        // silent and any wrapper installed after super.query is discarded
+        // unseen. If the query later completes for real,
+        // handleReadyForQuery still calls the (noop) callback and emits
+        // 'end'. A real DEALLOCATE cannot be delayed past a timer
+        // deterministically, so this fake drives pg's EXACT sequence by
+        // hand: a silent submit (nothing on the wire), the manual timeout
+        // effects, then a test-sent Sync whose ReadyForQuery makes pg call
+        // the active query's handleReadyForQuery — same drive-to-completion
+        // seam as the throwing-submit fakes above.
+        const userCallback = vi.fn();
+        let wire: pg.Connection | undefined;
+        type FakeSubmittable = EventEmitter & {
+          text: string;
+          callback: (err: unknown, res: unknown) => void;
+          submit: (connection: pg.Connection) => void;
+          handleReadyForQuery: () => void;
+          handleError: (err: Error) => void;
+        };
+        const fake: FakeSubmittable = Object.assign(new EventEmitter(), {
+          text: 'DEALLOCATE ALL',
+          callback: userCallback as (err: unknown, res: unknown) => void,
+          submit: (connection: pg.Connection): void => {
+            // Wire silence: the DEALLOCATE never reaches the backend — this
+            // is a unit-level pin of the bridge's channel bookkeeping, so
+            // only parsedStatements is asserted, never backend state.
+            wire = connection;
+          },
+          handleReadyForQuery: (): void => {
+            // pg.Query's sequence: callback first, then always 'end'.
+            fake.callback(null, undefined);
+            fake.emit('end');
+          },
+          handleError: (err: Error): void => {
+            fake.emit('error', err);
+          },
+        });
+        // A red-state teardown must not crash the worker on an unlistened
+        // 'error' emit.
+        fake.on('error', () => {});
+
+        const returned = (client.query as unknown as (...args: unknown[]) => unknown)(fake);
+        expect(returned).toBe(fake);
+        expect(wire).toBeDefined();
+        const ended = new Promise<void>((resolve) => {
+          fake.once('end', () => resolve());
+        });
+
+        // Simulate pg's timer firing: the captured pre-wrap callback gets
+        // the timeout error directly, then query.callback is REPLACED with
+        // a noop.
+        userCallback(new Error('Query read timeout'));
+        fake.callback = () => {};
+
+        // No eviction yet — the callback channel never reported success.
+        expect(parsedStatementsOf(client)[shape.name]).toBeDefined();
+
+        // Drive the REAL completion: a bare Sync round-trips to
+        // ReadyForQuery and pg hands it to the active query.
+        wire?.sync();
+        await expect(settledOrPending(ended, 5_000)).resolves.toBeUndefined();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        // The 'end' channel carried the eviction — matching the plain-text
+        // path's evict-on-real-completion semantics. Red while unfixed: the
+        // entry survives.
+        expect(parsedStatementsOf(client)[shape.name]).toBeUndefined();
+        // The silenced callback was never invoked again by the bridge.
+        expect(userCallback).toHaveBeenCalledTimes(1);
+
+        // The client is unwedged and usable. (The warm shape itself is NOT
+        // re-run: the backend never really deallocated, so the evicted name
+        // would re-Parse into 42P05 — bookkeeping, not backend state, is
+        // what this unit-level pin asserts.)
+        const alive = await settledOrPending(client.query('SELECT 1 AS ok'), 5_000);
+        expect(alive).not.toBe('pending');
+        if (alive !== 'pending') expect(alive.rows).toEqual([{ ok: 1 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('keeps warm caches intact when a Submittable DEALLOCATE errors (missing name, 26000)', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const shape = await warmNamedStatement(client, 'sub_err_keep_stmt', 46);
+
+        // The backend rejects the DEALLOCATE (undefined prepared
+        // statement). pg delivers callback(err) XOR emit('error') and never
+        // emits 'end' — no eviction may fire on either channel: the warm
+        // statement was never dropped server-side.
+        const q = new pg.Query('DEALLOCATE sub_missing_name');
+        const failed = new Promise<unknown>((resolve) => {
+          q.once('error', resolve);
+        });
+        expect(client.query(q)).toBe(q);
+        const err = await settledOrPending(failed, 5_000);
+        expect(err).not.toBe('pending');
+        expect((err as { code?: string }).code).toBe('26000');
+
+        // The parse-skip entry survived and the warm run still skips Parse
+        // into a working Bind.
+        expect(parsedStatementsOf(client)[shape.name]).toBeDefined();
+        const rerun = await client.query(shape);
+        expect(rerun.rows).toEqual([{ n: 46 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('delivers the 26000 error to a positional callback exactly once without evicting (Submittable DEALLOCATE, callback channel)', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const shape = await warmNamedStatement(client, 'sub_err_cb_stmt', 51);
+
+        // A trailing positional callback: stock pg's submittable arm assigns
+        // it as query.callback BEFORE the bridge arms eviction, so the error
+        // travels through the bridge's WRAPPED callback — pg calls
+        // callback(err) (no 'error' emit, no 'end'), and the wrap's err-arm
+        // must delegate untouched and evict nothing. The event-channel twin
+        // above never exercises the wrap; this one pins it.
+        const done = Promise.withResolvers<void>();
+        const cb = vi.fn((..._args: unknown[]) => done.resolve());
+        const q = new pg.Query('DEALLOCATE sub_missing_cb_name');
+        // Red-state safety: a wrap that loses the callback would route the
+        // failure to the event channel — resolve instead of crashing the
+        // worker on an unlistened 'error' emit, and let the call-count
+        // assertion report the regression.
+        q.once('error', () => done.resolve());
+        // (@types/pg types no Submittable-plus-callback overload; pg's
+        // runtime accepts it and returns the submittable itself.)
+        const returned = (client.query as unknown as (...args: unknown[]) => unknown)(q, cb);
+        expect(returned).toBe(q);
+        await expect(settledOrPending(done.promise, 5_000)).resolves.toBeUndefined();
+        // Let any erroneous second delivery (e.g. a stray 'end' hop) land
+        // before the exactly-once assertion.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(cb).toHaveBeenCalledTimes(1);
+        const [err, res] = cb.mock.calls[0] ?? [];
+        expect((err as { code?: string } | undefined)?.code).toBe('26000');
+        expect(res).toBeUndefined();
+
+        // No eviction on error: the entry survives and the warm run still
+        // skips Parse into a working Bind.
+        expect(parsedStatementsOf(client)[shape.name]).toBeDefined();
+        const rerun = await client.query(shape);
+        expect(rerun.rows).toEqual([{ n: 51 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it("fail-closed: a DEALLOCATE-shaped Submittable with neither callback nor 'once' never evicts and never throws", async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const shape = await warmNamedStatement(client, 'sub_nochannel_stmt', 47);
+
+        // No 'once', no callback: the bridge has no completion channel to
+        // arm, so the detection hit is skipped fail-closed — query() must
+        // return the object without throwing and must never evict. The
+        // fake's submit sends only a Sync (nothing executes server-side);
+        // completion is observed through handleReadyForQuery, which pg
+        // invokes on the active query when the Sync's ReadyForQuery
+        // arrives — keeping pg's queue unwedged without any event channel.
+        const completion = Promise.withResolvers<void>();
+        const fake = {
+          text: 'DEALLOCATE ALL',
+          submit: (connection: pg.Connection): void => {
+            connection.sync();
+          },
+          handleReadyForQuery: (): void => {
+            completion.resolve();
+          },
+          handleError: (err: Error): void => {
+            completion.reject(err);
+          },
+        };
+        const returned = (client.query as unknown as (...args: unknown[]) => unknown)(fake);
+        expect(returned).toBe(fake);
+        await expect(settledOrPending(completion.promise, 5_000)).resolves.toBeUndefined();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        // Fail-closed means NO eviction: the entry survives and the warm
+        // shape still runs (the backend never actually deallocated).
+        expect(parsedStatementsOf(client)[shape.name]).toBeDefined();
+        const rerun = await client.query(shape);
+        expect(rerun.rows).toEqual([{ n: 47 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it("fail-closed: a throwing .text getter skips detection without breaking the Submittable's query()", async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const shape = await warmNamedStatement(client, 'sub_text_throw_stmt', 50);
+
+        // A REAL pg.Query cannot carry a throwing .text getter — its own
+        // submit() reads this.text and would explode mid-pulse — so a fake
+        // with a working submit isolates the bridge's single detection
+        // read. Stock pg's submittable arm reads no .text (verified against
+        // pg 8.22 client.js), so the bridge is the only reader in play:
+        // the throw must be swallowed (detection skipped, no eviction) and
+        // query() must return normally.
+        type ThrowingTextFake = EventEmitter & {
+          submit: (connection: pg.Connection) => void;
+          handleReadyForQuery: () => void;
+          handleError: (err: Error) => void;
+        };
+        const fake: ThrowingTextFake = Object.assign(new EventEmitter(), {
+          submit: (connection: pg.Connection): void => {
+            connection.sync();
+          },
+          handleReadyForQuery: (): void => {
+            fake.emit('end');
+          },
+          handleError: (err: Error): void => {
+            fake.emit('error', err);
+          },
+        });
+        Object.defineProperty(fake, 'text', {
+          get: (): string => {
+            throw new Error('text getter boom');
+          },
+        });
+        fake.on('error', () => {});
+
+        let returned: unknown = 'not returned';
+        expect(() => {
+          returned = (client.query as unknown as (...args: unknown[]) => unknown)(fake);
+        }).not.toThrow();
+        expect(returned).toBe(fake);
+        const ended = new Promise<void>((resolve) => {
+          fake.once('end', () => resolve());
+        });
+        await expect(settledOrPending(ended, 5_000)).resolves.toBeUndefined();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        // Detection was skipped, so nothing was evicted.
+        expect(parsedStatementsOf(client)[shape.name]).toBeDefined();
+        const rerun = await client.query(shape);
+        expect(rerun.rows).toEqual([{ n: 50 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('arms eviction on the deferred Submittable admission behind a busy chain', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        const shape = await warmNamedStatement(client, 'sub_deferred_stmt', 48);
+
+        // The opener occupies the submission chain, so the Submittable
+        // takes the DEFERRED arm — detection and channel arming must ride
+        // the deferred super.query hand-off exactly like the immediate arm.
+        const opener = client.query('SELECT pg_sleep(0.05)');
+        const calls: Array<{ err: unknown }> = [];
+        const q = new pg.Query('DEALLOCATE ALL');
+        const ended = new Promise<void>((resolve, reject) => {
+          q.once('end', () => resolve());
+          q.once('error', reject);
+        });
+        const returned = (client.query as unknown as (...args: unknown[]) => unknown)(
+          q,
+          (err: unknown) => {
+            calls.push({ err });
+          },
+        );
+        expect(returned).toBe(q);
+
+        await opener;
+        await expect(settledOrPending(ended, 5_000)).resolves.toBeUndefined();
+        expect(calls).toEqual([{ err: null }]);
+
+        // Post-drain, the eviction happened: the warm shape re-Parses
+        // cleanly instead of skipping into a 26000.
+        const rerun = await client.query(shape);
+        expect(rerun.rows).toEqual([{ n: 48 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
     }
   });
 
