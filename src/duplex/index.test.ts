@@ -2544,12 +2544,53 @@ describe('PGliteDuplex COPY FROM STDIN capture (raw frames)', () => {
     await duplex.onClose;
   });
 
-  it('synthesizes a catchable cap error on the terminator when the aggregate cap is breached', async () => {
+  const capQuery = simpleQuery('COPY t FROM STDIN');
+  const capData = copyDataFrame('1\n');
+  const capDone = frame(COPY_DONE);
+  const capFail = copyFailFrame('stop');
+
+  it.each([
+    {
+      name: 'accepts the exact Query + CopyData + CopyDone total',
+      cap: capQuery.length + capData.length + capDone.length,
+      data: [capData],
+      terminator: capDone,
+      breached: false,
+    },
+    {
+      name: 'rejects when the initial Query alone is one byte over',
+      cap: capQuery.length - 1,
+      data: [],
+      terminator: capDone,
+      breached: true,
+    },
+    {
+      name: 'rejects when CopyData makes the running aggregate one byte over',
+      cap: capQuery.length + capData.length - 1,
+      data: [capData],
+      terminator: capDone,
+      breached: true,
+    },
+    {
+      name: 'rejects when CopyDone makes the aggregate one byte over',
+      cap: capQuery.length + capData.length + capDone.length - 1,
+      data: [capData],
+      terminator: capDone,
+      breached: true,
+    },
+    {
+      name: 'rejects when CopyFail makes the aggregate one byte over',
+      cap: capQuery.length + capData.length + capFail.length - 1,
+      data: [capData],
+      terminator: capFail,
+      breached: true,
+    },
+  ])('$name', async ({ cap, data, terminator, breached }) => {
     const { pglite, execProtocolRawStream } = createScriptedCopyPGlite([
       [RFQ_IDLE_MESSAGE],
       [RFQ_IDLE_MESSAGE],
     ]);
-    const duplex = new PGliteDuplex(pglite, { copyAggregateCapBytes: 64 });
+    const duplex = new PGliteDuplex(pglite, { copyAggregateCapBytes: cap });
     duplex.on('error', () => {});
     const received = collect(duplex);
 
@@ -2557,33 +2598,40 @@ describe('PGliteDuplex COPY FROM STDIN capture (raw frames)', () => {
     await settle();
     const startupLen = Buffer.concat(received).length;
 
-    await expect(
-      writeAndAwait(duplex, simpleQuery('COPY copy_frames (n, label) FROM STDIN')),
-    ).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, capQuery)).resolves.toBeUndefined();
     await settle();
     expect(copyInResponses(framesAfter(received, startupLen)).length).toBe(1);
-    const preDataLen = Buffer.concat(received).length;
-
-    // 3 × 40 payload bytes = 120 captured bytes — past the 64-byte cap. The
-    // remainder is discarded silently: every write succeeds and nothing is
-    // synthesized until the terminator arrives.
-    const chunk = `${'x'.repeat(39)}\n`;
-    for (let i = 0; i < 3; i++) {
-      await expect(writeAndAwait(duplex, copyDataFrame(chunk))).resolves.toBeUndefined();
-    }
-    expect(Buffer.concat(received).length).toBe(preDataLen);
-
-    await expect(writeAndAwait(duplex, frame(COPY_DONE))).resolves.toBeUndefined();
-    await settle();
-
-    // The backend never saw any part of the copy.
     expect(execProtocolRawStream).toHaveBeenCalledTimes(1);
 
-    const frames = framesAfter(received, preDataLen);
+    for (const message of data) {
+      await expect(writeAndAwait(duplex, message)).resolves.toBeUndefined();
+    }
+    const preTerminatorLen = Buffer.concat(received).length;
+
+    // Even a breach caused by the Query is reported only after the client
+    // finishes the captured conversation.
+    expect(framesAfter(received, startupLen).map((f) => f.type)).toEqual([COPY_IN_RESPONSE]);
+
+    await expect(writeAndAwait(duplex, terminator)).resolves.toBeUndefined();
+    await settle();
+
+    if (!breached) {
+      expect(execProtocolRawStream).toHaveBeenCalledTimes(2);
+      const atomic = Buffer.from(execProtocolRawStream.mock.calls[1]?.[0] as Uint8Array);
+      expect(atomic.equals(Buffer.concat([capQuery, ...data, terminator]))).toBe(true);
+      expect(atomic.length).toBe(cap);
+      expect(framesAfter(received, startupLen).some((f) => f.type === ERROR_RESPONSE)).toBe(false);
+      duplex.destroy();
+      await duplex.onClose;
+      return;
+    }
+
+    // A breach is catchable and never reaches PGlite.
+    expect(execProtocolRawStream).toHaveBeenCalledTimes(1);
+    const frames = framesAfter(received, preTerminatorLen);
     expect(frames.map((f) => f.type)).toEqual([ERROR_RESPONSE, READY_FOR_QUERY]);
     expect(errorMessageField(frames[0]?.payload ?? Buffer.alloc(0))).toMatch(/cap/i);
 
-    // Catchable error, not teardown: the duplex keeps serving queries.
     await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
     expect(execProtocolRawStream).toHaveBeenCalledTimes(2);
     expect(duplex.destroyed).toBe(false);
@@ -2593,6 +2641,25 @@ describe('PGliteDuplex COPY FROM STDIN capture (raw frames)', () => {
     // while that query is in flight wedges the WASM runtime. onClose is the
     // designed post-rollback synchronization point.
     await duplex.onClose;
+  });
+
+  it.each([
+    ['negative', -1, false],
+    ['fractional', 1.5, false],
+    ['positive Infinity', Number.POSITIVE_INFINITY, false],
+    ['NaN', Number.NaN, false],
+    ['zero', 0, true],
+    ['a positive integer', 1, true],
+    ['the largest safe integer', Number.MAX_SAFE_INTEGER, true],
+  ])('validates copyAggregateCapBytes: %s', (_name, value, valid) => {
+    const construct = () =>
+      new PGliteDuplex(createMockPGlite(), { copyAggregateCapBytes: value as number });
+
+    if (valid) {
+      expect(construct).not.toThrow();
+    } else {
+      expect(construct).toThrow(/copyAggregateCapBytes.*non-negative integer/i);
+    }
   });
 
   it('tears down on a non-copy frontend message while capturing', async () => {

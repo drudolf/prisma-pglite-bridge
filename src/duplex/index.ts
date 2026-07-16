@@ -266,7 +266,16 @@ export class PGliteDuplex extends Duplex {
     this.syncToFs = options.syncToFs ?? true;
     this.rewriteSystemCatalogCharOids = options.rewriteSystemCatalogCharOids ?? true;
     this.protocolCleanupNeeded = options.protocolCleanupNeeded ?? true;
-    this.copyAggregateCapBytes = options.copyAggregateCapBytes ?? MAX_COPY_AGGREGATE_BYTES;
+    const copyAggregateCapBytes =
+      options.copyAggregateCapBytes === undefined
+        ? MAX_COPY_AGGREGATE_BYTES
+        : options.copyAggregateCapBytes;
+    if (!Number.isSafeInteger(copyAggregateCapBytes) || copyAggregateCapBytes < 0) {
+      throw new TypeError(
+        'copyAggregateCapBytes must be a non-negative integer no greater than Number.MAX_SAFE_INTEGER',
+      );
+    }
+    this.copyAggregateCapBytes = copyAggregateCapBytes;
 
     this.duplexId = Symbol('duplex');
     this.onClose = new Promise<void>((resolve) => this.once('close', () => resolve()));
@@ -632,19 +641,12 @@ export class PGliteDuplex extends Duplex {
       if (this.copyCapture !== undefined) {
         const capture = this.copyCapture;
         if (msgType === COPY_DATA) {
-          if (!capture.discarding) {
-            capture.total += message.length;
-            if (capture.total > this.copyAggregateCapBytes) {
-              capture.discarding = true;
-              capture.chunks.length = 0;
-            } else {
-              capture.chunks.push(message);
-            }
-          }
+          this.appendCopyCapture(capture, message);
           continue;
         }
         if (msgType === COPY_DONE || msgType === COPY_FAIL) {
           this.copyCapture = undefined;
+          this.appendCopyCapture(capture, message);
           if (capture.discarding) {
             this.pushSyntheticError(
               '54000',
@@ -653,7 +655,6 @@ export class PGliteDuplex extends Duplex {
             this.pushSyntheticReadyForQuery();
             continue;
           }
-          capture.chunks.push(message);
           const batch = this.concatPipeline(capture.chunks);
           await this.runWithTiming(() => this.streamProtocol(batch, 'copy-in'));
           continue;
@@ -685,7 +686,9 @@ export class PGliteDuplex extends Duplex {
         // shapes that cannot be captured.
         const verdict = sniffCopyIn(this.queryText(message));
         if (verdict === 'capture') {
-          this.copyCapture = { chunks: [message], total: message.length, discarding: false };
+          const capture = { chunks: [], total: 0, discarding: false };
+          this.copyCapture = capture;
+          this.appendCopyCapture(capture, message);
           this.pushSyntheticCopyInResponse();
           continue;
         }
@@ -702,6 +705,23 @@ export class PGliteDuplex extends Duplex {
       // SimpleQuery or other standalone message
       await this.runWithTiming(() => this.streamProtocol(message, 'passthrough'));
     }
+  }
+
+  /** Append one complete frontend frame while keeping aggregate accounting
+   *  exact. On the first breach, release every buffered frame and swallow
+   *  the remainder of the conversation until its terminator. */
+  private appendCopyCapture(
+    capture: { chunks: Uint8Array[]; total: number; discarding: boolean },
+    message: Uint8Array,
+  ): void {
+    if (capture.discarding) return;
+    if (message.length > this.copyAggregateCapBytes - capture.total) {
+      capture.discarding = true;
+      capture.chunks.length = 0;
+      return;
+    }
+    capture.total += message.length;
+    capture.chunks.push(message);
   }
 
   /** SQL text of a simple-protocol Query message ('Q' + int32 length +
