@@ -474,6 +474,173 @@ describe('PgBridgeClient', () => {
     }
   });
 
+  it('attaches a trailing positional callback to a Submittable admitted on an idle chain (stock pg parity)', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        // Stock pg's Submittable arm adopts a trailing positional callback
+        // when the Submittable has none of its own (`if (!query.callback)`,
+        // pg 8.22 client.js). The bridge must forward the full argument list
+        // for that adoption to happen. pg.Query invokes its callback BEFORE
+        // emitting 'end', so 'end' is the bounded completion signal that
+        // works in the red state too — a dropped callback still ends the
+        // query, it just never delivers.
+        const calls: Array<{ err: unknown; res: unknown }> = [];
+        const q = new pg.Query('SELECT 2 AS y');
+        const ended = new Promise<void>((resolve, reject) => {
+          q.once('end', () => resolve());
+          q.once('error', reject);
+        });
+        const returned = (client.query as unknown as (...args: unknown[]) => unknown)(
+          q,
+          (err: unknown, res: unknown) => {
+            calls.push({ err, res });
+          },
+        );
+        // The synchronous Submittable return survives the callback form.
+        expect(returned).toBe(q);
+
+        await expect(settledOrPending(ended, 5_000)).resolves.toBeUndefined();
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.err).toBeNull();
+        const res = calls[0]?.res as pg.QueryResult<{ y: number }>;
+        expect(res.command).toBe('SELECT');
+        expect(res.rows).toEqual([{ y: 2 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('forwards the trailing callback through a deferred Submittable admission and preserves call order', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('CREATE TABLE deferred_sub_cb_t (seq serial, n int)');
+
+        // The opener occupies the submission chain, so the Submittable takes
+        // the DEFERRED arm; the trailing callback must ride the deferred
+        // super.query hand-off — dropping it there is invisible to the
+        // idle-chain test above. Admission stays serialized: the chained
+        // INSERT 1 lands before the Submittable's INSERT 2.
+        const opener = client.query('SELECT pg_sleep(0.05)');
+        const first = client.query('INSERT INTO deferred_sub_cb_t (n) VALUES (1)');
+        const calls: Array<{ err: unknown; res: unknown }> = [];
+        const q = new pg.Query('INSERT INTO deferred_sub_cb_t (n) VALUES (2)');
+        const ended = new Promise<void>((resolve, reject) => {
+          q.once('end', () => resolve());
+          q.once('error', reject);
+        });
+        const returned = (client.query as unknown as (...args: unknown[]) => unknown)(
+          q,
+          (err: unknown, res: unknown) => {
+            calls.push({ err, res });
+          },
+        );
+        expect(returned).toBe(q);
+        // Deferred admission: nothing can have completed synchronously.
+        expect(calls).toEqual([]);
+
+        await Promise.all([opener, first]);
+        await expect(settledOrPending(ended, 5_000)).resolves.toBeUndefined();
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.err).toBeNull();
+        const res = calls[0]?.res as pg.QueryResult;
+        expect(res.command).toBe('INSERT');
+        expect(res.rowCount).toBe(1);
+
+        const { rows } = await client.query<{ n: number }>(
+          'SELECT n FROM deferred_sub_cb_t ORDER BY seq',
+        );
+        expect(rows.map(({ n }) => n)).toEqual([1, 2]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it("keeps a Submittable's own pre-set callback over the trailing positional one (stock !query.callback guard)", async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        // Stock pg adopts the positional callback ONLY when the Submittable
+        // has none of its own. Green today (dropped arguments cannot clobber
+        // anything) and pinned so the argument-forwarding fix reproduces
+        // stock's guard instead of unconditionally assigning.
+        const ownCalls: Array<{ err: unknown; res: unknown }> = [];
+        const positionalCalls: Array<{ err: unknown; res: unknown }> = [];
+        const q = new pg.Query('SELECT 3 AS z', (err, res) => {
+          ownCalls.push({ err, res });
+        });
+        const ended = new Promise<void>((resolve, reject) => {
+          q.once('end', () => resolve());
+          q.once('error', reject);
+        });
+        const returned = (client.query as unknown as (...args: unknown[]) => unknown)(
+          q,
+          (err: unknown, res: unknown) => {
+            positionalCalls.push({ err, res });
+          },
+        );
+        expect(returned).toBe(q);
+
+        await expect(settledOrPending(ended, 5_000)).resolves.toBeUndefined();
+        expect(ownCalls).toHaveLength(1);
+        expect(ownCalls[0]?.err).toBeNull();
+        const res = ownCalls[0]?.res as pg.QueryResult<{ z: number }>;
+        expect(res.rows).toEqual([{ z: 3 }]);
+        expect(positionalCalls).toEqual([]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
+  it('does not extend the submission chain past a callback-carrying Submittable (deferred arm)', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    try {
+      const client = await pool.connect();
+      try {
+        // The chain is deliberately NOT extended past a Submittable —
+        // arbitrary Submittables expose no uniform terminal signal. That
+        // must survive the argument-forwarding fix: a trailing callback is a
+        // completion signal pg owns, not an invitation to chain past the
+        // admission. Identity, not settlement: the chain tail before and
+        // after the call is the same promise.
+        const view = client as unknown as { querySubmissionChain?: Promise<void> };
+        const opener = client.query('SELECT pg_sleep(0.05)');
+        const busyTail = view.querySubmissionChain;
+        expect(busyTail).toBeDefined();
+
+        const q = new pg.Query('SELECT 4 AS w');
+        const ended = new Promise<void>((resolve, reject) => {
+          q.once('end', () => resolve());
+          q.once('error', reject);
+        });
+        const returned = (client.query as unknown as (...args: unknown[]) => unknown)(q, () => {});
+        expect(returned).toBe(q);
+        expect(view.querySubmissionChain).toBe(busyTail);
+
+        await opener;
+        await expect(settledOrPending(ended, 5_000)).resolves.toBeUndefined();
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
+  });
+
   it('delivers an ended-client admission failure through the Submittable error path, not an unhandled rejection', async () => {
     // The deferred admission may fire after the client has ended (pool
     // teardown wins the race against a busy chain). The failure must reach

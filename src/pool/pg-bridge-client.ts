@@ -432,14 +432,21 @@ export class PgBridgeClient extends pg.Client {
     // Submittable + promise forms on one client may still trip the pg queue
     // deprecation.
     if (isSubmittable(first)) {
+      // Forward the FULL argument list: stock pg's submittable arm attaches a
+      // trailing positional callback to the query itself (`if (!query.callback)
+      // query.callback = ...`), which is how pg-pool's release callback reaches
+      // a pool.query(Submittable) — dropping it wedged the pool client forever.
+      // (Not submitStock: stock returns the submittable here, not a promise.)
+      const admit = (): void =>
+        void (super.query as (...a: unknown[]) => unknown).apply(this, args);
       const prior = this.querySubmissionChain;
       if (prior === undefined) {
-        super.query(first);
+        admit();
       } else {
         // `prior` is a chain tail and never rejects (both settle arms release it).
         void prior.then(() => {
           try {
-            super.query(first);
+            admit();
           } catch (err) {
             // A submit() that throws mid-pulse violates pg's Submittable
             // contract and leaves the client wedged: pg has already set its

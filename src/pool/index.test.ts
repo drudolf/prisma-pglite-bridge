@@ -1,5 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
-import type pg from 'pg';
+import pg from 'pg';
 import { describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
@@ -785,6 +785,85 @@ describe('PgBridgePool — "char" oid 18 parity on user tables', () => {
       expect(bridgedValue).toBe(nativeValue);
     } finally {
       await pool.end();
+    }
+  });
+});
+
+// The Submittable arms of PgBridgeClient.query() must forward the FULL
+// original argument list to stock pg. pg-pool's query() rides on exactly
+// that: it hands the Submittable to client.query(text, values, cb) with its
+// own completion callback in the trailing slot, releases the internal
+// checkout from that callback, and settles the returned promise with the
+// callback's Result. A bridge that drops the trailing arguments strands the
+// checkout: the promise never settles, the max=1 client never returns to
+// idle, and end() blocks forever.
+describe('PgBridgePool — pool.query(Submittable) round trip', () => {
+  // Bounded blocked-promise detection (same shape as the teardown-barrier
+  // suite above): the settled value if `p` wins, else the sentinel 'pending'
+  // after `ms`. The loser timer is unref'd so it never keeps the event loop
+  // alive after `p` wins.
+  const settledOrPending = <T>(p: Promise<T>, ms: number): Promise<T | 'pending'> =>
+    Promise.race([
+      p,
+      new Promise<'pending'>((resolve) => {
+        setTimeout(() => resolve('pending'), ms).unref();
+      }),
+    ]);
+
+  it('settles pool.query(new pg.Query(...)) with the Result, recycles the client, and stays endable', async () => {
+    const pool = new PgBridgePool({ pglite, max: 1 });
+    let ending: Promise<void> | undefined;
+    try {
+      const q = new pg.Query('SELECT 1 AS x');
+      // pg.Pool's typings have no Submittable overload (pg-pool resolves a
+      // promise instead of returning the stream); the runtime path exists.
+      const pending = (pool.query as unknown as (...args: unknown[]) => Promise<unknown>)(q);
+
+      // Bounded: with the trailing callback dropped, this promise NEVER
+      // settles — fail here in ~5 s instead of eating the suite timeout.
+      const outcome = await settledOrPending(pending, 5_000);
+      expect(outcome).not.toBe('pending');
+
+      // Stock parity: pg-pool resolves with what pg.Query's callback
+      // delivered — the single statement's Result.
+      const result = outcome as pg.QueryResult<{ x: number }>;
+      expect(result.command).toBe('SELECT');
+      expect(result.rows).toEqual([{ x: 1 }]);
+
+      // pg-pool released its internal checkout from the completion callback,
+      // so the max=1 client is idle again…
+      expect(pool.idleCount).toBe(1);
+
+      // …a follow-up pool query gets it…
+      const followUp = await settledOrPending(pool.query<{ ok: number }>('SELECT 1 AS ok'), 5_000);
+      expect(followUp).not.toBe('pending');
+      expect((followUp as pg.QueryResult<{ ok: number }>).rows[0]?.ok).toBe(1);
+
+      // …and end() drains instead of blocking on a stranded checkout.
+      ending = pool.end();
+      await expect(settledOrPending(ending, 5_000)).resolves.toBeUndefined();
+    } finally {
+      // Un-strand the pool even in the red state: pool.query's internal
+      // checkout is never released when the callback is dropped, so end()
+      // blocks on it. Force-release every still-checked-out client (pg-pool
+      // attaches `release` at checkout; a double release throws and is
+      // swallowed), then bound the drain — teardown must not hang.
+      ending ??= pool.end();
+      if ((await settledOrPending(ending, 1_000)) === 'pending') {
+        const { _clients } = pool as unknown as {
+          _clients: Array<{ release?: (err?: Error) => void }>;
+        };
+        for (const client of _clients) {
+          try {
+            client.release?.();
+          } catch {
+            // already released — nothing to un-strand
+          }
+        }
+        await settledOrPending(ending, 10_000).catch(() => {});
+      }
+      // Barrier: teardown ROLLBACKs drain before the beforeEach reset runs.
+      await pglite.query('SELECT 1').catch(() => {});
     }
   });
 });

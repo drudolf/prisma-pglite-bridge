@@ -372,7 +372,12 @@ pg-query-stream page results through the bridge as they would
 against a server. Submittables and promise-form queries mixed on
 one client keep their call order: a Submittable's hand-off to pg
 waits for earlier still-pending queries instead of jumping ahead
-of them. One shared-session caveat: an open cursor holds
+of them. One stock-pg-parity limitation: `pool.query()` with a
+Submittable that already carries its own `callback` never invokes
+pg-pool's release callback (stock pg only attaches it when the
+Submittable has none), so that call form silently keeps the client
+checked out. Check out a client explicitly for callback-carrying
+Submittables. One shared-session caveat: an open cursor holds
 the PGlite session the way an open transaction does — in a
 `max > 1` pool, other clients queue until the cursor is exhausted,
 closed, or its client is released back to the pool. On release, the
