@@ -782,35 +782,13 @@ export class PGliteDuplex extends Duplex {
       // single element is always present — return it without a fresh view.
       batch = first;
     } else {
-      batch = this.tryContiguousPipelineBatch(messages) ?? this.concatPipeline(messages);
+      batch = this.concatPipeline(messages);
     }
-    // `batch` is fully materialized (or a view of the messages' shared
-    // backing buffer — never of the array), and no new EQP message can be
-    // appended mid-flush (the drain loop awaits this call before consuming
-    // more input), so the array can be cleared in place and reused.
+    // `batch` is fully materialized (or the original length-1 message), and no
+    // new EQP message can be appended mid-flush (the drain loop awaits this call
+    // before consuming more input), so the array can be cleared in place and reused.
     messages.length = 0;
     await this.runWithTiming(() => this.streamProtocol(batch, rfqMode));
-  }
-
-  private tryContiguousPipelineBatch(messages: Uint8Array[]): Uint8Array | undefined {
-    const first = messages[0];
-    /* c8 ignore next — caller only passes non-empty pipelines */
-    if (first === undefined) return undefined;
-
-    const buffer = first.buffer;
-    const start = first.byteOffset;
-    let end = start + first.byteLength;
-    for (let i = 1; i < messages.length; i++) {
-      const part = messages[i];
-      /* c8 ignore next — pipeline array has no holes */
-      if (part === undefined) return undefined;
-      if (part.buffer !== buffer || part.byteOffset !== end) {
-        return undefined;
-      }
-      end += part.byteLength;
-    }
-
-    return new Uint8Array(buffer, start, end - start);
   }
 
   private concatPipeline(messages: Uint8Array[]): Uint8Array {
