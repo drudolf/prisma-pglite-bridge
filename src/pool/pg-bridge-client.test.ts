@@ -1026,6 +1026,46 @@ describe('PgBridgeClient — submission-chain query_timeout budget', () => {
     }
   });
 
+  it('preserves the live default budget for synchronous re-entry during stock timeout suppression', async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const origQuery = pg.Client.prototype.query;
+    const client = clientWithTimeout(0);
+    const outerExecution = Promise.withResolvers<unknown>();
+    let outerQuery: Promise<unknown> | undefined;
+    let nestedQuery: Promise<unknown> | undefined;
+    const suppressedDefaults: number[] = [];
+
+    try {
+      pg.Client.prototype.query = vi.fn(() => {
+        if (nestedQuery === undefined) {
+          suppressedDefaults.push(connectionTimeout(client));
+          nestedQuery = client.query('SELECT nested default') as Promise<unknown>;
+          return outerExecution.promise;
+        }
+        return Promise.resolve({ command: 'SELECT' });
+      }) as unknown as typeof pg.Client.prototype.query;
+
+      setConnectionTimeout(client, 25);
+      outerQuery = client.query({
+        text: 'SELECT outer explicit',
+        query_timeout: 10,
+      }) as Promise<unknown>;
+
+      expect(suppressedDefaults).toEqual([0]);
+      expect(nestedQuery).toBeDefined();
+      expect(pg.Client.prototype.query).toHaveBeenCalledTimes(1);
+      expect(connectionTimeout(client)).toBe(25);
+      expect(setTimeoutSpy.mock.calls.map(([, delay]) => delay)).toEqual([10, 25]);
+    } finally {
+      outerExecution.resolve({ command: 'SELECT' });
+      await Promise.allSettled([outerQuery ?? Promise.resolve(), nestedQuery ?? Promise.resolve()]);
+      pg.Client.prototype.query = origQuery;
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('starts the default budget while queued, treats per-query zero as fallback, skips expired work, and preserves callback parity', async () => {
     vi.useFakeTimers();
     const origQuery = pg.Client.prototype.query;
@@ -1082,27 +1122,43 @@ describe('PgBridgeClient — submission-chain query_timeout budget', () => {
     }
   });
 
-  it('restores both timeout sources when stock submission throws synchronously', async () => {
+  it('restores both timeout sources and suppression context when stock submission throws synchronously', async () => {
     vi.useFakeTimers();
     const origQuery = pg.Client.prototype.query;
     const client = clientWithTimeout(40);
     const expected = new Error('submit boom');
     const config = { text: 'SELECT boom', query_timeout: 15 };
     const observed: Array<{ perQuery: unknown; fallback: number }> = [];
+    let shouldThrow = true;
 
     try {
       pg.Client.prototype.query = vi.fn((ownedConfig: unknown) => {
         observed.push({
-          perQuery: (ownedConfig as { query_timeout?: unknown }).query_timeout,
+          perQuery:
+            typeof ownedConfig === 'object' && ownedConfig !== null
+              ? (ownedConfig as { query_timeout?: unknown }).query_timeout
+              : undefined,
           fallback: connectionTimeout(client),
         });
-        throw expected;
+        if (shouldThrow) {
+          shouldThrow = false;
+          throw expected;
+        }
+        return Promise.resolve({ command: 'SELECT' });
       }) as unknown as typeof pg.Client.prototype.query;
 
       await expect(client.query(config)).rejects.toBe(expected);
       expect(observed).toEqual([{ perQuery: 0, fallback: 0 }]);
       expect(config.query_timeout).toBe(15);
       expect(connectionTimeout(client)).toBe(40);
+      expect(vi.getTimerCount()).toBe(0);
+
+      setConnectionTimeout(client, 0);
+      await expect(client.query('SELECT after throw')).resolves.toEqual({ command: 'SELECT' });
+      expect(observed).toEqual([
+        { perQuery: 0, fallback: 0 },
+        { perQuery: undefined, fallback: 0 },
+      ]);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       pg.Client.prototype.query = origQuery;

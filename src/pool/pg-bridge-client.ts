@@ -166,6 +166,9 @@ export const snapshotQueryConfig = (
 
 export class PgBridgeClient extends pg.Client {
   private querySubmissionChain?: Promise<void>;
+  /** Live connection default hidden only while pg's own timer is suppressed;
+   *  synchronous query() re-entry must still inherit the public default. */
+  #suppressedConnectionQueryTimeout?: unknown;
   /** Result-field metadata per statement name, mirroring the lifetime of
    *  `connection.parsedStatements`: a recycled client starts both empty. */
   readonly #fieldsCache = new Map<string, FastQueryField[]>();
@@ -545,7 +548,13 @@ export class PgBridgeClient extends pg.Client {
     const connectionParameters = (
       this as unknown as { connectionParameters: { query_timeout: unknown } }
     ).connectionParameters;
-    const effectiveQueryTimeout = ownedConfig?.query_timeout || connectionParameters.query_timeout;
+    // Sample before execute: submitWithCloses can synchronously re-enter query()
+    // only after execute publishes the saved default; deferring this read would
+    // lose that call-time inheritance once the queued nested execute runs.
+    const effectiveQueryTimeout =
+      ownedConfig?.query_timeout ||
+      connectionParameters.query_timeout ||
+      this.#suppressedConnectionQueryTimeout;
     const timeout = effectiveQueryTimeout ? createQueryTimeout(effectiveQueryTimeout) : undefined;
     const execute = (): Promise<unknown> => {
       if (timeout?.hasFired()) return Promise.reject(timeout.error);
@@ -554,12 +563,16 @@ export class PgBridgeClient extends pg.Client {
       const perQueryTimeout = ownedConfig?.query_timeout;
       if (ownedConfig !== undefined) ownedConfig.query_timeout = 0;
       const connectionTimeout = connectionParameters.query_timeout;
+      // The reservation makes nested managed execution impossible, so one
+      // suppression frame can publish the live default without a stack.
+      this.#suppressedConnectionQueryTimeout = connectionTimeout;
       connectionParameters.query_timeout = 0;
       try {
         return submitWithCloses();
       } finally {
         if (ownedConfig !== undefined) ownedConfig.query_timeout = perQueryTimeout;
         connectionParameters.query_timeout = connectionTimeout;
+        this.#suppressedConnectionQueryTimeout = undefined;
       }
     };
 
