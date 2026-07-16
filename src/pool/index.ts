@@ -95,6 +95,19 @@ export interface PgBridgePoolOptions
   max?: number;
 
   /**
+   * Maximum milliseconds pg-pool waits for its entire checkout path: creating
+   * and connecting a logical client, or waiting for one when all `max` clients
+   * are checked out. Defaults to an unbounded wait. A timed-out queued waiter
+   * is removed and cannot later acquire a released client.
+   *
+   * This is distinct from SessionLock waits after checkout, {@link query_timeout}
+   * on a checked-out client, and the bridge readiness {@link timeout}; on an
+   * initial checkout, `connectionTimeoutMillis` and `timeout` may bound different
+   * portions of the operation.
+   */
+  connectionTimeoutMillis?: number;
+
+  /**
    * Filesystem sync policy for bridge-driven wire-protocol calls.
    *
    * - `'auto'` (default): disable per-query sync for clearly in-memory PGlite
@@ -254,6 +267,7 @@ export class PgBridgePool extends pg.Pool {
   constructor({
     bridgeId = Symbol('bridge'),
     max = 1,
+    connectionTimeoutMillis,
     pglite,
     telemetry,
     timeout,
@@ -279,6 +293,7 @@ export class PgBridgePool extends pg.Pool {
     const poolConfig = {
       Client: PgBridgeClient,
       max,
+      connectionTimeoutMillis,
       idleTimeoutMillis,
       query_timeout,
       [PgBridgeClient.OptionsKey]: {

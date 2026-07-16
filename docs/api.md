@@ -332,8 +332,10 @@ accepting `pglite` (optional), `max` (default `1`; must be a
 positive integer — the constructor throws a `TypeError` for `0`,
 negative, or fractional values rather than inheriting pg-pool's
 silent `max || 10` fallback, which would run ten clients without
-shared-session transaction isolation), `bridgeId`, `syncToFs`,
-`timeout`, `query_timeout`, `idleTimeoutMillis` (default `0`: in-process clients are
+shared-session transaction isolation), `connectionTimeoutMillis`
+(default unbounded; bounds logical client creation/connect and waiting when
+`max` is exhausted across pg-pool's entire checkout path), `bridgeId`,
+`syncToFs`, `timeout`, `query_timeout`, `idleTimeoutMillis` (default `0`: in-process clients are
 never evicted, so their prepared-statement state survives idle gaps),
 and `fastQueryPath` (default `true`: named `rowMode: 'array'` queries
 with a caller-supplied `types` — the shape `@prisma/adapter-pg`

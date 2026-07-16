@@ -4,7 +4,7 @@ import { describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
 import { setupPGlite } from '../__tests__/pglite.ts';
-import { PgBridgePool } from './index.ts';
+import { PgBridgePool, type PgBridgePoolOptions } from './index.ts';
 import { PgBridgeClient } from './pg-bridge-client.ts';
 
 const pglite = await setupPGlite();
@@ -91,6 +91,85 @@ describe('PgBridgePool — idleTimeoutMillis default', () => {
       expect(pool.options.idleTimeoutMillis).toBe(5000);
     } finally {
       await pool.end();
+    }
+  });
+});
+
+describe('PgBridgePool — connectionTimeoutMillis', () => {
+  it('bounds a queued checkout without letting the timed-out waiter capture a later release', async () => {
+    const connectionTimeoutMillis = 100;
+    const cleanupBoundMillis = 1_000;
+    const options = { pglite, max: 1, connectionTimeoutMillis } satisfies PgBridgePoolOptions;
+    const pool = new PgBridgePool(options);
+    const acquire = vi.fn();
+    pool.on('acquire', acquire);
+    let held: pg.PoolClient | undefined;
+    let waiter: Promise<pg.PoolClient> | undefined;
+    let ended = false;
+
+    const withinCleanupBound = <T>(promise: Promise<T>, label: string): Promise<T> =>
+      new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`${label} did not settle within ${cleanupBoundMillis} ms`)),
+          cleanupBoundMillis,
+        );
+        timer.unref();
+        void promise.then(
+          (value) => {
+            clearTimeout(timer);
+            resolve(value);
+          },
+          (error: unknown) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        );
+      });
+
+    try {
+      held = await withinCleanupBound(pool.connect(), 'initial checkout');
+      acquire.mockClear();
+
+      const started = performance.now();
+      waiter = pool.connect();
+      await expect(withinCleanupBound(waiter, 'queued checkout')).rejects.toThrow(
+        'timeout exceeded when trying to connect',
+      );
+      expect(performance.now() - started).toBeLessThan(cleanupBoundMillis);
+      expect(acquire).not.toHaveBeenCalled();
+
+      held.release();
+      held = undefined;
+      const reused = await withinCleanupBound(pool.connect(), 'post-timeout checkout');
+      try {
+        // pg-pool emits `acquire` even for a stale timed-out PendingItem. One
+        // event proves the removed waiter did not briefly steal this release.
+        expect(acquire).toHaveBeenCalledTimes(1);
+        expect(acquire).toHaveBeenCalledWith(reused);
+        await expect(reused.query('SELECT 1 AS value')).resolves.toMatchObject({
+          rows: [{ value: 1 }],
+        });
+      } finally {
+        reused.release();
+      }
+
+      await withinCleanupBound(pool.end(), 'pool.end()');
+      ended = true;
+    } finally {
+      held?.release();
+      if (waiter) {
+        // On the RED implementation the waiter is still queued. Releasing the
+        // held client lets it resolve; immediately return that client so the
+        // intentional assertion failure cannot strand a checkout.
+        await withinCleanupBound(
+          waiter.then(
+            (lateClient) => lateClient.release(),
+            () => undefined,
+          ),
+          'timed-out waiter cleanup',
+        ).catch(() => {});
+      }
+      if (!ended) await withinCleanupBound(pool.end(), 'pool cleanup').catch(() => {});
     }
   });
 });
