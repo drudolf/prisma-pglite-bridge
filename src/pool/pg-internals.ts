@@ -15,8 +15,8 @@ import pgUtils from 'pg/lib/utils.js';
 /**
  * Augment pg's published types with the internal surface the bridge drives.
  * `@types/pg@8.20.0` (the latest DefinitelyTyped ships; runtime is pg@8.22.0)
- * omits `parsedStatements`, `sendCopyFail`, `_getActiveQuery`, and the legacy
- * `activeQuery`/`queryQueue` fields
+ * omits `parsedStatements`, `sendCopyFail`, `_getActiveQuery`,
+ * `connectionParameters`, and the legacy `activeQuery`/`queryQueue` fields
  * outright, and types `parse`/`bind`/`describe`/`execute`/`close` only for the
  * two-arg internal caller — mistyping `binary`/`rows` as strings. These are not
  * pg's public contract at any version; the declarations below assert the real
@@ -43,6 +43,10 @@ declare module 'pg' {
     _getActiveQuery?(): unknown;
     activeQuery?: unknown;
     queryQueue?: unknown;
+    /** Constructor-assigned in every supported release; stock pg reads its
+     *  `query_timeout` for each query's read timeout, and the bridge
+     *  suppresses/restores that default around managed submissions. */
+    connectionParameters: { query_timeout: unknown };
   }
 }
 
@@ -105,6 +109,15 @@ export const assertPgInternals = (client: pg.Client, features: PgInternalFeature
       // keeps this arm legacy-only and the deprecated getter untouched.
       typeof client._getActiveQuery === 'function' || Object.hasOwn(client, 'queryQueue'),
       'client._getActiveQuery() (pg >= 8.17) or an own client.queryQueue (pg <= 8.16)',
+    ],
+    [
+      // Constructor-assigned in both supported layouts (pg 8.22.0
+      // client.js:54, pg 8.16.3 client.js:18; the own query_timeout in
+      // connection-parameters.js). The suppression frame in query() mutates
+      // this exact field, so its absence must fail construction, not a query.
+      isUsableObject(client.connectionParameters) &&
+        Object.hasOwn(client.connectionParameters, 'query_timeout'),
+      'client.connectionParameters (object with an own query_timeout)',
     ],
     [
       isExtensiblePropertyRecord(connection.parsedStatements),

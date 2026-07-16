@@ -18,6 +18,7 @@ const FAST_QUERY_SEAMS = [
   ['stream', 'client.connection.stream (usable object)', null],
 ] as const;
 const CLOSE = 'client.connection.close()';
+const CONNECTION_PARAMETERS = 'client.connectionParameters (object with an own query_timeout)';
 
 const seamError = (invalid: readonly string[]): Error =>
   new Error(
@@ -59,10 +60,12 @@ const connectionFixture = (): ConnectionFixture => ({
 const clientFixture = (
   active: Record<string, unknown> = { _getActiveQuery: method },
   connection: Partial<ConnectionFixture> = {},
+  connectionParameters: unknown = { query_timeout: false },
 ): pg.Client =>
   ({
     ...active,
     connection: { ...connectionFixture(), ...connection },
+    connectionParameters,
   }) as unknown as pg.Client;
 
 const noFeatures: Features = { fastQueryPath: false, statementCaching: false };
@@ -115,6 +118,7 @@ describe('assertPgInternals', () => {
     }) as object;
     const client = Object.assign(Object.create(deprecatedPrototype) as Record<string, unknown>, {
       connection: connectionFixture(),
+      connectionParameters: { query_timeout: false },
     }) as unknown as pg.Client;
 
     expect(() => assertPgInternals(client, noFeatures)).toThrowError(seamError([ACTIVE_QUERY]));
@@ -192,6 +196,39 @@ describe('assertPgInternals', () => {
     ).toThrowError(seamError([CLOSE]));
   });
 
+  // connectionParameters checks — tests 1–3 are red until the guard lands
+
+  it('rejects a client that has no connectionParameters property', () => {
+    // clientFixture third arg undefined omits the field entirely so it does not appear on the object
+    const client: pg.Client = {
+      _getActiveQuery: method,
+      connection: connectionFixture(),
+      // connectionParameters intentionally absent
+    } as unknown as pg.Client;
+    expect(() => assertPgInternals(client, noFeatures)).toThrowError(
+      seamError([CONNECTION_PARAMETERS]),
+    );
+  });
+
+  it('rejects connectionParameters: null', () => {
+    expect(() => assertPgInternals(clientFixture(undefined, {}, null), noFeatures)).toThrowError(
+      seamError([CONNECTION_PARAMETERS]),
+    );
+  });
+
+  it('rejects connectionParameters with query_timeout on the prototype only (not an own property)', () => {
+    const inherited = Object.create({ query_timeout: false }) as Record<string, unknown>;
+    expect(() =>
+      assertPgInternals(clientFixture(undefined, {}, inherited), noFeatures),
+    ).toThrowError(seamError([CONNECTION_PARAMETERS]));
+  });
+
+  it('accepts connectionParameters: { query_timeout: false } (pg default value)', () => {
+    expect(() =>
+      assertPgInternals(clientFixture(undefined, {}, { query_timeout: false }), noFeatures),
+    ).not.toThrow();
+  });
+
   it('reports every incompatibility once in deterministic dependency order', () => {
     const connection = Object.fromEntries(
       FAST_QUERY_SEAMS.map(([property, _label, invalid]) => [property, invalid]),
@@ -213,6 +250,14 @@ describe('assertPgInternals', () => {
         CLOSE,
       ]),
     );
+  });
+
+  // pg seam contract — pins the real pg runtime shape the guard assumes
+  it('pg seam contract: new pg.Client() has a non-null connectionParameters object with own query_timeout', () => {
+    const client = new pg.Client({ host: 'localhost' });
+    expect(client.connectionParameters).not.toBeNull();
+    expect(typeof client.connectionParameters).toBe('object');
+    expect(Object.hasOwn(client.connectionParameters as object, 'query_timeout')).toBe(true);
   });
 });
 
