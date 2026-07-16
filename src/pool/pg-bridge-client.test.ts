@@ -2037,6 +2037,150 @@ describe('PgBridgeClient — submission-chain query_timeout budget', () => {
       vi.useRealTimers();
     }
   });
+
+  it('suppresses connectionParameters.query_timeout at the moment a deferred query is submitted to the wire', async () => {
+    vi.useFakeTimers();
+    const origQuery = pg.Client.prototype.query;
+    const client = clientWithTimeout(5000);
+    const opener = Promise.withResolvers<unknown>();
+    const observedAtSubmit: Array<{ perQuery: unknown; fallback: number }> = [];
+
+    try {
+      pg.Client.prototype.query = vi.fn((config: unknown) => {
+        observedAtSubmit.push({
+          perQuery:
+            typeof config === 'object' && config !== null
+              ? (config as { query_timeout?: unknown }).query_timeout
+              : undefined,
+          fallback: connectionTimeout(client),
+        });
+        return observedAtSubmit.length === 1
+          ? opener.promise
+          : Promise.resolve({ command: 'SELECT' });
+      }) as unknown as typeof pg.Client.prototype.query;
+
+      // First query occupies the chain — no timeout so it blocks indefinitely.
+      setConnectionTimeout(client, 0);
+      const first = client.query('SELECT opener') as Promise<unknown>;
+
+      // Re-arm the connection timeout before issuing the deferred query.
+      setConnectionTimeout(client, 5000);
+      const deferredConfig = { text: 'SELECT deferred', query_timeout: 5000 };
+      const deferred = client.query(deferredConfig) as Promise<unknown>;
+
+      // The deferred execute() has not run yet — first is still pending.
+      expect(observedAtSubmit).toHaveLength(1);
+      expect(observedAtSubmit[0]).toEqual({ perQuery: undefined, fallback: 0 });
+
+      // Settle the opener so the deferred execute() runs.
+      opener.resolve({ command: 'SELECT' });
+      await first;
+      await flushPromiseChain();
+
+      // Now the deferred query was submitted — suppression must have zeroed both.
+      expect(observedAtSubmit).toHaveLength(2);
+      expect(observedAtSubmit[1]).toEqual({ perQuery: 0, fallback: 0 });
+
+      // Caller's config must be restored to its original value.
+      expect(deferredConfig.query_timeout).toBe(5000);
+
+      await deferred;
+    } finally {
+      opener.resolve(undefined);
+      pg.Client.prototype.query = origQuery;
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores connectionParameters.query_timeout after a deferred query settles', async () => {
+    vi.useFakeTimers();
+    const origQuery = pg.Client.prototype.query;
+    const client = clientWithTimeout(5000);
+    const opener = Promise.withResolvers<unknown>();
+
+    try {
+      const observedAtSubmit: unknown[] = [];
+      pg.Client.prototype.query = vi.fn((config: unknown) => {
+        observedAtSubmit.push(config);
+        return observedAtSubmit.length === 1
+          ? opener.promise
+          : Promise.resolve({ command: 'SELECT' });
+      }) as unknown as typeof pg.Client.prototype.query;
+
+      setConnectionTimeout(client, 0);
+      const first = client.query('SELECT opener') as Promise<unknown>;
+
+      // Re-arm before queuing the deferred query.
+      setConnectionTimeout(client, 5000);
+      const deferredConfig = { text: 'SELECT deferred restore', query_timeout: 5000 };
+      const deferred = client.query(deferredConfig) as Promise<unknown>;
+
+      // Settle the opener so the deferred executes.
+      opener.resolve({ command: 'SELECT' });
+      await first;
+      await deferred;
+
+      // After the deferred query settles, both timeout sources must be restored.
+      expect(connectionTimeout(client)).toBe(5000);
+      expect(deferredConfig.query_timeout).toBe(5000);
+    } finally {
+      opener.resolve(undefined);
+      pg.Client.prototype.query = origQuery;
+      vi.useRealTimers();
+    }
+  });
+
+  it('enforces the bridge timeout on the deferred path when the backend never responds', async () => {
+    vi.useFakeTimers();
+    const origQuery = pg.Client.prototype.query;
+    const client = clientWithTimeout(0);
+    const opener = Promise.withResolvers<unknown>();
+    // The deferred query's backend will never respond.
+    const deferred = Promise.withResolvers<unknown>();
+
+    try {
+      let submitCount = 0;
+      pg.Client.prototype.query = vi.fn(() => {
+        submitCount++;
+        return submitCount === 1 ? opener.promise : deferred.promise;
+      }) as unknown as typeof pg.Client.prototype.query;
+
+      // First query — no timeout, holds the chain.
+      setConnectionTimeout(client, 0);
+      const first = client.query('SELECT opener') as Promise<unknown>;
+
+      // Set a short connection-level timeout and queue the deferred query.
+      setConnectionTimeout(client, 30);
+      const deferredQuery = client.query('SELECT deferred timeout') as Promise<unknown>;
+      let deferredOutcome: unknown = 'pending';
+      void deferredQuery.then(
+        (v) => {
+          deferredOutcome = v;
+        },
+        (e) => {
+          deferredOutcome = e;
+        },
+      );
+
+      // The timeout timer for the deferred query is armed at query() call time,
+      // so it can fire while the first query is still in flight.
+      await vi.advanceTimersByTimeAsync(30);
+      expect(deferredOutcome).toBeInstanceOf(Error);
+      expect((deferredOutcome as Error).message).toBe('Query read timeout');
+
+      // Settle the opener — the deferred execute() may run but the result is
+      // still the already-rejected public promise.
+      opener.resolve({ command: 'SELECT' });
+      await first;
+      await flushPromiseChain();
+      expect(submitCount).toBeGreaterThanOrEqual(1);
+    } finally {
+      opener.resolve(undefined);
+      deferred.resolve(undefined);
+      pg.Client.prototype.query = origQuery;
+      vi.useRealTimers();
+    }
+  });
 });
 
 // Plan A3-A6 (promise-form rows) — the bridge must snapshot the supported
