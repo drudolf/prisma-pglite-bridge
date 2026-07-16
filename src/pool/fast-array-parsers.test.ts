@@ -130,6 +130,23 @@ class PrototypeStateTypes {
 }
 
 describe('wrapTypesWithFastArrayParsers — this-dependent types objects (TypeOverrides)', () => {
+  it('does not read unrelated own getters while preserving bound dynamic delegation', () => {
+    const inner: TypesLike & { prefix: string; readonly unrelated: never } = {
+      prefix: 'before',
+      getTypeParser(oid, format = 'text') {
+        return (raw) => `${this.prefix}:${oid}:${format}:${raw}`;
+      },
+      get unrelated(): never {
+        throw new Error('unrelated getter read');
+      },
+    };
+
+    const wrapped = wrapTypesWithFastArrayParsers(inner);
+    inner.prefix = 'after';
+
+    expect(wrapped.getTypeParser(17, 'binary')('value')).toBe('after:17:binary:value');
+  });
+
   it('resolves array element parsers through a real pg TypeOverrides', () => {
     const wrapped = wrapTypesWithFastArrayParsers(realTypeOverrides());
     // _int8 (1016) → element OID 20, which pg leaves as a string by default
