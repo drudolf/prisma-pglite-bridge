@@ -120,12 +120,16 @@ directly through `pglite.exec(...)`, or a hand-rolled `pg.Client` on a
 cache was live.
 
 Concurrent pools/bridges on one PGlite instance do not cause this
-(since 1.7): statement names are unique per pool client, connect-time
-cleanup runs only when no other client is live, and a `DEALLOCATE` /
-`DISCARD ALL` issued through any pool client evicts the affected names
-from every live client's plan cache. If the error appears anyway,
-avoid session-wide deallocation outside the pools, or pass
-`preparedStatements: false` to the bridge.
+persistently (since 1.7): statement names are unique per pool client,
+connect-time cleanup runs only when no other client is live, and a
+`DEALLOCATE` / `DISCARD ALL` issued through any pool client evicts the
+affected names from every live client's plan cache once it completes.
+One transient race is accepted: a sibling's warm query already in
+flight when that `DEALLOCATE`/`DISCARD ALL` lands can fail with a
+single clean 26000 — eviction runs when the deallocation resolves, so
+the next execution re-Parses and succeeds. A 26000 that *recurs*
+points outside the pools: avoid session-wide deallocation outside
+them, or pass `preparedStatements: false` to the bridge.
 
 *User-named* statements can also hit 26000 when a `DEALLOCATE`
 arrives in a form the bridge's bounded eviction decoder deliberately
