@@ -10,9 +10,11 @@
  * - miss: scan until the first discontinuity, then allocate and copy anyway.
  *
  * Timed live repeats carry no counters. Each child first runs a separate probe,
- * restores the original methods, and only then measures either production code
- * or an exact no-fast-path flushPipeline. Parent mode interleaves variants and
- * isolates every repeat in a fresh process.
+ * restores the original methods, and then installs a same-shape wrapper around
+ * only tryContiguousPipelineBatch: current delegates to the production method,
+ * while disabled returns undefined. Both variants therefore execute the same
+ * production flushPipeline. Parent mode interleaves variants and isolates every
+ * repeat in a fresh process.
  *
  * Usage:
  *   pnpm bench:pipeline
@@ -30,7 +32,6 @@ import { PGliteDuplex } from '../src/duplex/index.ts';
 
 type Variant = 'current' | 'disabled';
 type Workload = 'unnamed' | 'named' | 'assembly-hit' | 'assembly-miss';
-type RfqMode = 'suppress' | 'flush-boundary';
 
 interface ProbeStats {
   iterations: number;
@@ -69,21 +70,29 @@ interface Summary {
 }
 
 interface DuplexInternals {
-  pipeline: Uint8Array[];
-  flushPipeline(rfqMode: RfqMode): Promise<void>;
   tryContiguousPipelineBatch(messages: Uint8Array[]): Uint8Array | undefined;
   concatPipeline(messages: Uint8Array[]): Uint8Array;
-  runWithTiming(op: () => Promise<boolean>): Promise<void>;
-  streamProtocol(message: Uint8Array, rfqMode: RfqMode): Promise<boolean>;
 }
 
 const args = process.argv.slice(2);
 const getArg = (name: string, shortName?: string): string | undefined => {
   const longIndex = args.indexOf(`--${name}`);
-  if (longIndex >= 0) return args[longIndex + 1];
+  if (longIndex >= 0) {
+    const value = args[longIndex + 1];
+    if (value === undefined || value.startsWith('-')) {
+      throw new Error(`--${name} requires a value`);
+    }
+    return value;
+  }
   if (shortName !== undefined) {
     const shortIndex = args.indexOf(`-${shortName}`);
-    if (shortIndex >= 0) return args[shortIndex + 1];
+    if (shortIndex >= 0) {
+      const value = args[shortIndex + 1];
+      if (value === undefined || value.startsWith('-')) {
+        throw new Error(`-${shortName} requires a value`);
+      }
+      return value;
+    }
   }
   return undefined;
 };
@@ -137,7 +146,8 @@ const installLiveProbe = (pglite: PGlite, stats: ProbeStats): (() => void) => {
   const pgliteInternals = pglite as unknown as {
     runExclusive<T>(fn: () => Promise<T>): Promise<T>;
   };
-  const originalRunExclusive = pgliteInternals.runExclusive.bind(pglite);
+  const originalOwnRunExclusive = Object.getOwnPropertyDescriptor(pgliteInternals, 'runExclusive');
+  const originalRunExclusive = pgliteInternals.runExclusive;
 
   prototype.tryContiguousPipelineBatch = function (messages): Uint8Array | undefined {
     stats.pipelineAttempts++;
@@ -154,31 +164,46 @@ const installLiveProbe = (pglite: PGlite, stats: ProbeStats): (() => void) => {
   };
   pgliteInternals.runExclusive = async <T>(fn: () => Promise<T>): Promise<T> => {
     stats.runExclusiveCalls++;
-    return originalRunExclusive(fn);
+    return originalRunExclusive.call(pglite, fn);
   };
 
   return () => {
     prototype.tryContiguousPipelineBatch = originalTry;
     prototype.concatPipeline = originalConcat;
-    pgliteInternals.runExclusive = originalRunExclusive;
+    if (originalOwnRunExclusive === undefined) {
+      delete (pgliteInternals as { runExclusive?: unknown }).runExclusive;
+    } else {
+      Object.defineProperty(pgliteInternals, 'runExclusive', originalOwnRunExclusive);
+    }
   };
 };
 
-const installDisabledFlush = (): (() => void) => {
+const installTimedVariant = (selectedVariant: Variant): (() => void) => {
   const prototype = PGliteDuplex.prototype as unknown as DuplexInternals;
-  const originalFlush = prototype.flushPipeline;
+  const originalDescriptor = Object.getOwnPropertyDescriptor(
+    prototype,
+    'tryContiguousPipelineBatch',
+  );
+  if (originalDescriptor === undefined) {
+    throw new Error('missing production tryContiguousPipelineBatch');
+  }
+  const originalTry = prototype.tryContiguousPipelineBatch;
 
-  prototype.flushPipeline = async function (rfqMode): Promise<void> {
-    const messages = this.pipeline;
-    const first = messages[0];
-    const batch =
-      messages.length === 1 && first !== undefined ? first : this.concatPipeline(messages);
-    messages.length = 0;
-    await this.runWithTiming(() => this.streamProtocol(batch, rfqMode));
+  const selectedTry =
+    selectedVariant === 'current' ? originalTry : (_messages: Uint8Array[]): undefined => undefined;
+  const timedTry = function (
+    this: DuplexInternals,
+    messages: Uint8Array[],
+  ): Uint8Array | undefined {
+    return selectedTry.call(this, messages);
   };
+  Object.defineProperty(prototype, 'tryContiguousPipelineBatch', {
+    ...originalDescriptor,
+    value: timedTry,
+  });
 
   return () => {
-    prototype.flushPipeline = originalFlush;
+    Object.defineProperty(prototype, 'tryContiguousPipelineBatch', originalDescriptor);
   };
 };
 
@@ -218,17 +243,24 @@ const runLiveChild = async (
 
   const probe = blankProbe(probeIterations);
   const restoreProbe = installLiveProbe(pglite, probe);
-  for (let i = 0; i < probeIterations; i++) checksum += await query(i + liveWarmup);
-  restoreProbe();
+  try {
+    for (let i = 0; i < probeIterations; i++) checksum += await query(i + liveWarmup);
+  } finally {
+    restoreProbe();
+  }
 
-  const restoreVariant = selectedVariant === 'disabled' ? installDisabledFlush() : () => {};
-  const variantWarmup = Math.min(liveWarmup, 500);
-  for (let i = 0; i < variantWarmup; i++) checksum += await query(i + liveWarmup);
+  const restoreVariant = installTimedVariant(selectedVariant);
+  let elapsedMs: number;
+  try {
+    const variantWarmup = Math.min(liveWarmup, 500);
+    for (let i = 0; i < variantWarmup; i++) checksum += await query(i + liveWarmup);
 
-  const start = performance.now();
-  for (let i = 0; i < liveIterations; i++) checksum += await query(i);
-  const elapsedMs = performance.now() - start;
-  restoreVariant();
+    const start = performance.now();
+    for (let i = 0; i < liveIterations; i++) checksum += await query(i);
+    elapsedMs = performance.now() - start;
+  } finally {
+    restoreVariant();
+  }
 
   await client.end();
   if (duplex !== undefined && !duplex.destroyed) duplex.destroy();
@@ -323,7 +355,12 @@ const childMain = async (): Promise<void> => {
 
 const median = (values: number[]): number => {
   const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)] ?? Number.NaN;
+  const middle = Math.floor(sorted.length / 2);
+  const upper = sorted[middle];
+  if (upper === undefined) return Number.NaN;
+  if (sorted.length % 2 === 1) return upper;
+  const lower = sorted[middle - 1];
+  return lower === undefined ? Number.NaN : (lower + upper) / 2;
 };
 
 const summarize = (workload: Workload, selectedVariant: Variant, runs: RoundResult[]): Summary => {
@@ -391,13 +428,25 @@ const parentMain = (): void => {
   for (const workload of workloadNames) {
     for (let round = 0; round < repeats; round++) {
       const order = round % 2 === 0 ? variants : [...variants].reverse();
+      const checksums: Partial<Record<Variant, number>> = {};
       for (const selectedVariant of order) {
         if (!jsonOutput) {
           process.stderr.write(
             `running ${workload} ${selectedVariant} (${round + 1}/${repeats})\n`,
           );
         }
-        runs.push({ ...runChild(workload, selectedVariant), round });
+        const result = runChild(workload, selectedVariant);
+        checksums[selectedVariant] = result.checksum;
+        runs.push({ ...result, round });
+      }
+      if (checksums.current === undefined || checksums.disabled === undefined) {
+        throw new Error(`missing checksum for ${workload} round ${round + 1}`);
+      }
+      if (checksums.current !== checksums.disabled) {
+        throw new Error(
+          `checksum mismatch for ${workload} round ${round + 1}: ` +
+            `current=${checksums.current}, disabled=${checksums.disabled}`,
+        );
       }
     }
   }
