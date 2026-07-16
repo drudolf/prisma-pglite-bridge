@@ -100,6 +100,7 @@
     "bench:compat": "tsx benchmark/compat/run.ts",
     "bench:statement-cache": "tsx benchmark/statement-cache.ts",
     "bench:lock": "tsx benchmark/lock-admission.ts",
+    "bench:pipeline": "tsx benchmark/pipeline-contiguity.ts",
     "build:schema-engine": "tsx scripts/build-schema-engine.ts",
     "prepublishOnly": "pnpm test:unit && pnpm test:gc && pnpm build && pnpm check:exports",
     "prepare": "husky && prisma generate"
