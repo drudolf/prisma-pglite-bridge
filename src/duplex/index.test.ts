@@ -1842,6 +1842,91 @@ describe('PGliteDuplex flush portal boundary', () => {
     await duplex.onClose;
   });
 
+  it('keeps Terminate final when an abandoned-portal recovery fails in flight', async () => {
+    const recoveryFailure = new Error('late recovery failure');
+    let failRecovery!: () => void;
+    const recoveryGate = new Promise<void>((_resolve, reject) => {
+      failRecovery = () => reject(recoveryFailure);
+    });
+    let markRecoveryStarted!: () => void;
+    const recoveryStarted = new Promise<void>((resolve) => {
+      markRecoveryStarted = resolve;
+    });
+
+    let call = 0;
+    const execProtocolRawStream = vi.fn(
+      async (_message: Uint8Array, options: { onRawData: (chunk: Uint8Array) => void }) => {
+        call += 1;
+        if (call === 1) {
+          options.onRawData(RFQ_IDLE_MESSAGE);
+          return;
+        }
+        if (call === 2) {
+          options.onRawData(DATA_ROW_MESSAGE);
+          options.onRawData(PORTAL_SUSPENDED_MESSAGE);
+          return;
+        }
+        markRecoveryStarted();
+        await recoveryGate;
+      },
+    );
+    const duplex = new PGliteDuplex(createMockPGlite({ execProtocolRawStream }), {
+      sessionLock: new SessionLock(),
+    });
+    const emittedErrors: Error[] = [];
+    duplex.on('error', (error) => emittedErrors.push(error));
+    duplex.resume();
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, flushBatch())).resolves.toBeUndefined();
+
+    duplex.releaseAbandonedPortalHold();
+    await recoveryStarted;
+
+    const ended = new Promise<void>((resolve) => duplex.once('end', resolve));
+    const terminateResult = writeAndAwait(duplex, frame(0x58)); // 'X'
+    expect((duplex as unknown as { phase: string }).phase).toBe('terminated');
+
+    // The recovery failure loses the race to Terminate: it must not destroy
+    // the otherwise cleanly terminated stream or surface as a socket error.
+    failRecovery();
+    await expect(terminateResult).resolves.toBeUndefined();
+    await ended;
+    expect(emittedErrors).toEqual([]);
+    expect(duplex.destroyed).toBe(false);
+
+    execProtocolRawStream.mockClear();
+    duplex.releaseAbandonedPortalHold();
+
+    type WritevInternal = (
+      chunks: Array<{ chunk: Buffer; encoding: BufferEncoding }>,
+      callback: (error?: Error | null) => void,
+    ) => void;
+    const rawWritev = (duplex as unknown as { _writev: WritevInternal })._writev.bind(duplex);
+    const callbackErrors: Array<Error | null | undefined> = [];
+    await new Promise<void>((resolve) => {
+      rawWritev(
+        [
+          { chunk: simpleQuery('SELECT batched_tail_1'), encoding: 'utf8' },
+          { chunk: simpleQuery('SELECT batched_tail_2'), encoding: 'utf8' },
+        ],
+        (error) => {
+          callbackErrors.push(error);
+          resolve();
+        },
+      );
+    });
+    await settle();
+
+    // A late pool release and corked tail after Terminate are both inert: no
+    // bytes reach PGlite, and the write batch completes once, successfully.
+    expect(execProtocolRawStream).not.toHaveBeenCalled();
+    expect(callbackErrors.map((error) => error ?? undefined)).toEqual([undefined]);
+
+    duplex.destroy();
+    await duplex.onClose;
+  });
+
   it('never delivers a recovery Sync into a session this duplex no longer owns', async () => {
     // Safety pin on deliverRecoverySync's ownership guard: a suspended-portal
     // flag paired with LOST ownership (constructible only through teardown
