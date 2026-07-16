@@ -710,6 +710,152 @@ describe('PgBridgeClient', () => {
     }
   });
 
+  it('keeps a reentrant toPostgres query tail after the outer query settles', async () => {
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    const outer = Promise.withResolvers<unknown>();
+    const nested = Promise.withResolvers<unknown>();
+    let nestedQuery: Promise<unknown> | undefined;
+    let nestedTail: Promise<void> | undefined;
+
+    try {
+      pg.Client.prototype.query = vi.fn((config: unknown) => {
+        if (typeof config === 'object' && config !== null) {
+          const value = (config as { values: Array<{ toPostgres: () => unknown }> }).values[0];
+          value?.toPostgres();
+          return outer.promise;
+        }
+        return nested.promise;
+      }) as unknown as typeof pg.Client.prototype.query;
+
+      const outerQuery = client.query({
+        text: 'SELECT $1',
+        values: [
+          {
+            toPostgres: () => {
+              nestedQuery = client.query('SELECT nested') as Promise<unknown>;
+              nestedTail = (client as unknown as { querySubmissionChain?: Promise<void> })
+                .querySubmissionChain;
+              return 1;
+            },
+          },
+        ],
+      }) as Promise<unknown>;
+
+      expect(nestedQuery).toBeDefined();
+      expect(nestedTail).toBeDefined();
+      outer.resolve({ command: 'SELECT' });
+      await outerQuery;
+      expect(
+        (client as unknown as { querySubmissionChain?: Promise<void> }).querySubmissionChain,
+      ).toBe(nestedTail);
+    } finally {
+      outer.resolve(undefined);
+      nested.resolve(undefined);
+      await (nestedQuery ?? nested.promise);
+      pg.Client.prototype.query = origQuery;
+    }
+  });
+
+  it('keeps a reentrant warm FastQuery parser query tail after the outer query settles', async () => {
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    const nested = Promise.withResolvers<unknown>();
+    let nestedQuery: Promise<unknown> | undefined;
+    let nestedTail: Promise<void> | undefined;
+    let fastQuery: FastQuery | undefined;
+
+    try {
+      pg.Client.prototype.query = vi.fn((query: unknown) => {
+        if (query instanceof FastQuery) {
+          fastQuery = query;
+          const runtime = query as unknown as {
+            types: {
+              getTypeParser: (oid: number, format?: string) => (value: string) => unknown;
+            };
+            handleReadyForQuery: () => void;
+          };
+          runtime.types.getTypeParser(23, 'text');
+          runtime.handleReadyForQuery();
+          return query;
+        }
+        return nested.promise;
+      }) as unknown as typeof pg.Client.prototype.query;
+
+      const outerQuery = client.query({
+        name: 'reentrant_fast_parser',
+        text: 'SELECT 1',
+        values: [],
+        rowMode: 'array',
+        types: {
+          getTypeParser: () => {
+            nestedQuery = client.query('SELECT nested fast parser') as Promise<unknown>;
+            nestedTail = (client as unknown as { querySubmissionChain?: Promise<void> })
+              .querySubmissionChain;
+            return (value: string) => value;
+          },
+        },
+      }) as Promise<unknown>;
+
+      expect(fastQuery).toBeInstanceOf(FastQuery);
+      expect(nestedQuery).toBeDefined();
+      expect(nestedTail).toBeDefined();
+      await outerQuery;
+      expect(
+        (client as unknown as { querySubmissionChain?: Promise<void> }).querySubmissionChain,
+      ).toBe(nestedTail);
+    } finally {
+      fastQuery?.handleReadyForQuery();
+      nested.resolve(undefined);
+      await (nestedQuery ?? nested.promise);
+      pg.Client.prototype.query = origQuery;
+    }
+  });
+
+  it('clears a fresh reservation after synchronous submission throws', async () => {
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    const expected = new Error('synchronous submission failure');
+    let throwSynchronously = true;
+
+    try {
+      pg.Client.prototype.query = vi.fn(() => {
+        if (throwSynchronously) throw expected;
+        return Promise.resolve({ command: 'SELECT' });
+      }) as unknown as typeof pg.Client.prototype.query;
+
+      await expect(client.query('SELECT sync throw')).rejects.toBe(expected);
+      throwSynchronously = false;
+      await expect(client.query('SELECT successor')).resolves.toEqual({ command: 'SELECT' });
+      expect(
+        (client as unknown as { querySubmissionChain?: Promise<void> }).querySubmissionChain,
+      ).toBeUndefined();
+    } finally {
+      pg.Client.prototype.query = origQuery;
+    }
+  });
+
   it('does not trigger the queue deprecation through Prisma interactive transactions', async () => {
     const { pool, close } = await createBridgePool(pglite);
     const adapter = new PrismaPg(pool);

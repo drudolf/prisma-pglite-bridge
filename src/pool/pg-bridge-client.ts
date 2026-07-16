@@ -515,6 +515,16 @@ export class PgBridgeClient extends pg.Client {
     };
 
     const prior = this.querySubmissionChain;
+    // Synchronous hooks such as toPostgres and a warm getTypeParser can re-enter
+    // before the ordinary tail below is registered. Publish a reservation first;
+    // its identity clear preserves any successor installed by the reentrant call.
+    const reservation = prior === undefined ? Promise.withResolvers<void>() : undefined;
+    if (reservation !== undefined) {
+      const reservationTail = reservation.promise.then(() => {
+        if (this.querySubmissionChain === reservationTail) this.querySubmissionChain = undefined;
+      });
+      this.querySubmissionChain = reservationTail;
+    }
     // Every object form was replaced above by snapshotQueryConfig's fresh,
     // mutable plain record. This is never the caller's object (which may be
     // frozen); only this owned snapshot is suppressed around stock admission.
@@ -578,6 +588,14 @@ export class PgBridgeClient extends pg.Client {
       timeout === undefined
         ? executionPromise
         : Promise.race([executionPromise, timeout.rejection]);
+
+    if (reservation !== undefined) {
+      void executionPromise.then(
+        () => reservation.resolve(),
+        () => reservation.resolve(),
+      );
+      return publicPromise;
+    }
 
     // Register this query's tail on the submission chain; each query clears
     // only its own slot (identity check) so concurrent queries never stomp.
