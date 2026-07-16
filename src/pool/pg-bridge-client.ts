@@ -7,7 +7,7 @@ import { createStatementNameGenerator } from '../utils/statement-names.ts';
 import { decodeStatementCacheInvalidation, type StatementCacheInvalidation } from './deallocate.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 import { FastQuery, type FastQueryField, type FastQueryResult } from './fast-query.ts';
-import { getPgActiveQuery } from './pg-internals.ts';
+import { assertPgInternals, getPgActiveQuery } from './pg-internals.ts';
 import { liveClients } from './session-registry.ts';
 
 export interface PgBridgeClientOptions {
@@ -195,6 +195,11 @@ export class PgBridgeClient extends pg.Client {
     const { [PgBridgeClient.OptionsKey]: bridge, ...clientConfig } = config;
 
     const duplexBox: { current?: PGliteDuplex } = {};
+    const caching = bridge.statementCaching;
+    const features = {
+      fastQueryPath: bridge.fastQueryPath ?? true,
+      statementCaching: Boolean(caching),
+    };
     super({
       ...clientConfig,
       user: 'postgres',
@@ -205,12 +210,18 @@ export class PgBridgeClient extends pg.Client {
         return duplex;
       },
     });
+    try {
+      assertPgInternals(this, features);
+    } catch (error) {
+      /* v8 ignore next -- pg 8.x invokes the supplied stream factory synchronously in super() */
+      duplexBox.current?.destroy();
+      throw error;
+    }
 
     this.#duplexBox = duplexBox;
-    this.#fastQueryPath = bridge.fastQueryPath ?? true;
+    this.#fastQueryPath = features.fastQueryPath;
     this.#pglite = bridge.pglite;
-    const caching = bridge.statementCaching;
-    this.#stmtNameGen = caching
+    this.#stmtNameGen = features.statementCaching
       ? createStatementNameGenerator({
           ...(typeof caching === 'object' ? caching : undefined),
           onEvict: (name) => this.#pendingCloses.push(name),

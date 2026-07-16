@@ -64,6 +64,28 @@ If you see more than one version, force a single supported version
 
 Then `pnpm install`.
 
+## `Unsupported pg internals`
+
+The pool bridge uses a small, centralized set of undocumented `pg` 8.x
+internals. Each pool client validates that set during construction, before it
+is registered or handles a query. If the installed `pg` copy has an
+incompatible shape, construction fails once with a deterministic list of all
+missing members instead of failing later in query or cleanup code.
+
+First check which copies are installed:
+
+```sh
+pnpm why pg
+```
+
+Make sure your application, `prisma-pglite-bridge`, and
+`@prisma/adapter-pg` resolve to one compatible `pg` 8.x installation. Remove
+unnecessary direct pins and run `pnpm dedupe` (or your package manager's
+equivalent), then reinstall. If the error started after a `pg` upgrade even
+with one copy installed, return to the previously working 8.x release and
+report the listed members; the private seam must be revalidated before that
+release can be supported.
+
 ## `cached plan must not change result type`
 
 The bridge caches queries as named prepared statements by default —

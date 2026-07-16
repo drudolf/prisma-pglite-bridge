@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setupPGlite } from '../__tests__/pglite.ts';
+import { PGliteDuplex } from '../duplex/index.ts';
 import { SessionLock } from '../utils/session-lock.ts';
 import { FastQuery } from './fast-query.ts';
 import {
@@ -11,6 +12,7 @@ import {
   PgBridgeClient,
   snapshotQueryConfig,
 } from './pg-bridge-client.ts';
+import { liveClients } from './session-registry.ts';
 
 // One shared PGlite for the whole describe — avoids ~1.3 s cold WASM boots per
 // test. Each test that uses a pool creates its own pg.Pool with its own
@@ -86,6 +88,50 @@ describe('PgBridgeClient', () => {
     expect(() => new PgBridgeClient({} as ConstructorParameters<typeof PgBridgeClient>[0])).toThrow(
       'PgBridgeClient requires bridge options',
     );
+  });
+
+  it.sequential('destroys the stream-factory duplex when the pg-internals assertion fails', async () => {
+    const connectionPrototype = Object.getPrototypeOf(
+      new pg.Client({ host: 'localhost' }).connection,
+    ) as { close?: unknown };
+    const closeDescriptor = Object.getOwnPropertyDescriptor(connectionPrototype, 'close');
+    if (closeDescriptor === undefined) throw new Error('pg Connection.prototype.close is absent');
+
+    const destroySpy = vi.spyOn(PGliteDuplex.prototype, 'destroy');
+    Object.defineProperty(connectionPrototype, 'close', {
+      ...closeDescriptor,
+      value: undefined,
+    });
+    try {
+      expect(
+        () =>
+          new PgBridgeClient({
+            [PgBridgeClient.OptionsKey]: {
+              pglite,
+              bridgeId: Symbol('bridge'),
+              syncToFs: false,
+              statementCaching: true,
+            },
+          }),
+      ).toThrowError(
+        [
+          'Unsupported pg internals: prisma-pglite-bridge relies on undocumented pg 8.x private state.',
+          'Make sure prisma-pglite-bridge and @prisma/adapter-pg use one deduplicated pg 8.x installation.',
+          'Missing or incompatible internals:',
+          '- client.connection.close()',
+        ].join('\n'),
+      );
+
+      expect(destroySpy).toHaveBeenCalledTimes(1);
+      expect(destroySpy).toHaveBeenCalledWith();
+      expect(destroySpy.mock.contexts[0]).toBeInstanceOf(PGliteDuplex);
+      expect(liveClients.has(pglite)).toBe(false);
+    } finally {
+      Object.defineProperty(connectionPrototype, 'close', closeDescriptor);
+      const createdDuplex = destroySpy.mock.contexts[0] as PGliteDuplex | undefined;
+      destroySpy.mockRestore();
+      await createdDuplex?.onClose;
+    }
   });
 
   it('forwards deferred callback-form query failures to the callback', async () => {
