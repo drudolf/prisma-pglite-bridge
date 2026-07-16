@@ -26,9 +26,9 @@ const FAILED = 0x45; // 'E'
 //     execution right); re-entrant for the owner; FIFO queue otherwise.
 //   - updateStatus NEVER assigns ownership: 'I' from the owner releases +
 //     drains; 'T'/'E' never mutate (no steal, no late-response resurrection).
-//   - hold() is DELETED (admission subsumes it) — no rows call it.
-// The acquire-takes and no-steal/no-resurrect rows are RED until the
-// production change lands.
+//   - hold() remains as a deprecated compatibility shim; bridge production
+//     paths have no callers because admission subsumes it.
+// The acquire-takes and no-steal/no-resurrect rows pin the landed behavior.
 
 describe('SessionLock', () => {
   it('acquire on a free lock TAKES ownership', async () => {

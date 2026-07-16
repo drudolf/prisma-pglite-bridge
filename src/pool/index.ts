@@ -366,8 +366,11 @@ export class PgBridgePool extends pg.Pool {
     // its portal-suspension hold on the session lock — other clients would
     // block forever, and the backend keeps the dangling implicit transaction
     // that would otherwise frame the next sibling's ReadyForQuery as `T`.
-    // Manufacture the Sync, then drop the hold. (2) A client released mid-transaction (no
-    // COMMIT/ROLLBACK) keeps the session lock owned and leaks the open
+    // Manufacture and deliver the Sync so pg completes the cursor and drains
+    // its queued tail. An idle RFQ releases the session; `T`/`E` deliberately
+    // retains ownership until a user-queued transaction-control command or
+    // the cleanup ROLLBACK reaches idle. (2) A client released mid-transaction
+    // (no COMMIT/ROLLBACK) keeps the session lock owned and leaks the open
     // transaction into the recycled client's next checkout — roll it back.
     // Only on a plain release: `err != null` makes pg-pool `_remove` the
     // client, whose `_destroy` `rollbackIfInTransaction` already handles it.

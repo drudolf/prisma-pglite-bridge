@@ -1026,23 +1026,21 @@ describe('PgBridgePool — rollback abandoned transaction on release', () => {
     }
   });
 
-  it('does not fire a rollback at a client abandoned mid-cursor (wedged — no warning, pool usable)', async () => {
-    // Pins the wedged-client guard: a client released mid-operation (here, an
-    // open pg-cursor whose Submittable never completes) must NOT enqueue an
-    // undeliverable ROLLBACK. Probe-verified (plan, second amendment): the
-    // forced mid-portal ReadyForQuery reports `I`, so `inTransaction` is
-    // false here and the guard is a redundant second gate for this shape —
-    // it stays for clients released with a real open transaction plus an
-    // in-flight operation, where a chained ROLLBACK could never reach the
-    // wire. The historical dead-WASM spin lived on the SIBLING inheriting
-    // the dangling implicit transaction (see the sibling regression below).
-    // Assert no warning fires and the pool stays usable on a sibling client.
+  it('does not fire a rollback at a client abandoned mid-cursor (recovered — no warning, pool usable)', async () => {
+    // Pins non-transactional cursor recovery: the release hook manufactures
+    // and delivers the terminating Sync, completing the active cursor pg-side
+    // instead of leaving the client wedged or enqueueing a ROLLBACK. The
+    // recovery ReadyForQuery reports `I`, so no transaction cleanup warning or
+    // rollback is needed, and the sibling is unblocked. The generic
+    // active-Submittable guard is
+    // still load-bearing when no suspended portal is recorded: there, a
+    // chained ROLLBACK would remain stuck in pg's queue, and destroy-time
+    // direct rollback remains the backstop.
     const pool = new PgBridgePool({ pglite, max: 2 });
     const { warnings, stop } = captureAbandonWarnings();
     try {
-      // Check out both up front: the abandoned client A itself stays wedged
-      // (pg-side never turns ready), so the assertion is that OTHER clients
-      // are not blocked behind the abandoned portal's hold.
+      // Check out both up front so the assertion proves a distinct sibling is
+      // unblocked after recovery, rather than immediately reusing client A.
       const a = await pool.connect();
       const b = await pool.connect();
       try {
@@ -1050,11 +1048,12 @@ describe('PgBridgePool — rollback abandoned transaction on release', () => {
           new Cursor<{ i: number }>('select i from generate_series(1,6) g(i)'),
         );
         await cursor.read(2);
-        // Plain release WITHOUT closing the cursor — the client is wedged.
+        // Plain release WITHOUT closing the cursor — the release hook delivers
+        // the manufactured Sync and completes the cursor.
         a.release();
         await flushWarnings();
 
-        // The wedged-client guard skips before the warning: none must fire.
+        // The idle recovery RFQ needs no transaction cleanup warning.
         expect(warnings).toHaveLength(0);
 
         // The sibling client can still run a query — the pool is not wedged.
@@ -1071,22 +1070,23 @@ describe('PgBridgePool — rollback abandoned transaction on release', () => {
   });
 
   it('sibling of an abandoned cursor stays clean: no inherited transaction, no spurious warning on its release', async () => {
-    // Fix 1 regression (second amendment): a plain-released client that
-    // abandoned a suspended pg-cursor portal leaves the backend's IMPLICIT
-    // transaction open — its terminating Sync never arrives. Today the next
-    // query from ANY sibling returns ReadyForQuery 'T', the sibling's duplex
-    // records it, and the sibling's perfectly clean release() then fires a
-    // spurious PGliteBridgeAbandonedTransactionWarning plus a release-time
-    // ROLLBACK it never needed. The fix manufactures the terminating Sync at
-    // the ABANDONING client's release, before the session lock is released,
-    // so siblings run on a genuinely idle session.
+    // Pre-fix regression rationale: a plain-released client with a suspended
+    // pg-cursor left the backend's implicit transaction open
+    // because its terminating Sync never arrived. The next sibling therefore
+    // observed ReadyForQuery 'T', recorded the inherited transaction, and
+    // emitted a spurious PGliteBridgeAbandonedTransactionWarning plus an
+    // unnecessary ROLLBACK on its own clean release. The release hook now
+    // manufactures and delivers the terminating Sync; its response completes
+    // the abandoning client's cursor and releases the session on idle, so the
+    // recycled client stays usable and siblings run on a genuinely idle
+    // session.
     const pool = new PgBridgePool({ pglite, max: 2 });
     const { warnings, stop } = captureAbandonWarnings();
     let b: pg.PoolClient | undefined;
     let bReleased = false;
     try {
-      // Check out both up front: the abandoned client A itself stays wedged
-      // (pg-side never turns ready); the fix is about its SIBLINGS.
+      // Check out both up front so this exercises a distinct sibling after
+      // A's cursor is completed by the delivered recovery response.
       const a = await pool.connect();
       b = await pool.connect();
 
@@ -1105,27 +1105,26 @@ describe('PgBridgePool — rollback abandoned transaction on release', () => {
       expect(r).not.toBe('pending');
       expect((r as pg.QueryResult<{ ok: number }>).rows[0]?.ok).toBe(1);
 
-      // KEY DISCRIMINATOR 1 — today this reads `true`: B inherited the
-      // dangling implicit transaction from A's abandoned portal. The
-      // release-time recovery Sync closes it before the lock is released, so
-      // B's ReadyForQuery reports 'I'. (Same pg-internals access precedent as
-      // elsewhere in the suite.)
+      // KEY DISCRIMINATOR 1 — pre-fix this read `true`: B inherited A's
+      // dangling implicit transaction. The release-time recovery Sync now
+      // closes it before the lock is released, so B's ReadyForQuery reports
+      // 'I'. (Same pg-internals access precedent as elsewhere in the suite.)
       const internals = b as unknown as {
         connection: { stream: { inTransaction: boolean } };
       };
       expect(internals.connection.stream.inTransaction).toBe(false);
 
-      // KEY DISCRIMINATOR 2 — today this perfectly clean release fires one
+      // KEY DISCRIMINATOR 2 — pre-fix this perfectly clean release fired one
       // misattributed PGliteBridgeAbandonedTransactionWarning at the innocent
-      // sibling (probe-verified, second amendment). It must stay silent.
+      // sibling. It must stay silent.
       b.release();
       bReleased = true;
       await flushWarnings();
       expect(warnings).toHaveLength(0);
     } finally {
       stop();
-      // Red-phase guard: if a discriminator threw before B's release, return
-      // it so pool.end() does not wait out the checkout.
+      // Failure-path guard: if a discriminator threw before B's release,
+      // return it so pool.end() does not wait out the checkout.
       if (b !== undefined && !bReleased) b.release();
       await endPoolAndClose(pool);
     }

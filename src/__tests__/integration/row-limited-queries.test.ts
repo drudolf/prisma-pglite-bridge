@@ -164,10 +164,9 @@ describe('row-limited queries (portal suspension)', () => {
     timeout: DEADLOCK_GUARD_MS,
   }, async () => {
     await withPool(2, async (pool) => {
-      // Check out B up front: the abandoned client itself stays wedged
-      // (pg-side readyForQuery never turns true — same as real Postgres),
-      // so a later connect() could hand it back. The fix is about OTHER
-      // clients not being blocked behind the abandoned portal's hold.
+      // Check out B up front so the assertion proves a distinct sibling gains
+      // the session after recovery; the delivered response completes A's
+      // cursor pg-side.
       const clientA = await pool.connect();
       const clientB = await pool.connect();
       try {
@@ -177,9 +176,10 @@ describe('row-limited queries (portal suspension)', () => {
         const firstPage = await cursor.read(2);
         expect(firstPage.map((r) => r.i)).toEqual([1, 2]);
 
-        // Abandon: release the client without closing the cursor. No Sync
-        // will ever arrive for the suspended portal — the pool's release
-        // hook must drop the portal hold or B would block forever.
+        // Abandon: release the client without closing the cursor. Pg-cursor
+        // will not send the terminating Sync, so the pool's release hook must
+        // manufacture and deliver it. The idle response completes A's cursor
+        // and releases the session; otherwise B would block forever.
         clientA.release();
 
         const { rows } = await clientB.query('select 41 + 1 as answer');

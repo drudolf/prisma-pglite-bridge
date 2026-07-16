@@ -373,11 +373,17 @@ waits for earlier still-pending queries instead of jumping ahead
 of them. One shared-session caveat: an open cursor holds
 the PGlite session the way an open transaction does — in a
 `max > 1` pool, other clients queue until the cursor is exhausted,
-closed, or its client is released back to the pool. The one shape
-release does NOT recover is a cursor abandoned inside an explicit
-transaction: the transaction's ROLLBACK cannot reach the wire
-behind the suspended portal, so the session stays held until the
-pool closes.
+closed, or its client is released back to the pool. On release, the
+pool recovers an abandoned suspended cursor: the release hook
+manufactures and delivers its terminating Sync, which completes the
+cursor on pg's side and drains work already queued behind it. Outside
+an explicit transaction, the resulting idle ReadyForQuery releases
+the shared session. Inside one, transaction ownership remains until a
+user-queued `COMMIT`/`ROLLBACK` runs or the release cleanup rolls back
+the transaction. A user-queued transaction-control tail runs first and
+wins. The recycled client and queued siblings remain usable. Close
+cursors and finish transactions promptly anyway: recovery repairs a
+caller bug; it is not a normal control-flow pattern.
 
 Releasing a client with an open transaction (no `COMMIT` or
 `ROLLBACK` — a caller bug) emits one
