@@ -175,7 +175,7 @@ export class PgBridgeClient extends pg.Client {
   readonly #fastQueryPath: boolean;
   /** This client's own name generator (client-unique namespace), or
    *  undefined when statement caching is off. */
-  readonly #stmtNameGen?: (query: { sql: string }) => string | undefined;
+  readonly #stmtNameGen?: (sql: string) => string | undefined;
   /** Names evicted by the generator's LRU, awaiting a wire `Close('S')`.
    *  Drained at the next submission point — the Close rides as a prefix of
    *  that query's message train (one PGlite call, zero dedicated round
@@ -506,7 +506,7 @@ export class PgBridgeClient extends pg.Client {
     if (this.#stmtNameGen && isObject(args[0])) {
       const queryConfig = args[0] as Record<string, unknown>;
       if (typeof queryConfig.text === 'string' && queryConfig.name == null) {
-        const name = this.#stmtNameGen({ sql: queryConfig.text });
+        const name = this.#stmtNameGen(queryConfig.text);
         if (name !== undefined) queryConfig.name = name;
       }
     }
@@ -831,7 +831,11 @@ export class PgBridgeClient extends pg.Client {
       // wraps FastQuery for both explicit values and connection defaults,
       // without asking FastQuery to implement early timeout settlement or
       // clearing the execution chain before ReadyForQuery.
-      [config.binary, config.rows, config.portal, config.queryMode, config.callback].some(Boolean)
+      config.binary ||
+      config.rows ||
+      config.portal ||
+      config.queryMode ||
+      config.callback
     ) {
       return undefined;
     }

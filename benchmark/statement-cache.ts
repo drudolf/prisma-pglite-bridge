@@ -25,7 +25,7 @@ const pct = (a: number[], p: number) => {
   return s[Math.max(0, Math.ceil((p / 100) * s.length) - 1)] ?? 0;
 };
 
-type Gen = (q: { sql: string }) => string | undefined;
+type Gen = (sql: string) => string | undefined;
 
 // LRU generator lifted from the parked draft: hits reorder to MRU,
 // inserts past capacity evict the LRU entry (reported via onEvict — the
@@ -34,11 +34,11 @@ type Gen = (q: { sql: string }) => string | undefined;
 const createLruGenerator = (capacity = 500, onEvict?: (name: string) => void): Gen => {
   const names = new Map<string, string>();
   let counter = 0;
-  return (q) => {
-    const cached = names.get(q.sql);
+  return (sql) => {
+    const cached = names.get(sql);
     if (cached !== undefined) {
-      names.delete(q.sql);
-      names.set(q.sql, cached);
+      names.delete(sql);
+      names.set(sql, cached);
       return cached;
     }
     if (names.size >= capacity) {
@@ -52,30 +52,31 @@ const createLruGenerator = (capacity = 500, onEvict?: (name: string) => void): G
       }
     }
     const name = `ppb_lru_${counter++}`;
-    names.set(q.sql, name);
+    names.set(sql, name);
     return name;
   };
 };
 
 // Stateless hash (Prisma's recommended shape), for reference.
-const hashGen: Gen = (q) =>
-  `ppb_${createHash('sha1').update(q.sql).digest('base64url').slice(0, 16)}`;
+const hashGen: Gen = (sql) =>
+  `ppb_${createHash('sha1').update(sql).digest('base64url').slice(0, 16)}`;
 
 // ─── B. generator warm per-call cost ─────────────────────────────────────────
 
 console.log('\n=== B. generator call cost (warm: all shapes cached) ===');
-const shapes = Array.from({ length: 50 }, (_, i) => ({
-  sql: `SELECT * FROM "Job" WHERE "priority" = $1 AND "id" > '${i}' ORDER BY "id" LIMIT 100`,
-}));
+const shapes = Array.from(
+  { length: 50 },
+  (_, i) => `SELECT * FROM "Job" WHERE "priority" = $1 AND "id" > '${i}' ORDER BY "id" LIMIT 100`,
+);
 const M = 500_000;
 for (const [label, gen] of [
   ['gated LRU (shipped)', createStatementNameGenerator() as Gen],
   ['pure LRU (delete+set)', createLruGenerator()],
   ['hash (sha1)', hashGen],
 ] as [string, Gen][]) {
-  for (let i = 0; i < 20_000; i++) gen(shapes[i % shapes.length] as { sql: string });
+  for (let i = 0; i < 20_000; i++) gen(shapes[i % shapes.length] as string);
   const s = now();
-  for (let i = 0; i < M; i++) gen(shapes[i % shapes.length] as { sql: string });
+  for (let i = 0; i < M; i++) gen(shapes[i % shapes.length] as string);
   const ns = ((now() - s) / M) * 1e6;
   console.log(`${label.padEnd(24)} ${ns.toFixed(1)} ns/call`);
 }

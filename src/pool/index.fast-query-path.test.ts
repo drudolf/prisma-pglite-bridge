@@ -741,7 +741,7 @@ describe('PgBridgePool — fastQueryPath', () => {
         try {
           // Stock pg reads `config.query_timeout || connectionParameters
           // .query_timeout`, so 0 is unset when no pool fallback exists.
-          // `.some(Boolean)` keeps this call on the fast path.
+          // Direct truthy disqualifier checks keep this call on the fast path.
           // `query_timeout` is a Client-level option, not a pg QueryConfig
           // field, so the config type rejects it (`as never`) — mirroring the
           // very omission that let the fast path drop it. It is nonetheless the

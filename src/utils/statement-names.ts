@@ -61,30 +61,30 @@ export interface StatementNameGeneratorOptions {
  */
 export const createStatementNameGenerator = (
   options: StatementNameGeneratorOptions = {},
-): ((query: { sql: string }) => string | undefined) => {
+): ((sql: string) => string | undefined) => {
   const { capacity = 500, minUsages = 2, onEvict } = options;
   const namespace = nextNamespace();
   const counts = new Map<string, number>();
   const names = new Map<string, string>();
   let seq = 0;
-  return (query: { sql: string }): string | undefined => {
-    if (!CACHEABLE_SQL.test(query.sql)) return undefined;
+  return (sql: string): string | undefined => {
+    if (!CACHEABLE_SQL.test(sql)) return undefined;
     // Multi-statement strings are rejected by PG's Extended Query Protocol
     // Parse message — only single statements can be named. Skip naming so
     // they fall back to the simple protocol path where they work correctly.
-    if (query.sql.includes(';')) return undefined;
-    const cached = names.get(query.sql);
+    if (sql.includes(';')) return undefined;
+    const cached = names.get(sql);
     if (cached !== undefined) {
       // Delete+set keeps insertion order as recency order — the Map's first
       // key is always the LRU candidate.
-      names.delete(query.sql);
-      names.set(query.sql, cached);
+      names.delete(sql);
+      names.set(sql, cached);
       return cached;
     }
-    const count = (counts.get(query.sql) ?? 0) + 1;
-    counts.delete(query.sql);
+    const count = (counts.get(sql) ?? 0) + 1;
+    counts.delete(sql);
     if (count < minUsages) {
-      counts.set(query.sql, count);
+      counts.set(sql, count);
       if (counts.size > capacity) {
         for (const oldest of counts.keys()) {
           counts.delete(oldest);
@@ -102,7 +102,7 @@ export const createStatementNameGenerator = (
     }
     const name = `ppb_${namespace}_${seq}`;
     seq += 1;
-    names.set(query.sql, name);
+    names.set(sql, name);
     return name;
   };
 };

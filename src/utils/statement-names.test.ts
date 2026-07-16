@@ -22,54 +22,54 @@ describe('createStatementNameGenerator', () => {
     it('returns undefined below the gate and names the second sighting (default minUsages 2)', () => {
       const generate = createStatementNameGenerator();
 
-      expect(generate({ sql: 'SELECT 1' })).toBeUndefined();
+      expect(generate('SELECT 1')).toBeUndefined();
 
-      expect(generate({ sql: 'SELECT 1' })).toMatch(NAME_SHAPE);
+      expect(generate('SELECT 1')).toMatch(NAME_SHAPE);
     });
 
     it('keeps returning the promoted name on every later sighting', () => {
       const generate = createStatementNameGenerator();
 
-      generate({ sql: 'SELECT 1' });
-      const name = generate({ sql: 'SELECT 1' });
+      generate('SELECT 1');
+      const name = generate('SELECT 1');
 
       expect(name).toMatch(NAME_SHAPE);
-      expect(generate({ sql: 'SELECT 1' })).toBe(name);
-      expect(generate({ sql: 'SELECT 1' })).toBe(name);
+      expect(generate('SELECT 1')).toBe(name);
+      expect(generate('SELECT 1')).toBe(name);
     });
 
     it('gates each distinct text separately', () => {
       const generate = createStatementNameGenerator();
 
-      expect(generate({ sql: 'SELECT 1' })).toBeUndefined();
+      expect(generate('SELECT 1')).toBeUndefined();
       // A different text's sighting counts toward its own gate only.
-      expect(generate({ sql: 'SELECT 2' })).toBeUndefined();
-      expect(generate({ sql: 'SELECT 1' })).toMatch(NAME_SHAPE);
-      expect(generate({ sql: 'SELECT 2' })).toMatch(NAME_SHAPE);
+      expect(generate('SELECT 2')).toBeUndefined();
+      expect(generate('SELECT 1')).toMatch(NAME_SHAPE);
+      expect(generate('SELECT 2')).toMatch(NAME_SHAPE);
     });
 
     it('honors a custom minUsages', () => {
       const generate = createStatementNameGenerator({ minUsages: 3 });
 
-      expect(generate({ sql: 'SELECT 1' })).toBeUndefined();
-      expect(generate({ sql: 'SELECT 1' })).toBeUndefined();
-      expect(generate({ sql: 'SELECT 1' })).toMatch(NAME_SHAPE);
+      expect(generate('SELECT 1')).toBeUndefined();
+      expect(generate('SELECT 1')).toBeUndefined();
+      expect(generate('SELECT 1')).toMatch(NAME_SHAPE);
     });
 
     it('drops the admission counter on promotion — an evicted text restarts from zero sightings', () => {
       const generate = createStatementNameGenerator({ capacity: 1 });
 
-      generate({ sql: 'SELECT 1' });
-      expect(generate({ sql: 'SELECT 1' })).toMatch(NAME_SHAPE); // promoted — counter deleted
+      generate('SELECT 1');
+      expect(generate('SELECT 1')).toMatch(NAME_SHAPE); // promoted — counter deleted
 
-      generate({ sql: 'SELECT 2' });
-      expect(generate({ sql: 'SELECT 2' })).toMatch(NAME_SHAPE); // promoted — evicts SELECT 1
+      generate('SELECT 2');
+      expect(generate('SELECT 2')).toMatch(NAME_SHAPE); // promoted — evicts SELECT 1
 
       // If SELECT 1's counter had survived its promotion at minUsages, this
       // first fresh sighting would re-promote immediately. It must pass the
       // full gate again instead.
-      expect(generate({ sql: 'SELECT 1' })).toBeUndefined();
-      expect(generate({ sql: 'SELECT 1' })).toMatch(NAME_SHAPE);
+      expect(generate('SELECT 1')).toBeUndefined();
+      expect(generate('SELECT 1')).toMatch(NAME_SHAPE);
     });
   });
 
@@ -77,9 +77,9 @@ describe('createStatementNameGenerator', () => {
     it('numbers promotions in promotion order within one namespace', () => {
       const generate = createStatementNameGenerator({ minUsages: 1 });
 
-      const first = parts(generate({ sql: 'SELECT 1' }));
-      const second = parts(generate({ sql: 'SELECT 2' }));
-      const third = parts(generate({ sql: 'SELECT 3' }));
+      const first = parts(generate('SELECT 1'));
+      const second = parts(generate('SELECT 2'));
+      const third = parts(generate('SELECT 3'));
 
       // One namespace per generator instance…
       expect(second.namespace).toBe(first.namespace);
@@ -89,16 +89,16 @@ describe('createStatementNameGenerator', () => {
       expect(third.n).toBe(first.n + 2);
 
       // Interleaved hits do not disturb the mapping.
-      expect(parts(generate({ sql: 'SELECT 2' }))).toEqual(second);
-      expect(parts(generate({ sql: 'SELECT 1' }))).toEqual(first);
+      expect(parts(generate('SELECT 2'))).toEqual(second);
+      expect(parts(generate('SELECT 1'))).toEqual(first);
     });
 
     it('never reuses a name — an evicted text re-promotes under a fresh one', () => {
       const generate = createStatementNameGenerator({ capacity: 1, minUsages: 1 });
 
-      const first = generate({ sql: 'SELECT 1' });
-      const second = generate({ sql: 'SELECT 2' }); // evicts SELECT 1
-      const rePromoted = generate({ sql: 'SELECT 1' }); // evicts SELECT 2
+      const first = generate('SELECT 1');
+      const second = generate('SELECT 2'); // evicts SELECT 1
+      const rePromoted = generate('SELECT 1'); // evicts SELECT 2
 
       expect(rePromoted).toMatch(NAME_SHAPE);
       expect(rePromoted).not.toBe(first);
@@ -113,8 +113,8 @@ describe('createStatementNameGenerator', () => {
       const b = createStatementNameGenerator({ minUsages: 1 });
 
       const texts = ['SELECT 1', 'SELECT 2', 'SELECT 3'];
-      const aNames = texts.map((sql) => a({ sql }));
-      const bNames = texts.map((sql) => b({ sql }));
+      const aNames = texts.map((sql) => a(sql));
+      const bNames = texts.map((sql) => b(sql));
 
       for (const name of [...aNames, ...bNames]) expect(name).toMatch(NAME_SHAPE);
       // Same SQL, same promotion position — never the same name: the
@@ -135,19 +135,19 @@ describe('createStatementNameGenerator', () => {
         onEvict: (name) => evicted.push(name),
       });
 
-      const a = generate({ sql: 'SELECT 1' });
-      const b = generate({ sql: 'SELECT 2' });
+      const a = generate('SELECT 1');
+      const b = generate('SELECT 2');
       expect(evicted).toEqual([]);
 
-      generate({ sql: 'SELECT 3' });
+      generate('SELECT 3');
 
       // generate() is synchronous, so the callback must already have run
       // when it returned — no await, no microtask in between.
       expect(evicted).toEqual([a]);
 
       // Hits on the survivors never re-fire the eviction.
-      expect(generate({ sql: 'SELECT 2' })).toBe(b);
-      expect(generate({ sql: 'SELECT 3' })).toMatch(NAME_SHAPE);
+      expect(generate('SELECT 2')).toBe(b);
+      expect(generate('SELECT 3')).toMatch(NAME_SHAPE);
       expect(evicted).toEqual([a]);
     });
 
@@ -159,14 +159,14 @@ describe('createStatementNameGenerator', () => {
         onEvict: (name) => evicted.push(name),
       });
 
-      const a = generate({ sql: 'SELECT 1' });
-      const b = generate({ sql: 'SELECT 2' });
-      generate({ sql: 'SELECT 1' }); // refresh — SELECT 2 is now the LRU entry
+      const a = generate('SELECT 1');
+      const b = generate('SELECT 2');
+      generate('SELECT 1'); // refresh — SELECT 2 is now the LRU entry
 
-      generate({ sql: 'SELECT 3' });
+      generate('SELECT 3');
 
       expect(evicted).toEqual([b]);
-      expect(generate({ sql: 'SELECT 1' })).toBe(a); // survived the eviction
+      expect(generate('SELECT 1')).toBe(a); // survived the eviction
     });
 
     it('honors a custom capacity per instance — a sibling generator is unaffected', () => {
@@ -183,13 +183,13 @@ describe('createStatementNameGenerator', () => {
         onEvict: (name) => evictedB.push(name),
       });
 
-      const a1 = a({ sql: 'SELECT 1' });
-      const b1 = b({ sql: 'SELECT 1' });
-      a({ sql: 'SELECT 2' }); // evicts a's entry only
+      const a1 = a('SELECT 1');
+      const b1 = b('SELECT 1');
+      a('SELECT 2'); // evicts a's entry only
 
       expect(evictedA).toEqual([a1]);
       expect(evictedB).toEqual([]);
-      expect(b({ sql: 'SELECT 1' })).toBe(b1);
+      expect(b('SELECT 1')).toBe(b1);
     });
 
     it('defaults to capacity 500 — the 501st promotion evicts the oldest instead of freezing', () => {
@@ -199,14 +199,14 @@ describe('createStatementNameGenerator', () => {
         onEvict: (name) => evicted.push(name),
       });
 
-      const names = Array.from({ length: 500 }, (_, i) => generate({ sql: `SELECT ${i}` }));
+      const names = Array.from({ length: 500 }, (_, i) => generate(`SELECT ${i}`));
       expect(names.every((name) => typeof name === 'string')).toBe(true);
       expect(new Set(names).size).toBe(500);
       expect(evicted).toEqual([]);
 
       // Past capacity the generator keeps naming — LRU eviction replaced the
       // frozen cap that returned undefined here.
-      const overflow = generate({ sql: 'SELECT 500' });
+      const overflow = generate('SELECT 500');
       expect(overflow).toMatch(NAME_SHAPE);
       expect(evicted).toEqual([names[0]]);
     });
@@ -225,7 +225,7 @@ describe('createStatementNameGenerator', () => {
       // gate — the cache correctly refuses to churn under uniform thrash.
       for (let round = 0; round < 3; round++) {
         for (const sql of ['SELECT 1', 'SELECT 2', 'SELECT 3']) {
-          expect(generate({ sql })).toBeUndefined();
+          expect(generate(sql)).toBeUndefined();
         }
       }
       expect(evicted).toEqual([]);
@@ -234,25 +234,25 @@ describe('createStatementNameGenerator', () => {
     it('a displaced counter restarts — the text needs a full round of fresh sightings to promote', () => {
       const generate = createStatementNameGenerator({ capacity: 2 });
 
-      expect(generate({ sql: 'SELECT 1' })).toBeUndefined(); // counters: 1
-      expect(generate({ sql: 'SELECT 2' })).toBeUndefined(); // counters: 1, 2
-      expect(generate({ sql: 'SELECT 3' })).toBeUndefined(); // displaces SELECT 1's counter
+      expect(generate('SELECT 1')).toBeUndefined(); // counters: 1
+      expect(generate('SELECT 2')).toBeUndefined(); // counters: 1, 2
+      expect(generate('SELECT 3')).toBeUndefined(); // displaces SELECT 1's counter
       // Without the displacement this would be SELECT 1's second sighting
       // and promote; the counter restarted instead.
-      expect(generate({ sql: 'SELECT 1' })).toBeUndefined();
-      expect(generate({ sql: 'SELECT 1' })).toMatch(NAME_SHAPE);
+      expect(generate('SELECT 1')).toBeUndefined();
+      expect(generate('SELECT 1')).toMatch(NAME_SHAPE);
     });
 
     it("a sighting refreshes an admission counter's recency", () => {
       const generate = createStatementNameGenerator({ capacity: 2, minUsages: 3 });
 
-      expect(generate({ sql: 'SELECT 1' })).toBeUndefined(); // 1: one sighting
-      expect(generate({ sql: 'SELECT 2' })).toBeUndefined(); // 2: one sighting
-      expect(generate({ sql: 'SELECT 1' })).toBeUndefined(); // 1: two sightings, refreshed
-      expect(generate({ sql: 'SELECT 3' })).toBeUndefined(); // displaces SELECT 2 (LRU), not 1
+      expect(generate('SELECT 1')).toBeUndefined(); // 1: one sighting
+      expect(generate('SELECT 2')).toBeUndefined(); // 2: one sighting
+      expect(generate('SELECT 1')).toBeUndefined(); // 1: two sightings, refreshed
+      expect(generate('SELECT 3')).toBeUndefined(); // displaces SELECT 2 (LRU), not 1
       // SELECT 1's counter survived the displacement — the third sighting
       // reaches the gate.
-      expect(generate({ sql: 'SELECT 1' })).toMatch(NAME_SHAPE);
+      expect(generate('SELECT 1')).toMatch(NAME_SHAPE);
     });
   });
 
@@ -272,18 +272,18 @@ describe('createStatementNameGenerator', () => {
 
       // Non-DML never enters the admission pipeline — repeat sightings stay
       // unnamed forever; they never accumulate toward the gate.
-      expect(generate({ sql })).toBeUndefined();
-      expect(generate({ sql })).toBeUndefined();
-      expect(generate({ sql })).toBeUndefined();
+      expect(generate(sql)).toBeUndefined();
+      expect(generate(sql)).toBeUndefined();
+      expect(generate(sql)).toBeUndefined();
     });
 
     it('non-cacheable statements consume no promotion numbers', () => {
       const generate = createStatementNameGenerator({ minUsages: 1 });
 
-      const first = parts(generate({ sql: 'SELECT 1' }));
-      generate({ sql: 'CREATE TABLE "X" (id int)' });
-      generate({ sql: 'CREATE TABLE "X" (id int)' });
-      const second = parts(generate({ sql: 'SELECT 2' }));
+      const first = parts(generate('SELECT 1'));
+      generate('CREATE TABLE "X" (id int)');
+      generate('CREATE TABLE "X" (id int)');
+      const second = parts(generate('SELECT 2'));
 
       // The DDL in between advanced neither the admission counters nor the
       // promotion sequence.
@@ -293,7 +293,7 @@ describe('createStatementNameGenerator', () => {
     it('names statements regardless of keyword case and leading whitespace', () => {
       const generate = createStatementNameGenerator({ minUsages: 1 });
 
-      expect(generate({ sql: '  select 1' })).toMatch(NAME_SHAPE);
+      expect(generate('  select 1')).toMatch(NAME_SHAPE);
     });
 
     it.each([
@@ -306,27 +306,23 @@ describe('createStatementNameGenerator', () => {
     ])('names cacheable statement: %s', (sql) => {
       const generate = createStatementNameGenerator({ minUsages: 1 });
 
-      expect(generate({ sql })).toMatch(NAME_SHAPE);
+      expect(generate(sql)).toMatch(NAME_SHAPE);
     });
 
     it('requires the leading keyword to be a whole word', () => {
       const generate = createStatementNameGenerator({ minUsages: 1 });
 
-      expect(generate({ sql: 'selectx' })).toBeUndefined();
+      expect(generate('selectx')).toBeUndefined();
     });
 
     it('returns undefined for multi-statement strings (semicolon guard)', () => {
       const generate = createStatementNameGenerator({ minUsages: 1 });
 
-      expect(
-        generate({ sql: 'INSERT INTO x VALUES (1); INSERT INTO y VALUES (2)' }),
-      ).toBeUndefined();
+      expect(generate('INSERT INTO x VALUES (1); INSERT INTO y VALUES (2)')).toBeUndefined();
       // Repeat sightings never accumulate toward the gate either.
-      expect(
-        generate({ sql: 'INSERT INTO x VALUES (1); INSERT INTO y VALUES (2)' }),
-      ).toBeUndefined();
+      expect(generate('INSERT INTO x VALUES (1); INSERT INTO y VALUES (2)')).toBeUndefined();
       // Single statement without semicolon still gets named.
-      expect(generate({ sql: 'INSERT INTO x VALUES (1)' })).toMatch(NAME_SHAPE);
+      expect(generate('INSERT INTO x VALUES (1)')).toMatch(NAME_SHAPE);
     });
   });
 });
