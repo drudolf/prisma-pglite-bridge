@@ -44,7 +44,7 @@
 import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 
-import { PgBridgePool } from '../pool';
+import { assertPoolMax, PgBridgePool } from '../pool';
 import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
 import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SnapshotManager } from './snapshot-manager.ts';
@@ -222,7 +222,9 @@ export class PGliteBridge {
 
   constructor(options: PGliteBridgeOptions = {}) {
     // Validate before any PGlite is created so a rejected configuration
-    // cannot leak an unclosed WASM instance.
+    // cannot leak an unclosed WASM instance. `?? 1` mirrors the pool
+    // constructor's own destructure default for an omitted max.
+    assertPoolMax(options.max ?? 1);
     const statsLevel = options.statsLevel ?? 'off';
     if (statsLevel !== 'off' && statsLevel !== 'basic' && statsLevel !== 'full') {
       throw new Error(`statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`);

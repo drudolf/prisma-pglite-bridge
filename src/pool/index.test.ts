@@ -75,6 +75,32 @@ describe('PgBridgePool — max default', () => {
       await constructed?.end();
     }
   });
+
+  it.each([
+    0, 1.5, -1,
+  ])('throws the exact TypeError for max: %s — PGliteBridge pins this same message verbatim', async (max) => {
+    // Companion to the regex pin above. The bridge's constructor-ordering
+    // tests (src/pglite-bridge/construction.test.ts) assert this identical
+    // message surfaces from `new PGliteBridge(...)`, so the wording is
+    // load-bearing and pinned exactly here at its source.
+    let constructed: PgBridgePool | undefined;
+    try {
+      let caught: unknown;
+      try {
+        constructed = new PgBridgePool({ pglite, max });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(TypeError);
+      expect((caught as TypeError).message).toBe(
+        `PgBridgePool: max must be a positive integer (got ${String(max)})`,
+      );
+    } finally {
+      // Same red-phase safety as above: never leak a pool that a broken
+      // guard let through.
+      await constructed?.end();
+    }
+  });
 });
 
 describe('PgBridgePool — idleTimeoutMillis default', () => {

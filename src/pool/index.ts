@@ -28,6 +28,21 @@ import { liveClientCounts, livePoolCounts } from './session-registry.ts';
  *  a bounded residual close race beats an `end()` that can hang forever. */
 const TEARDOWN_DRAIN_MS = 10_000;
 
+/** pg-pool expands a falsy max to 10 (`max || 10`) while the SessionLock
+ *  gate reads the raw value — `max: 0` would silently run ten clients with
+ *  no transaction isolation. Reject anything but a positive integer, and do
+ *  it before creating an owned PGlite that nothing would ever close: shared
+ *  with {@link PGliteBridge}, whose constructor must validate before its own
+ *  `new PGlite()` for the same reason (~135 MB eager WASM init that only GC
+ *  reclaims). Not public API — the package entry re-exports named symbols
+ *  only and deliberately omits this.
+ *  @internal */
+export const assertPoolMax = (max: number): void => {
+  if (!Number.isInteger(max) || max < 1) {
+    throw new TypeError(`PgBridgePool: max must be a positive integer (got ${String(max)})`);
+  }
+};
+
 export interface PgBridgePoolOptions
   extends Omit<
     PgBridgeClientOptions,
@@ -290,14 +305,7 @@ export class PgBridgePool extends pg.Pool {
     fastQueryPath,
     statementCaching,
   }: PgBridgePoolOptions & { telemetry?: TelemetrySink } = {}) {
-    // pg-pool expands a falsy max to 10 (`max || 10`) while the SessionLock
-    // gate below reads the raw value — `max: 0` would silently run ten
-    // clients with no transaction isolation. Reject anything but a positive
-    // integer, and do it before creating an owned PGlite that nothing would
-    // ever close.
-    if (!Number.isInteger(max) || max < 1) {
-      throw new TypeError(`PgBridgePool: max must be a positive integer (got ${String(max)})`);
-    }
+    assertPoolMax(max);
     const resolvedPglite = pglite ?? new PGlite();
 
     // A local (not `this.#pendingTeardowns`) so the onTeardownCreated
