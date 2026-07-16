@@ -15,7 +15,12 @@ const nextNamespace = (): number => {
   // index (TS7053), so reading this symbol-keyed slot off it is an honest view
   // of a real runtime shape the type system can't express — not a suppression.
   const holder = globalThis as { [NAMESPACE_SEQ]?: number };
-  const id = holder[NAMESPACE_SEQ] ?? 0;
+  const raw = holder[NAMESPACE_SEQ];
+  // The slot is process-global and writable by ANY same-process code
+  // (Symbol.for registry). A non-counter value would otherwise corrupt every
+  // later namespace (`id + 1` string-concatenates), so reads self-heal to 0
+  // instead of trusting the slot.
+  const id = typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 ? raw : 0;
   holder[NAMESPACE_SEQ] = id + 1;
   return id;
 };
@@ -85,6 +90,9 @@ export const createStatementNameGenerator = (
     counts.delete(sql);
     if (count < minUsages) {
       counts.set(sql, count);
+      // Post-insert prune (vs the names map's pre-insert check below): the
+      // fresh counter must be admitted even at capacity, so the map briefly
+      // holds capacity + 1 before the LRU counter is displaced.
       if (counts.size > capacity) {
         for (const oldest of counts.keys()) {
           counts.delete(oldest);

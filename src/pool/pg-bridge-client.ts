@@ -182,7 +182,10 @@ export const snapshotQueryConfig = (
 export class PgBridgeClient extends pg.Client {
   private querySubmissionChain?: Promise<void>;
   /** Live connection default hidden only while pg's own timer is suppressed;
-   *  synchronous query() re-entry must still inherit the public default. */
+   *  synchronous query() re-entry must still inherit the public default.
+   *  Invariant: undefined outside a single execute()'s try/finally — the
+   *  reservation (immediate path) and the chain's one-at-a-time .then hop
+   *  (deferred path) make overlapping suppression frames impossible. */
   #suppressedConnectionQueryTimeout?: unknown;
   /** Result-field metadata per statement name, mirroring the lifetime of
    *  `connection.parsedStatements`: a recycled client starts both empty. */
@@ -438,6 +441,8 @@ export class PgBridgeClient extends pg.Client {
       // a pool.query(Submittable) — dropping it wedged the pool client forever.
       // (Not submitStock: stock returns the submittable here, not a promise.)
       const admit = (): void => {
+        // `void` discards the returned Submittable only — a synchronous
+        // submit throw still propagates to the recovery paths.
         void (super.query as (...a: unknown[]) => unknown).apply(this, args);
         // Only after a successful admission: a throwing submit takes the
         // recovery paths below and must never arm eviction.
@@ -573,11 +578,10 @@ export class PgBridgeClient extends pg.Client {
     // mutable plain record. This is never the caller's object (which may be
     // frozen); only this owned snapshot is suppressed around stock admission.
     const ownedConfig = isObject(args[0]) ? args[0] : undefined;
-    // pg's public Client type omits this runtime-owned object even though
-    // Client.query reads it for every stock timeout (pg 8.22 client.js:660).
-    const connectionParameters = (
-      this as unknown as { connectionParameters: { query_timeout: unknown } }
-    ).connectionParameters;
+    // Declared in the pg-internals seam and verified at construction: stock
+    // pg reads this object for every query's timeout (pg 8.22 client.js:660)
+    // and the suppression frame below mutates it.
+    const connectionParameters = this.connectionParameters;
     // Sample before execute: submitWithCloses can synchronously re-enter query()
     // only after execute publishes the saved default; deferring this read would
     // lose that call-time inheritance once the queued nested execute runs.
@@ -593,8 +597,10 @@ export class PgBridgeClient extends pg.Client {
       const perQueryTimeout = ownedConfig?.query_timeout;
       if (ownedConfig !== undefined) ownedConfig.query_timeout = 0;
       const connectionTimeout = connectionParameters.query_timeout;
-      // The reservation makes nested managed execution impossible, so one
-      // suppression frame can publish the live default without a stack.
+      // The reservation makes nested managed execution impossible on the
+      // immediate path; on the deferred path execute() runs as the chain's
+      // one-at-a-time .then microtask, after every prior frame unwound.
+      // Either way one suppression frame suffices — no stack.
       this.#suppressedConnectionQueryTimeout = connectionTimeout;
       connectionParameters.query_timeout = 0;
       try {
@@ -830,7 +836,15 @@ export class PgBridgeClient extends pg.Client {
    *  like the plain path's lexical exclusions: an unreadable/undetectable
    *  text or a Submittable exposing neither channel skips silently (the SQL
    *  runs unchanged; only local eviction is skipped — documented in
-   *  PgBridgePoolOptions.statementCaching). */
+   *  PgBridgePoolOptions.statementCaching). A frozen Submittable skips the
+   *  same way, and must be REJECTED UP FRONT, not attempted-and-caught:
+   *  node's once() attaches the listener to the (unfrozen) _events record
+   *  BEFORE its ++_eventsCount write throws, so a caught attempt leaves a
+   *  half-attached listener whose removal detonates inside pg's own
+   *  emit('end') at completion and wedges the connection. Stock pg itself
+   *  completes a frozen Submittable cleanly (its callback assign is guarded
+   *  by `if (!query.callback)`; an emit with no listeners mutates nothing),
+   *  and arming must never throw after a successful admission. */
   #armSubmittableDeallocEviction(submittable: unknown): void {
     let scope: StatementCacheInvalidation | null;
     try {
@@ -841,6 +855,10 @@ export class PgBridgeClient extends pg.Client {
       return;
     }
     if (scope === null) return;
+    // See the frozen-Submittable note in the jsdoc: neither channel can be
+    // armed safely, and a caught once() attempt would plant a half-attached
+    // listener. Skip before touching the object.
+    if (Object.isFrozen(submittable)) return;
 
     let evicted = false;
     const evict = (): void => {
@@ -852,7 +870,7 @@ export class PgBridgeClient extends pg.Client {
     const target = submittable as { callback?: unknown; once?: unknown };
     const original = target.callback;
     if (typeof original === 'function') {
-      target.callback = (err: unknown, res: unknown): void => {
+      const wrapped = (err: unknown, res: unknown): void => {
         // Delegation is unconditional (finally): an eviction failure must
         // never swallow pg-pool's release callback and leak the client.
         try {
@@ -862,13 +880,26 @@ export class PgBridgeClient extends pg.Client {
           (original as (...a: unknown[]) => void).call(submittable, err, res);
         }
       };
+      try {
+        target.callback = wrapped;
+      } catch {
+        // Non-writable slot (defineProperty) on an unfrozen object — the
+        // assignment leaves no partial state; the 'end' arm below may still
+        // evict.
+      }
     }
     if (typeof target.once === 'function') {
-      (target.once as (event: string, listener: () => void) => void).call(
-        submittable,
-        'end',
-        evict,
-      );
+      try {
+        (target.once as (event: string, listener: () => void) => void).call(
+          submittable,
+          'end',
+          evict,
+        );
+      } catch {
+        // A hostile once() override — fail closed, same doctrine as the
+        // detection catch. (The frozen case, where node's own once() throws
+        // half-attached, never reaches here.)
+      }
     }
   }
 

@@ -8,6 +8,7 @@ import { setupPGlite } from '../__tests__/pglite.ts';
 import { PGliteDuplex } from '../duplex/index.ts';
 import { PgBridgePool, type PgBridgePoolOptions } from './index.ts';
 import { PgBridgeClient } from './pg-bridge-client.ts';
+import { livePoolCounts } from './session-registry.ts';
 
 const pglite = await setupPGlite();
 
@@ -779,6 +780,31 @@ describe('PgBridgePool — rollback on forced client release', () => {
       // settling inside PGlite's runExclusive; a direct query serializes
       // behind it before the beforeEach reset runs.
       await pglite.query('SELECT 1');
+    }
+  });
+});
+
+describe('PgBridgePool — #releaseLiveSlot tolerates a missing livePoolCounts entry', () => {
+  it('stores 0 (not NaN) when the livePoolCounts entry is absent before end()', async () => {
+    // Change C: #releaseLiveSlot does `livePoolCounts.get(this.pglite) as number`
+    // then `count - 1`. When the entry is missing, `undefined - 1` is NaN, and
+    // livePoolCounts.set stores NaN forever. The fix is `?? 1` so the floor is 0.
+    const local = new PGlite();
+    await local.waitReady;
+    const pool = new PgBridgePool({ pglite: local });
+    try {
+      // Simulate a missing entry by deleting the slot the constructor just wrote.
+      livePoolCounts.delete(local);
+
+      // pool.end() calls #releaseLiveSlot, which today stores NaN.
+      await pool.end();
+
+      // After the fix: must be 0, not NaN.
+      const stored = livePoolCounts.get(local);
+      expect(stored).toBe(0);
+      expect(Number.isNaN(stored)).toBe(false);
+    } finally {
+      await local.close();
     }
   });
 });

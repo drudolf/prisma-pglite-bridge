@@ -364,6 +364,147 @@ describe('PgBridgeClient — gated statement cache with piggybacked Close', () =
     }
   });
 
+  it('frozen Submittable is admitted without throwing and completes normally — eviction skipped', async () => {
+    // #armSubmittableDeallocEviction assigns to submittable.callback and calls
+    // submittable.once('end', ...). Both operations throw TypeError on a frozen
+    // object (a frozen EventEmitter has read-only _eventsCount) — and once()
+    // cannot even be attempted-and-caught: node attaches the listener before
+    // the throwing count write, and the half-attached listener detonates in
+    // pg's own emit('end') at completion. The bridge therefore skips arming
+    // entirely (Object.isFrozen pre-check); a frozen Submittable is admitted
+    // normally and merely skips local cache eviction.
+    const { pool, close } = await createCachingPool({ capacity: 2, minUsages: 2 });
+    try {
+      const client = await pool.connect();
+      try {
+        // Pre-populate a cached statement name so we can test fail-closed
+        // eviction semantics after the frozen DEALLOCATE completes.
+        const nameA = await promote(client, 'SELECT $1::int AS a');
+
+        // Build a DEALLOCATE ALL Submittable — the trigger path for
+        // #armSubmittableDeallocEviction — give it an own callback, then freeze it.
+        // `callback` is the runtime slot pg itself reads/attaches on
+        // Submittables; @types/pg does not declare it.
+        const deallocQuery = new pg.Query('DEALLOCATE ALL') as pg.Query & {
+          callback?: (err: unknown, res: unknown) => void;
+        };
+        // pg.Pool's pool.query() arm attaches its release callback via the
+        // positional-callback slot after admission; here we go direct on the
+        // client. Attach an own callback so the bridge can find one to wrap.
+        let callbackInvoked = false;
+        deallocQuery.callback = (_err: unknown, _res: unknown): void => {
+          callbackInvoked = true;
+        };
+        const frozen = Object.freeze(deallocQuery);
+
+        // Today this throws TypeError because the bridge tries to write
+        // `frozen.callback = wrapped` (or `frozen.once(...)`) on a frozen object.
+        // After the fix it must NOT throw and must return the submittable.
+        const returned = client.query(frozen as unknown as pg.QueryConfig);
+        // The bridge must return the Submittable itself (pg's synchronous contract).
+        expect(returned).toBe(frozen);
+
+        // Let pg drive the query to completion through a follow-up barrier query.
+        await client.query('SELECT 1');
+
+        // The callback was invoked by pg's own machinery (not the bridge wrapper).
+        expect(callbackInvoked).toBe(true);
+
+        // Fail-closed eviction: the cached name survived because the frozen
+        // Submittable prevented the bridge from wrapping the eviction trigger.
+        // (The DEALLOCATE ALL ran on the server, so nameA is gone server-side,
+        // but the bridge's local cache was NOT cleared — this is the documented
+        // fail-closed behavior for undetectable Submittables.)
+        const serverNames = await listPpb();
+        // Server-side the DEALLOCATE ALL wiped everything.
+        expect(serverNames).not.toContain(nameA);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await close();
+      await pglite.query('SELECT 1');
+    }
+  });
+
+  it('still evicts via the end channel when the callback slot is non-writable', async () => {
+    // Unfrozen object with a defineProperty'd read-only callback: the wrap
+    // assignment throws (caught, no partial state — unlike once(), a failed
+    // assignment leaves nothing behind), so eviction rides the 'end' arm.
+    const { pool, close } = await createCachingPool({ capacity: 2, minUsages: 2 });
+    try {
+      const client = await pool.connect();
+      try {
+        await promote(client, 'SELECT $1::int AS a');
+
+        const deallocQuery = new pg.Query('DEALLOCATE ALL') as pg.Query & {
+          callback?: (err: unknown, res: unknown) => void;
+        };
+        let callbackInvoked = false;
+        Object.defineProperty(deallocQuery, 'callback', {
+          value: (): void => {
+            callbackInvoked = true;
+          },
+          writable: false,
+          configurable: false,
+          enumerable: true,
+        });
+
+        expect(client.query(deallocQuery as unknown as pg.QueryConfig)).toBe(deallocQuery);
+        await client.query('SELECT 1');
+        // The original (never-wrapped) callback still fired via pg itself.
+        expect(callbackInvoked).toBe(true);
+
+        // Eviction fired through 'end': the promoted shape re-Parses cleanly.
+        // A retained stale name would skip Parse and fail its Bind with 26000.
+        const rerun = await client.query({ text: 'SELECT $1::int AS a', values: [1] });
+        expect(rerun.rows).toEqual([{ a: 1 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await close();
+      await pglite.query('SELECT 1');
+    }
+  });
+
+  it('still evicts via the callback channel when once() is hostile', async () => {
+    // Unfrozen object whose own once() throws: the 'end' arm fails closed
+    // (nothing attached), so eviction rides the wrapped callback.
+    const { pool, close } = await createCachingPool({ capacity: 2, minUsages: 2 });
+    try {
+      const client = await pool.connect();
+      try {
+        await promote(client, 'SELECT $1::int AS a');
+
+        const deallocQuery = new pg.Query('DEALLOCATE ALL') as pg.Query & {
+          callback?: (err: unknown, res: unknown) => void;
+        };
+        let callbackInvoked = false;
+        deallocQuery.callback = (_err: unknown, _res: unknown): void => {
+          callbackInvoked = true;
+        };
+        (deallocQuery as unknown as { once: unknown }).once = (): void => {
+          throw new Error('hostile once');
+        };
+
+        expect(client.query(deallocQuery as unknown as pg.QueryConfig)).toBe(deallocQuery);
+        await client.query('SELECT 1');
+        // The wrapped callback delegated to the original.
+        expect(callbackInvoked).toBe(true);
+
+        // Eviction fired through the wrapped callback: the shape re-Parses.
+        const rerun = await client.query({ text: 'SELECT $1::int AS a', values: [1] });
+        expect(rerun.rows).toEqual([{ a: 1 }]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await close();
+      await pglite.query('SELECT 1');
+    }
+  });
+
   it('sends a no-op Close for an evicted name the user already deallocated', async () => {
     const { pool, close } = await createCachingPool({ capacity: 2, minUsages: 2 });
     try {

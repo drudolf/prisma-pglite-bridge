@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createStatementNameGenerator } from './statement-names.ts';
 
@@ -253,6 +253,52 @@ describe('createStatementNameGenerator', () => {
       // SELECT 1's counter survived the displacement — the third sighting
       // reaches the gate.
       expect(generate('SELECT 1')).toMatch(NAME_SHAPE);
+    });
+  });
+
+  describe('namespace sequence self-heal on poisoned globalThis slot', () => {
+    const NAMESPACE_SEQ = Symbol.for('prisma-pglite-bridge.stmt-namespace-seq');
+    // Cast so TypeScript accepts the symbol-keyed write.
+    const holder = globalThis as unknown as Record<symbol, unknown>;
+
+    let savedSlot: unknown;
+    beforeEach(() => {
+      savedSlot = holder[NAMESPACE_SEQ];
+    });
+    afterEach(() => {
+      holder[NAMESPACE_SEQ] = savedSlot;
+    });
+
+    // Helper: drive a cacheable SQL text to promotion (default minUsages = 2).
+    const promoteOne = (sql: string): string => {
+      const gen = createStatementNameGenerator();
+      gen(sql); // first sighting — below gate
+      return gen(sql) as string; // second sighting — promoted
+    };
+
+    it.each([
+      ['string poison', 'evil' as unknown as number],
+      ['negative integer', -5],
+      ['fractional number', 2.5],
+      ['NaN', Number.NaN],
+    ])('treats poisoned slot (%s) as 0 — produces ppb_0_0 and heals the slot to 1', (_label, poison) => {
+      holder[NAMESPACE_SEQ] = poison;
+
+      const name = promoteOne('select 1');
+
+      // Self-heal: namespace must be 0 regardless of the poison value,
+      // and the slot must advance to 1 after the generator is created.
+      expect(name).toBe('ppb_0_0');
+      expect(holder[NAMESPACE_SEQ]).toBe(1);
+    });
+
+    it('valid slot value increments normally — slot 7 produces ppb_7_0 and slot becomes 8', () => {
+      holder[NAMESPACE_SEQ] = 7;
+
+      const name = promoteOne('select 1');
+
+      expect(name).toBe('ppb_7_0');
+      expect(holder[NAMESPACE_SEQ]).toBe(8);
     });
   });
 

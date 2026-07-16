@@ -528,7 +528,10 @@ export class PgBridgePool extends pg.Pool {
    *  synchronously from the first end() (never-connected pool) or from that
    *  call's drainAndClose (pool that held clients). */
   #releaseLiveSlot(): void {
-    const count = livePoolCounts.get(this.pglite) as number;
-    livePoolCounts.set(this.pglite, count - 1);
+    // Defensive floor mirroring the 'remove' listener's client-count
+    // decrement: a missing entry must not poison the counter with NaN for
+    // the instance's lifetime.
+    const count = livePoolCounts.get(this.pglite) ?? 1;
+    livePoolCounts.set(this.pglite, Math.max(0, count - 1));
   }
 }
