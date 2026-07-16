@@ -292,7 +292,7 @@ export class FastQuery implements pg.Submittable {
     }
     this.deferred.resolve({
       rows: this.rows,
-      fields: this.fields,
+      fields: this.fields.map((field) => ({ ...field })),
       rowCount: this.rowCount,
       command: this.command,
       oid: this.oid,

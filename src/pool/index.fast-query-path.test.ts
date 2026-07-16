@@ -50,6 +50,30 @@ describe('PgBridgePool — fastQueryPath', () => {
     }
   });
 
+  it('keeps cold and warm result field metadata independently owned', async () => {
+    const pool = new PgBridgePool({ pglite });
+    try {
+      const client = await pool.connect();
+      try {
+        const first = await client.query(fastShapeQuery());
+        const firstField = first.fields[0];
+        if (firstField === undefined) throw new Error('cold FastQuery returned no fields');
+        first.fields.push(firstField);
+        firstField.name = 'poisoned';
+
+        const second = await client.query(fastShapeQuery());
+
+        expect.soft(second.fields).not.toBe(first.fields);
+        expect.soft(second.fields[0]).not.toBe(firstField);
+        expect(second.fields).toEqual([expect.objectContaining({ name: 'n', dataTypeID: 23 })]);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
   it('describes on every execution when fastQueryPath is disabled', async () => {
     const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
     const pool = new PgBridgePool({ pglite, fastQueryPath: false });
