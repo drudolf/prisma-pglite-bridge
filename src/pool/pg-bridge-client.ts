@@ -693,15 +693,25 @@ export class PgBridgeClient extends pg.Client {
       const reentryFirst = isObject(first)
         ? snapshotQueryConfig(first, valuesOverride, { omit: true })
         : first;
-      // Known deviation: a callback that throws surfaces as an unhandled
-      // rejection here, where stock pg propagates it synchronously from the
-      // connection's message handler (uncaughtException channel). adapter-pg
-      // never uses callback mode.
+      const invokeCallback = (err: unknown, res: unknown): void => {
+        try {
+          cb(err, res);
+        } catch (callbackError) {
+          // Escape the promise reaction so a callback throw uses pg 8.22's
+          // uncaughtException channel instead of becoming an unhandled rejection.
+          /* v8 ignore next 3 — exercised by the subprocess callback-channel probe */
+          process.nextTick(() => {
+            throw callbackError;
+          });
+        }
+      };
       this.query(reentryFirst, ...discovery.retained).then(
-        (res: unknown) => cb(null, res),
-        (err: unknown) => cb(err, undefined),
+        (res: unknown) => invokeCallback(null, res),
+        (err: unknown) => invokeCallback(err, undefined),
       );
     } catch (err) {
+      // Intentionally bypass invokeCallback: snapshot/known-field getter failures
+      // happen during query() dispatch, so callback throws here remain synchronous.
       cb(err, undefined);
     }
     return true;

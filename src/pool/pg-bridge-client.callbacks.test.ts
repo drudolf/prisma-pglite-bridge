@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
@@ -343,5 +345,168 @@ describe('config-embedded callback form', () => {
       const res = positional.calls[0]?.res as pg.QueryResult<{ one: number }>;
       expect(res.rows[0]?.one).toBe(1);
     });
+  });
+});
+
+type CallbackThrowProbe = {
+  implementation: 'stock' | 'bridge';
+  outcome: 'success' | 'error';
+  pgVersion: string;
+  returnedUndefined: boolean;
+  callback: { hasError: boolean; hasResult: boolean };
+  observed: Array<{ channel: 'uncaughtException' | 'unhandledRejection'; message: string }>;
+};
+
+const CALLBACK_THROW_PG_VERSION = '8.22.0';
+const execFileAsync = promisify(execFile);
+const callbackThrowProbe = `
+  import { createRequire } from 'node:module';
+  import pg from 'pg';
+
+  const [implementation, outcome, bridgeClientUrl, sessionLockUrl] = process.argv.slice(1);
+  const pgVersion = createRequire(import.meta.url)('pg/package.json').version;
+  const observed = [];
+  let callbackArgs;
+  let returnedUndefined = false;
+  let close = async () => {};
+  let resolveCallbackReached;
+  const callbackReached = new Promise((resolve) => {
+    resolveCallbackReached = resolve;
+  });
+
+  const message = (reason) => reason instanceof Error ? reason.message : String(reason);
+  process.on('uncaughtException', (reason) => {
+    observed.push({ channel: 'uncaughtException', message: message(reason) });
+  });
+  process.on('unhandledRejection', (reason) => {
+    observed.push({ channel: 'unhandledRejection', message: message(reason) });
+  });
+
+  const callback = (err, res) => {
+    callbackArgs = { hasError: err != null, hasResult: res != null };
+    resolveCallbackReached();
+    throw new Error('callback ' + outcome + ' boom');
+  };
+  const text = outcome === 'success' ? 'SELECT 1 AS one' : 'SELECT nope_column';
+
+  if (implementation === 'stock') {
+    const client = new pg.Client();
+    returnedUndefined = client.query({ text, callback }) === undefined;
+    const query = client._queryQueue[0];
+    setImmediate(() => {
+      if (outcome === 'success') query.handleReadyForQuery({});
+      else query.handleError(new Error('query boom'), {});
+    });
+  } else {
+    const [{ PGlite }, { PgBridgeClient }, { SessionLock }] = await Promise.all([
+      import('@electric-sql/pglite'),
+      import(bridgeClientUrl),
+      import(sessionLockUrl),
+    ]);
+    const pglite = new PGlite();
+    await pglite.waitReady;
+    const pool = new pg.Pool({
+      Client: PgBridgeClient,
+      max: 1,
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('callback-throw-probe'),
+        syncToFs: false,
+      },
+    });
+    const client = await pool.connect();
+    close = async () => {
+      client.release();
+      await pool.end();
+      await pglite.close();
+    };
+    returnedUndefined = client.query({ text, callback }) === undefined;
+  }
+
+  await Promise.race([
+    callbackReached,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('callback probe timed out')), 5_000)),
+  ]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  await close();
+  console.log(JSON.stringify({
+    implementation,
+    outcome,
+    pgVersion,
+    returnedUndefined,
+    callback: callbackArgs,
+    observed,
+  }));
+`;
+
+const runCallbackThrowProbe = async (
+  implementation: CallbackThrowProbe['implementation'],
+  outcome: CallbackThrowProbe['outcome'],
+): Promise<CallbackThrowProbe> => {
+  const bridgeClientUrl = new URL('./pg-bridge-client.ts', import.meta.url).href;
+  const sessionLockUrl = new URL('../utils/session-lock.ts', import.meta.url).href;
+  const { stdout, stderr } = await execFileAsync(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '--eval',
+      callbackThrowProbe,
+      implementation,
+      outcome,
+      bridgeClientUrl,
+      sessionLockUrl,
+    ],
+    { cwd: process.cwd(), encoding: 'utf8', timeout: 15_000 },
+  );
+  try {
+    return JSON.parse(stdout) as CallbackThrowProbe;
+  } catch (cause) {
+    const childDiagnostic = stderr.trim();
+    throw new Error(
+      `Callback throw probe returned invalid JSON${childDiagnostic === '' ? '' : `; child stderr: ${childDiagnostic}`}`,
+      { cause },
+    );
+  }
+};
+
+describe(`callback-throw channel parity with pg@${CALLBACK_THROW_PG_VERSION}`, () => {
+  const outcomes = ['success', 'error'] as const;
+
+  it.each(outcomes)('pins stock pg asynchronous $0-callback throws', async (outcome) => {
+    const stock = await runCallbackThrowProbe('stock', outcome);
+
+    expect(stock).toMatchObject({
+      implementation: 'stock',
+      outcome,
+      pgVersion: CALLBACK_THROW_PG_VERSION,
+      returnedUndefined: true,
+      callback: {
+        hasError: outcome === 'error',
+        hasResult: outcome === 'success',
+      },
+    });
+    expect(stock.observed).toEqual([
+      { channel: 'uncaughtException', message: `callback ${outcome} boom` },
+    ]);
+  });
+
+  it.each(outcomes)('matches stock pg for asynchronous $0-callback throws', async (outcome) => {
+    const [stock, bridge] = await Promise.all([
+      runCallbackThrowProbe('stock', outcome),
+      runCallbackThrowProbe('bridge', outcome),
+    ]);
+
+    expect(bridge).toMatchObject({
+      implementation: 'bridge',
+      outcome,
+      pgVersion: CALLBACK_THROW_PG_VERSION,
+      returnedUndefined: true,
+      callback: stock.callback,
+    });
+    expect(bridge.observed).toEqual(stock.observed);
   });
 });
