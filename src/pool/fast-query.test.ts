@@ -921,17 +921,20 @@ describe('pg seam contract', () => {
   });
 
   it('pg.Client exposes the active-query accessor rollbackAbandonedTransaction reads', () => {
-    // PgBridgeClient.#pgActiveQuery() reads _getActiveQuery() (pg 8.22
-    // lib/client.js), falling back to the _activeQuery field on older 8.x
-    // minors, to skip an undeliverable ROLLBACK on a wedged mid-flight client
-    // (rollbackAbandonedTransaction). A correctness seam: if a pg upgrade
-    // drops both, that guard silently degrades to a no-op — this is the alarm.
+    // PgBridgeClient.#pgActiveQuery() reads the in-flight query to skip an
+    // undeliverable ROLLBACK on a wedged mid-flight client
+    // (rollbackAbandonedTransaction). pg shipped two layouts: pg >= 8.17
+    // exposes _getActiveQuery() (pg 8.22 lib/client.js) — preferred, because
+    // there the activeQuery accessor is deprecated and fires a notice on
+    // every read; pg <= 8.16 had a plain activeQuery field that first
+    // materializes during query processing (absent at construction), with
+    // the own queryQueue array from the constructor as the guard's marker.
+    // The dev pg is >= 8.17, so pin the helper strictly. A correctness seam:
+    // if a pg upgrade drops it, that guard silently degrades to a no-op —
+    // this is the alarm.
     const client = new pg.Client({ host: 'localhost' });
     const internals = client as unknown as { _getActiveQuery?: unknown };
-    expect(
-      typeof internals._getActiveQuery === 'function' || '_activeQuery' in client,
-      '_getActiveQuery() or the _activeQuery field',
-    ).toBe(true);
+    expect(typeof internals._getActiveQuery, 'client._getActiveQuery').toBe('function');
   });
 
   it('an unconnected pg.Client exposes the statement-Close seam', () => {

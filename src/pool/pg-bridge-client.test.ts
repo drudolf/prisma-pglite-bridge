@@ -117,6 +117,7 @@ describe('PgBridgeClient', () => {
         [
           'Unsupported pg internals: prisma-pglite-bridge relies on undocumented pg 8.x private state.',
           'Make sure prisma-pglite-bridge and @prisma/adapter-pg use one deduplicated pg 8.x installation.',
+          'pg 8.16.3 is the oldest verified-compatible release; older 8.x minors may predate these internals.',
           'Missing or incompatible internals:',
           '- client.connection.close()',
         ].join('\n'),

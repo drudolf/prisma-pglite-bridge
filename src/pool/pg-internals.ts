@@ -15,7 +15,8 @@ import pgUtils from 'pg/lib/utils.js';
 /**
  * Augment pg's published types with the internal surface the bridge drives.
  * `@types/pg@8.20.0` (the latest DefinitelyTyped ships; runtime is pg@8.22.0)
- * omits `parsedStatements`, `sendCopyFail`, and `_getActiveQuery`/`_activeQuery`
+ * omits `parsedStatements`, `sendCopyFail`, `_getActiveQuery`, and the legacy
+ * `activeQuery`/`queryQueue` fields
  * outright, and types `parse`/`bind`/`describe`/`execute`/`close` only for the
  * two-arg internal caller — mistyping `binary`/`rows` as strings. These are not
  * pg's public contract at any version; the declarations below assert the real
@@ -40,7 +41,8 @@ declare module 'pg' {
   }
   interface Client {
     _getActiveQuery?(): unknown;
-    _activeQuery?: unknown;
+    activeQuery?: unknown;
+    queryQueue?: unknown;
   }
 }
 
@@ -95,8 +97,14 @@ export const assertPgInternals = (client: pg.Client, features: PgInternalFeature
   const connection = Object(client.connection) as Record<string, unknown>;
   const checks: ReadonlyArray<readonly [compatible: boolean, diagnostic: string]> = [
     [
-      typeof client._getActiveQuery === 'function' || '_activeQuery' in client,
-      'client._getActiveQuery() or client._activeQuery',
+      // pg <= 8.16 has no _getActiveQuery and does not materialize its plain
+      // `activeQuery` field until the first query, so construction-time
+      // detection rides the own `queryQueue` array those releases assign in
+      // the constructor. pg >= 8.17 moved `queryQueue` behind a deprecated
+      // prototype accessor, so Object.hasOwn (never `in`, never a read)
+      // keeps this arm legacy-only and the deprecated getter untouched.
+      typeof client._getActiveQuery === 'function' || Object.hasOwn(client, 'queryQueue'),
+      'client._getActiveQuery() (pg >= 8.17) or an own client.queryQueue (pg <= 8.16)',
     ],
     [
       isExtensiblePropertyRecord(connection.parsedStatements),
@@ -118,21 +126,19 @@ export const assertPgInternals = (client: pg.Client, features: PgInternalFeature
     [
       'Unsupported pg internals: prisma-pglite-bridge relies on undocumented pg 8.x private state.',
       'Make sure prisma-pglite-bridge and @prisma/adapter-pg use one deduplicated pg 8.x installation.',
+      'pg 8.16.3 is the oldest verified-compatible release; older 8.x minors may predate these internals.',
       'Missing or incompatible internals:',
       ...invalid.map((diagnostic) => `- ${diagnostic}`),
     ].join('\n'),
   );
 };
 
-/** pg's in-flight query via the non-deprecated internal accessor: the public
- *  `activeQuery` getter emits a deprecation warning on every read (removed in
- *  pg@9). `_getActiveQuery()` is what that getter delegates to (pg 8.22.0
- *  lib/client.js); the `_activeQuery` field read covers older 8.x minors that
- *  predate the helper. Both are declared on `Client` above; a pg upgrade that
- *  drops them is pinned by the `pg seam contract` test. */
-export const getPgActiveQuery = (client: pg.Client): unknown => {
-  /* v8 ignore next 3 — the field-read arm is for pre-_getActiveQuery pg 8.x minors */
-  return typeof client._getActiveQuery === 'function'
-    ? client._getActiveQuery()
-    : client._activeQuery;
-};
+/** pg's in-flight query via the non-deprecated accessor for each shipped
+ *  layout: pg >= 8.17 exposes `_getActiveQuery()` — what the deprecated
+ *  `activeQuery` getter delegates to; reading that getter would fire pg's
+ *  deprecation notice, so the helper must win when present. pg <= 8.16
+ *  stores the query on a plain `activeQuery` data property (no accessor,
+ *  absent until the first query). Both are declared on `Client` above; a pg
+ *  upgrade that drops the helper is pinned by the `pg seam contract` test. */
+export const getPgActiveQuery = (client: pg.Client): unknown =>
+  typeof client._getActiveQuery === 'function' ? client._getActiveQuery() : client.activeQuery;

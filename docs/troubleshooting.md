@@ -81,10 +81,17 @@ pnpm why pg
 Make sure your application, `prisma-pglite-bridge`, and
 `@prisma/adapter-pg` resolve to one compatible `pg` 8.x installation. Remove
 unnecessary direct pins and run `pnpm dedupe` (or your package manager's
-equivalent), then reinstall. If the error started after a `pg` upgrade even
-with one copy installed, return to the previously working 8.x release and
-report the listed members; the private seam must be revalidated before that
-release can be supported.
+equivalent), then reinstall.
+
+`pg` 8.16.3 is the oldest verified-compatible release: the construction
+check accepts both the `pg` <= 8.16 internal layout (plain `activeQuery`,
+own `queryQueue`) and the >= 8.17 layout (`_getActiveQuery()`). On an older
+8.x minor this error is a version floor, not a duplicate installation —
+upgrade `pg` instead of deduplicating.
+
+If the error started after a `pg` upgrade even with one copy installed,
+return to the previously working 8.x release and report the listed members;
+the private seam must be revalidated before that release can be supported.
 
 ## `cached plan must not change result type`
 

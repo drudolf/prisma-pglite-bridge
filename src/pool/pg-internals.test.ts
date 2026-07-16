@@ -1,10 +1,11 @@
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
-import { assertPgInternals } from './pg-internals.ts';
+import { assertPgInternals, getPgActiveQuery } from './pg-internals.ts';
 
 type Features = { fastQueryPath: boolean; statementCaching: boolean };
 
-const ACTIVE_QUERY = 'client._getActiveQuery() or client._activeQuery';
+const ACTIVE_QUERY =
+  'client._getActiveQuery() (pg >= 8.17) or an own client.queryQueue (pg <= 8.16)';
 const PARSED_STATEMENTS =
   'client.connection.parsedStatements (extensible plain/null-prototype property record)';
 const FAST_QUERY_SEAMS = [
@@ -23,6 +24,7 @@ const seamError = (invalid: readonly string[]): Error =>
     [
       'Unsupported pg internals: prisma-pglite-bridge relies on undocumented pg 8.x private state.',
       'Make sure prisma-pglite-bridge and @prisma/adapter-pg use one deduplicated pg 8.x installation.',
+      'pg 8.16.3 is the oldest verified-compatible release; older 8.x minors may predate these internals.',
       'Missing or incompatible internals:',
       ...invalid.map((item) => `- ${item}`),
     ].join('\n'),
@@ -74,16 +76,48 @@ describe('assertPgInternals', () => {
   });
 
   it.each([
-    ['modern accessor', { _getActiveQuery: method }],
-    ['legacy field', { _activeQuery: null }],
+    ['modern accessor (pg >= 8.17)', { _getActiveQuery: method }],
+    // Construction-accurate pg <= 8.16 client: the constructor initializes an
+    // own queryQueue array, while activeQuery is a plain field that first
+    // materializes during query processing — absent here, like _activeQuery
+    // and _getActiveQuery, which pg <= 8.16 never had.
+    ['own-queryQueue (pg <= 8.16)', { queryQueue: [] }],
   ])('accepts the %s active-query branch', (_name, active) => {
     expect(() => assertPgInternals(clientFixture(active), noFeatures)).not.toThrow();
   });
 
-  it('rejects a client with neither active-query branch', () => {
+  it('rejects a client with neither _getActiveQuery nor an own queryQueue', () => {
     expect(() => assertPgInternals(clientFixture({}), noFeatures)).toThrowError(
       seamError([ACTIVE_QUERY]),
     );
+  });
+
+  it('rejects a bare _activeQuery field without an own queryQueue', () => {
+    // No pg release ever shipped this shape: pg <= 8.16 had no _activeQuery
+    // at all, and pg >= 8.17 pairs it with _getActiveQuery(). Accepting it
+    // was a guard bug, not compatibility.
+    expect(() => assertPgInternals(clientFixture({ _activeQuery: null }), noFeatures)).toThrowError(
+      seamError([ACTIVE_QUERY]),
+    );
+  });
+
+  it('rejects a prototype queryQueue accessor without ever reading it', () => {
+    // pg >= 8.17 moved queryQueue behind a DEPRECATED prototype accessor that
+    // fires a deprecation notice on every read. The guard must check for an
+    // own property (hasOwn), not `in`, and must never touch the accessor —
+    // the throwing getter proves both at once.
+    const deprecatedPrototype = Object.create(Object.prototype, {
+      queryQueue: {
+        get: (): never => {
+          throw new Error('deprecated queryQueue accessor must not be read');
+        },
+      },
+    }) as object;
+    const client = Object.assign(Object.create(deprecatedPrototype) as Record<string, unknown>, {
+      connection: connectionFixture(),
+    }) as unknown as pg.Client;
+
+    expect(() => assertPgInternals(client, noFeatures)).toThrowError(seamError([ACTIVE_QUERY]));
   });
 
   it.each([
@@ -179,5 +213,33 @@ describe('assertPgInternals', () => {
         CLOSE,
       ]),
     );
+  });
+});
+
+describe('getPgActiveQuery', () => {
+  it('returns _getActiveQuery() on pg >= 8.17 without reading the deprecated activeQuery getter', () => {
+    // On pg >= 8.17 the activeQuery accessor fires a deprecation notice on
+    // every read — the throwing getter proves the helper never touches it.
+    const sentinel = { text: 'SELECT 1' };
+    const client = Object.defineProperty({ _getActiveQuery: () => sentinel }, 'activeQuery', {
+      get: (): never => {
+        throw new Error('deprecated activeQuery getter must not be read');
+      },
+    }) as unknown as pg.Client;
+
+    expect(getPgActiveQuery(client)).toBe(sentinel);
+  });
+
+  it('falls back to the plain activeQuery field on pg <= 8.16 once query processing sets it', () => {
+    const sentinel = { text: 'SELECT 1' };
+    const client = { queryQueue: [], activeQuery: sentinel } as unknown as pg.Client;
+
+    expect(getPgActiveQuery(client)).toBe(sentinel);
+  });
+
+  it('returns undefined on a freshly constructed pg <= 8.16 client with no active query yet', () => {
+    const client = { queryQueue: [] } as unknown as pg.Client;
+
+    expect(getPgActiveQuery(client)).toBeUndefined();
   });
 });
