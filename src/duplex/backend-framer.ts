@@ -289,7 +289,31 @@ export class BackendMessageFramer {
     flushPassthrough(offset);
   }
 
+  /**
+   * Finalize an ended backend protocol stream. The stream must end on a
+   * complete frame boundary; this is not a mid-stream drain operation.
+   */
   flush(options?: { dropHeldReadyForQuery?: boolean }): void {
+    if (this.messageType !== undefined) {
+      let expectedBytes = 'at least 5';
+      let receivedBytes = 1 + this.headerBytesRead;
+      if (this.headerBytesRead === 4) {
+        /* c8 ignore start — header bytes all populated before read */
+        const b1 = this.headerScratch[0] ?? 0;
+        const b2 = this.headerScratch[1] ?? 0;
+        const b3 = this.headerScratch[2] ?? 0;
+        const b4 = this.headerScratch[3] ?? 0;
+        /* c8 ignore stop */
+        const messageLength = ((b1 << 24) | (b2 << 16) | (b3 << 8) | b4) >>> 0;
+        const totalBytes = 1 + messageLength;
+        expectedBytes = `${totalBytes}`;
+        receivedBytes = totalBytes - this.payloadBytesRemaining;
+      }
+      throw new Error(
+        `Incomplete backend message: expected ${expectedBytes} bytes, received ${receivedBytes}`,
+      );
+    }
+
     if (options?.dropHeldReadyForQuery === true) {
       this.dropHeldReadyForQuery();
     } else if (this.suppressIntermediateReadyForQuery && this.rfqBytesRead === 6) {

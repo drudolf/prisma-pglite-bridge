@@ -303,6 +303,73 @@ describe('BackendMessageFramer', () => {
     expect(collect(outputs)).toEqual(DATA);
   });
 
+  describe('end-of-stream framing', () => {
+    const completeThenTail = collect([DATA, ERROR, DATA.subarray(0, 6)]);
+    it.each([
+      ...[1, 2, 3, 4].map((received) => ({
+        name: `${received} byte(s) of a frame prefix`,
+        input: DATA.subarray(0, received),
+        expected: 'at least 5',
+        received,
+        emitted: new Uint8Array(0),
+      })),
+      {
+        name: 'a partial payload',
+        input: DATA.subarray(0, 7),
+        expected: DATA.length,
+        received: 7,
+        emitted: DATA.subarray(0, 7),
+      },
+      {
+        name: 'multiple complete frames followed by a truncated tail',
+        input: completeThenTail,
+        expected: DATA.length,
+        received: 6,
+        emitted: completeThenTail,
+      },
+    ])('rejects $name at EOF', ({ input, expected, received, emitted }) => {
+      const { framer, outputs } = makeHarness();
+      framer.write(input);
+
+      expect(() => framer.flush()).toThrow(
+        new RegExp(
+          `Incomplete backend message.*expected ${expected} bytes.*received ${received}`,
+          'i',
+        ),
+      );
+      expect(collect(outputs)).toEqual(emitted);
+    });
+
+    it('accepts exact complete frames across arbitrary chunk sizes', () => {
+      const stream = collect([DATA, RFQ_IDLE, ERROR]);
+
+      for (let chunkSize = 1; chunkSize <= stream.length; chunkSize++) {
+        const { framer, outputs } = makeHarness();
+        for (const chunk of splitEvery(stream, chunkSize)) {
+          framer.write(chunk);
+        }
+
+        expect(() => framer.flush()).not.toThrow();
+        expect(collect(outputs)).toEqual(stream);
+      }
+    });
+
+    it('does not let flush-boundary RFQ dropping mask a truncated ReadyForQuery', () => {
+      const receivedBytes = RFQ_IDLE.length - 1;
+      const { framer, outputs, statuses } = makeHarness(true);
+      framer.write(RFQ_IDLE.subarray(0, receivedBytes));
+
+      expect(() => framer.flush({ dropHeldReadyForQuery: true })).toThrow(
+        new RegExp(
+          `Incomplete backend message.*expected ${RFQ_IDLE.length} bytes.*received ${receivedBytes}`,
+          'i',
+        ),
+      );
+      expect(outputs).toHaveLength(0);
+      expect(statuses).toEqual([]);
+    });
+  });
+
   // RowDescription rewrite — widens "char" (oid 18) → text (oid 25). Required so the
   // official @prisma/adapter-pg can decode pg_catalog system columns (e.g.
   // pg_constraint.contype) during introspection / db push.

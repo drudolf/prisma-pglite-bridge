@@ -1086,6 +1086,58 @@ describe('PGliteDuplex error paths', () => {
     expect(duplex.destroyed).toBe(true);
   });
 
+  it('tears down exactly once when ReadyForQuery is truncated at backend EOF', async () => {
+    const rfqInTransaction = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x54]);
+    const truncatedIdleRfq = RFQ_IDLE_MESSAGE.subarray(0, RFQ_IDLE_MESSAGE.length - 1);
+    let calls = 0;
+    const rollback = vi.fn().mockResolvedValue({ fields: [], rows: [] });
+    const pglite = createMockPGlite({
+      query: rollback,
+      execProtocolRawStream: vi.fn(async (_message, options) => {
+        calls += 1;
+        options.onRawData(calls === 1 ? rfqInTransaction : truncatedIdleRfq);
+      }),
+    });
+    const duplex = new PGliteDuplex(pglite, { protocolCleanupNeeded: false });
+    const emittedErrors: Error[] = [];
+    duplex.on('error', (error) => emittedErrors.push(error));
+    const destroySpy = vi.spyOn(duplex, 'destroy');
+    const destroyImplSpy = vi.spyOn(duplex, '_destroy');
+    let writeCallbackCount = 0;
+    const rawWriteAndAwait = (chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => {
+        duplex._write(chunk, 'utf-8', (err) => {
+          writeCallbackCount += 1;
+          resolve(err ?? undefined);
+        });
+      });
+
+    try {
+      await expect(rawWriteAndAwait(startupBytes())).resolves.toBeUndefined();
+      expect(duplex.inTransaction).toBe(true);
+
+      const err = await rawWriteAndAwait(simpleQuery('SELECT 1'));
+      expect(err).toBeInstanceOf(Error);
+      expect(err?.message).toMatch(/Incomplete backend message.*expected 6 bytes.*received 5/i);
+      await duplex.onClose;
+
+      // The incomplete idle RFQ must not leave the previously observed 'T'
+      // status alive on a reusable bridge. Terminal teardown rolls it back.
+      expect(rollback).toHaveBeenCalledTimes(1);
+      expect(rollback).toHaveBeenCalledWith('ROLLBACK');
+      expect(duplex.inTransaction).toBe(false);
+      expect(writeCallbackCount).toBe(2);
+      expect(destroySpy).toHaveBeenCalledTimes(1);
+      expect(destroySpy).toHaveBeenCalledWith(err);
+      expect(destroyImplSpy).toHaveBeenCalledTimes(1);
+      expect(emittedErrors).toEqual([err]);
+      expect(duplex.destroyed).toBe(true);
+    } finally {
+      if (!duplex.destroyed) duplex.destroy();
+      await duplex.onClose;
+    }
+  });
+
   it('drops onRawData invocations that arrive outside an active protocol call', async () => {
     // PGlite retains the onRawData callback internally after
     // execProtocolRawStream resolves. Once the duplex passes a single
