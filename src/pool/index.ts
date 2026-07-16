@@ -435,11 +435,16 @@ export class PgBridgePool extends pg.Pool {
       // mid-call kills it and spins the event loop (the dead-WASM
       // defect). Wait for every tracked teardown, bounded so a wedged
       // one cannot hang end() forever.
+      let drainTimer: ReturnType<typeof setTimeout>;
       const drained = await Promise.race([
-        Promise.all([...this.#pendingTeardowns].map((t) => t.settled)).then(() => true),
+        Promise.all([...this.#pendingTeardowns].map((t) => t.settled)).then(() => {
+          clearTimeout(drainTimer);
+          return true;
+        }),
         new Promise<boolean>((resolve) => {
           /* v8 ignore next — fires only when a teardown outlives the drain bound */
-          setTimeout(() => resolve(false), TEARDOWN_DRAIN_MS).unref();
+          drainTimer = setTimeout(() => resolve(false), TEARDOWN_DRAIN_MS);
+          drainTimer.unref();
         }),
       ]);
       /* v8 ignore start — defensive drain-bound expiry: every reachable teardown settles (its rollback serializes through runExclusive) */

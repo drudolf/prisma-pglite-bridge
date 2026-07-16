@@ -289,6 +289,26 @@ describe('PgBridgePool — pglite lifecycle', () => {
       await local.close();
     }
   });
+
+  it('end() clears its losing teardown-drain timer after a successful drain', async () => {
+    const realClearTimeout = globalThis.clearTimeout;
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const pool = new PgBridgePool({ pglite });
+
+    try {
+      await pool.end();
+      const drainTimerIndex = setTimeoutSpy.mock.calls.findIndex(([, delay]) => delay === 10_000);
+      expect(drainTimerIndex).toBeGreaterThanOrEqual(0);
+      drainTimer = setTimeoutSpy.mock.results[drainTimerIndex]?.value;
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(drainTimer);
+    } finally {
+      if (drainTimer !== undefined) realClearTimeout(drainTimer);
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+    }
+  });
 });
 
 describe('PgBridgePool — shared-PGlite warning', () => {
