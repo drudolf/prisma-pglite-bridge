@@ -527,22 +527,201 @@ describe('PGliteDuplex error paths', () => {
     duplex.destroy();
   });
 
-  it('releases the session lock and ends the stream on TERMINATE', async () => {
-    const pglite = createMockPGlite();
+  it.each([
+    {
+      name: 'a coalesced simple-query tail',
+      beforeTerminate: undefined,
+      afterTerminate: simpleQuery('SELECT must_not_run'),
+      reenterFromCallback: false,
+    },
+    {
+      name: 'a coalesced CopyDone tail from an active COPY capture',
+      beforeTerminate: simpleQuery('COPY doomed_copy FROM STDIN'),
+      afterTerminate: Buffer.from([0x63, 0x00, 0x00, 0x00, 0x04]),
+      reenterFromCallback: false,
+    },
+    {
+      name: 'a simple query synchronously written by the Terminate callback',
+      beforeTerminate: undefined,
+      afterTerminate: simpleQuery('SELECT callback_must_not_run'),
+      reenterFromCallback: true,
+    },
+  ])('makes TERMINATE final before $name', async (scenario) => {
+    const execProtocolRawStream = vi.fn();
+    const runExclusive = vi.fn(async (fn: () => Promise<unknown>) => fn());
+    const pglite = createMockPGlite({ execProtocolRawStream, runExclusive });
     const lock = new SessionLock();
     const releaseSpy = vi.spyOn(lock, 'release');
     const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
     duplex.on('error', () => {});
+    const received: Buffer[] = [];
+    duplex.on('data', (chunk: Buffer) => received.push(chunk));
+    const ended = new Promise<void>((resolve) => duplex.once('end', resolve));
 
-    await writeAndAwait(duplex, startupBytes());
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    if (scenario.beforeTerminate !== undefined) {
+      await expect(writeAndAwait(duplex, scenario.beforeTerminate)).resolves.toBeUndefined();
+      expect((duplex as unknown as { copyCapture?: unknown }).copyCapture).toBeDefined();
+    }
+
+    // Readable `'data'` delivery is scheduled after the write callback, so
+    // settle it before snapshotting output produced before Terminate.
+    await new Promise((resolve) => setImmediate(resolve));
+    const outputBeforeTerminate = Buffer.concat(received);
+    execProtocolRawStream.mockClear();
+    runExclusive.mockClear();
     releaseSpy.mockClear();
 
     const terminate = Buffer.from([0x58, 0x00, 0x00, 0x00, 0x04]);
-    await writeAndAwait(duplex, terminate);
+    const callbackErrors: Array<Error | null | undefined> = [];
 
-    expect(releaseSpy).toHaveBeenCalled();
+    if (scenario.reenterFromCallback) {
+      type WriteInternal = (
+        chunk: Buffer,
+        encoding: BufferEncoding,
+        callback: (error?: Error | null) => void,
+      ) => void;
+      const rawWrite = (duplex as unknown as { _write: WriteInternal })._write.bind(duplex);
+      await new Promise<void>((resolve) => {
+        rawWrite(terminate, 'utf-8', (terminateError) => {
+          callbackErrors.push(terminateError);
+          rawWrite(scenario.afterTerminate, 'utf-8', (tailError) => {
+            callbackErrors.push(tailError);
+            resolve();
+          });
+        });
+      });
+    } else {
+      callbackErrors.push(
+        await writeAndAwait(duplex, Buffer.concat([terminate, scenario.afterTerminate])),
+      );
+    }
+    await ended;
+
+    expect(execProtocolRawStream).not.toHaveBeenCalled();
+    expect(runExclusive).not.toHaveBeenCalled();
+    expect(releaseSpy).toHaveBeenCalledOnce();
+    expect(callbackErrors.map((error) => error ?? undefined)).toEqual(
+      scenario.reenterFromCallback ? [undefined, undefined] : [undefined],
+    );
+    expect(Buffer.concat(received)).toEqual(outputBeforeTerminate);
+    expect(duplex.readableEnded).toBe(true);
+    if (scenario.beforeTerminate !== undefined) {
+      expect((duplex as unknown as { copyCapture?: unknown }).copyCapture).toBeUndefined();
+    }
 
     duplex.destroy();
+  });
+
+  it('rolls back an open transaction before TERMINATE releases the lock or emits EOF', async () => {
+    const rfqInTransaction = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x54]);
+    let protocolCall = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      protocolCall += 1;
+      options.onRawData(protocolCall === 1 ? RFQ_IDLE_MESSAGE : rfqInTransaction);
+    });
+
+    let finishRollback!: () => void;
+    const rollbackGate = new Promise<void>((resolve) => {
+      finishRollback = resolve;
+    });
+    let markRollbackStarted!: () => void;
+    const rollbackStarted = new Promise<void>((resolve) => {
+      markRollbackStarted = resolve;
+    });
+    const events: string[] = [];
+    const query = vi.fn(async (sql: string) => {
+      expect(sql).toBe('ROLLBACK');
+      events.push('rollback:start');
+      markRollbackStarted();
+      await rollbackGate;
+      events.push('rollback:finish');
+    });
+
+    const pglite = createMockPGlite({ execProtocolRawStream, query });
+    const lock = new SessionLock();
+    const originalRelease = lock.release.bind(lock);
+    const releaseSpy = vi.spyOn(lock, 'release').mockImplementation((id) => {
+      events.push('release');
+      return originalRelease(id);
+    });
+    const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
+    duplex.on('error', () => {});
+    duplex.resume();
+    const ended = new Promise<void>((resolve) => {
+      duplex.once('end', () => {
+        events.push('eof');
+        resolve();
+      });
+    });
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, simpleQuery('BEGIN'))).resolves.toBeUndefined();
+    expect(duplex.inTransaction).toBe(true);
+
+    let terminateSettled = false;
+    const terminate = Buffer.from([0x58, 0x00, 0x00, 0x00, 0x04]);
+    const terminateWrite = writeAndAwait(duplex, terminate).then((error) => {
+      terminateSettled = true;
+      return error;
+    });
+    await rollbackStarted;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(query).toHaveBeenCalledOnce();
+    expect(releaseSpy).not.toHaveBeenCalled();
+    expect(terminateSettled).toBe(false);
+    expect(events).toEqual(['rollback:start']);
+
+    finishRollback();
+    await expect(terminateWrite).resolves.toBeUndefined();
+    await ended;
+
+    expect(releaseSpy).toHaveBeenCalledOnce();
+    expect(events.indexOf('rollback:finish')).toBeLessThan(events.indexOf('release'));
+    expect(events.indexOf('rollback:finish')).toBeLessThan(events.indexOf('eof'));
+    expect(duplex.readableEnded).toBe(true);
+
+    duplex.destroy();
+  });
+
+  it('still releases the lock and emits EOF when the TERMINATE ROLLBACK query rejects', async () => {
+    const rfqInTransaction = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x54]);
+    let protocolCall = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      protocolCall += 1;
+      options.onRawData(protocolCall === 1 ? RFQ_IDLE_MESSAGE : rfqInTransaction);
+    });
+    const rollbackError = new Error('rollback rejected');
+    const query = vi.fn().mockRejectedValue(rollbackError);
+    const pglite = createMockPGlite({ execProtocolRawStream, query });
+    const lock = new SessionLock();
+    const releaseSpy = vi.spyOn(lock, 'release');
+    const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
+    const emittedErrors: Error[] = [];
+    duplex.on('error', (error) => emittedErrors.push(error));
+    duplex.resume();
+    const ended = new Promise<void>((resolve) => duplex.once('end', resolve));
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, simpleQuery('BEGIN'))).resolves.toBeUndefined();
+    expect(duplex.inTransaction).toBe(true);
+    releaseSpy.mockClear();
+
+    const terminate = Buffer.from([0x58, 0x00, 0x00, 0x00, 0x04]);
+    await expect(writeAndAwait(duplex, terminate)).resolves.toBeUndefined();
+    await ended;
+    const finished = new Promise<void>((resolve) => duplex.once('finish', resolve));
+    duplex.end();
+    await finished;
+    await duplex.onClose;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(query).toHaveBeenCalledOnce();
+    expect(query).toHaveBeenCalledWith('ROLLBACK');
+    expect(releaseSpy).toHaveBeenCalledOnce();
+    expect(duplex.readableEnded).toBe(true);
+    expect(emittedErrors).toEqual([]);
   });
 
   it('wraps a non-Error throw into an Error when runExclusive rejects', async () => {

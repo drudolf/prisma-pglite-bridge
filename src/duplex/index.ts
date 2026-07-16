@@ -172,7 +172,7 @@ export class PGliteDuplex extends Duplex {
   private readonly duplexId: symbol;
   /** Incoming bytes framed directly from a queued chunk buffer */
   private readonly input = new FrontendMessageBuffer();
-  private phase: 'pre_startup' | 'ready' = 'pre_startup';
+  private phase: 'pre_startup' | 'ready' | 'terminated' = 'pre_startup';
   private draining = false;
   private tornDown = false;
   /** Callbacks waiting for drain to process their data */
@@ -274,8 +274,8 @@ export class PGliteDuplex extends Duplex {
     this.framer = new BackendMessageFramer({
       rewriteSystemCatalogCharOids: this.rewriteSystemCatalogCharOids,
       onChunk: (chunk) => {
-        /* c8 ignore next — race-only: tornDown becomes true mid-stream */
-        if (!this.tornDown && chunk.length > 0) {
+        /* c8 ignore next — race-only: teardown/Terminate during a recovery stream */
+        if (!this.tornDown && this.phase !== 'terminated' && chunk.length > 0) {
           this.push(chunk);
         }
       },
@@ -289,7 +289,7 @@ export class PGliteDuplex extends Duplex {
         // previously suspended portal chain has ended (terminating Sync
         // response, or the RFQ PGlite appends to an error).
         this.portalSuspended = false;
-        if (this.sessionLock) {
+        if (this.sessionLock && this.phase !== 'terminated') {
           this.sessionLock.updateStatus(this.duplexId, status);
         }
       },
@@ -342,6 +342,10 @@ export class PGliteDuplex extends Duplex {
     _encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
+    if (this.phase === 'terminated') {
+      callback();
+      return;
+    }
     this.input.push(chunk);
     this.enqueue(callback);
   }
@@ -351,6 +355,10 @@ export class PGliteDuplex extends Duplex {
     chunks: Array<{ chunk: Buffer; encoding: BufferEncoding }>,
     callback: (error?: Error | null) => void,
   ): void {
+    if (this.phase === 'terminated') {
+      callback();
+      return;
+    }
     for (const { chunk } of chunks) {
       this.input.push(chunk);
     }
@@ -367,8 +375,12 @@ export class PGliteDuplex extends Duplex {
       .catch(() => {})
       /* v8 ignore stop */
       .then(() => {
-        this.sessionLock?.release(this.duplexId);
-        this.push(null);
+        // Terminate owns its already-completed release/EOF sequence. A later
+        // writable finalization must not repeat either side effect.
+        if (this.phase !== 'terminated') {
+          this.sessionLock?.release(this.duplexId);
+          this.push(null);
+        }
         callback();
       });
   }
@@ -539,7 +551,7 @@ export class PGliteDuplex extends Duplex {
     await waitPGliteReady(this.pglite, this.timeout);
 
     await this.pglite.runExclusive(async () => {
-      if (this.tornDown) return;
+      if (this.tornDown || this.phase === 'terminated') return;
       const opPromise = op();
       this.currentPGliteCall = opPromise;
       try {
@@ -597,6 +609,20 @@ export class PGliteDuplex extends Duplex {
       const msgType = message[0] ?? 0;
 
       if (msgType === TERMINATE) {
+        // Classification of a complete Terminate frame is the terminal
+        // boundary. Establish it before any await or callback so coalesced
+        // bytes and synchronous callback re-entry can never reach PGlite.
+        this.phase = 'terminated';
+        this.input.clear(); // Discard any post-Terminate tail coalesced in the input buffer.
+        this.pipeline.length = 0;
+        this.copyCapture = undefined;
+        this.portalSuspended = false;
+        // Clear only the pending request; an active recovery operation owns
+        // portalRecoveryInFlight until its own finally settles it.
+        this.portalRecoveryRequested = false;
+        // rollbackIfInTransaction delegates to runRollback, which swallows the
+        // in-flight call failure and rejected ROLLBACK query, so this best-effort
+        // await cannot skip release/EOF.
         await this.rollbackIfInTransaction();
         this.sessionLock?.release(this.duplexId);
         this.push(null);
@@ -1014,6 +1040,7 @@ export class PGliteDuplex extends Duplex {
    * delivery.
    */
   releaseAbandonedPortalHold(): void {
+    if (this.phase === 'terminated') return;
     // Only a genuinely suspended portal gets the manufactured Sync: the flag
     // is load-bearing under admission-acquired ownership, where isOwner
     // alone is also true while an ordinary operation is merely in flight (an
@@ -1043,7 +1070,7 @@ export class PGliteDuplex extends Duplex {
    *  ownership are enforced HERE, locally, so every caller — present and
    *  future — inherits them. */
   private deliverRecoverySync(): void {
-    if (this.portalRecoveryInFlight) return;
+    if (this.phase === 'terminated' || this.portalRecoveryInFlight) return;
     if (this.sessionLock !== undefined && !this.sessionLock.isOwner(this.duplexId)) {
       // Ownership was lost out-of-band (teardown races): the portal is no
       // longer ours to recover. Clear the suspension so downstream readers
@@ -1057,7 +1084,9 @@ export class PGliteDuplex extends Duplex {
       await this.streamProtocol(SYNC_MESSAGE, 'passthrough');
     })
       .catch((err: unknown) => {
-        this.destroy(err instanceof Error ? err : new Error(String(err)));
+        if (this.phase !== 'terminated') {
+          this.destroy(err instanceof Error ? err : new Error(String(err)));
+        }
       })
       .finally(() => {
         this.portalRecoveryInFlight = false;
