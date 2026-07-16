@@ -6,6 +6,12 @@ import type { PgBridgeClient } from './pg-bridge-client.ts';
  * cross-client behavior on that session — so they live together in one owner
  * rather than split across the pool and client modules. Keying off the PGlite
  * instance (a `WeakMap`) lets the entries be collected with the instance.
+ *
+ * Three structures rather than one count + set because they track different
+ * lifecycles: pools (constructor → end()), connected clients ('connect' →
+ * 'remove'), and constructed clients (constructor → 'end'). A client that
+ * errors before 'connect' — or dies without a graceful 'remove' — exists in
+ * `liveClients` but never counted in `liveClientCounts`.
  */
 
 /** Live pools per PGlite instance. Drives the PGliteBridgeSharedInstanceWarning. */
