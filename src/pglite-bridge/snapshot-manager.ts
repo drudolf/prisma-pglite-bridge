@@ -1,4 +1,5 @@
 import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
+import { PgBridgeError } from '../errors.ts';
 import { quoteIdent } from '../utils/quote-ident.ts';
 
 const SNAPSHOT_SCHEMA = '_pglite_snapshot';
@@ -270,12 +271,14 @@ export class SnapshotManager {
     return rows.map(
       ({ snap_name_ident, qualified, table_exists, cols, needs_overriding, missing_cols }) => {
         if (!table_exists) {
-          throw new Error(
+          throw new PgBridgeError(
+            'SNAPSHOT_INVALID',
             `Snapshot source table ${qualified} no longer exists — the schema changed since snapshotDb(); re-run snapshotDb() after schema changes`,
           );
         }
         if (missing_cols !== null) {
-          throw new Error(
+          throw new PgBridgeError(
+            'SNAPSHOT_INVALID',
             `Snapshot columns ${missing_cols} of ${qualified} no longer exist — the schema changed since snapshotDb(); re-run snapshotDb() after schema changes`,
           );
         }

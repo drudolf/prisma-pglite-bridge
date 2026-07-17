@@ -6,6 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
 import { createMockPGlite } from '../__tests__/mocks.ts';
+import { PgBridgeError } from '../errors.ts';
 import type { PgBridgePool } from '../pool';
 import { PgBridgeClient } from '../pool/pg-bridge-client.ts';
 import { pushMigrations } from '../schema/migrations.ts';
@@ -720,5 +721,59 @@ describe('PGliteBridge — mocked pg.Pool', () => {
     expect(options?.statementNameGenerator).toBeUndefined();
 
     await created.close();
+  });
+});
+
+// ————— Tier A site pins: pglite-bridge/index.ts —————
+
+// Site :230 — INVALID_STATS_LEVEL
+describe('PGliteBridge constructor Tier A site pin — INVALID_STATS_LEVEL', () => {
+  it('throws PgBridgeError instanceof Error for an invalid statsLevel', () => {
+    let caught: unknown;
+    try {
+      new PGliteBridge({ statsLevel: 'invalid' as 'basic' });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PgBridgeError).code).toBe('INVALID_STATS_LEVEL');
+    expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+    expect((caught as PgBridgeError).message).toBe(
+      `statsLevel must be 'off', 'basic', or 'full'; got invalid`,
+    );
+  });
+});
+
+// Site :336 — POOL_NOT_IDLE
+describe('PGliteBridge idle guard Tier A site pin — POOL_NOT_IDLE', () => {
+  it('throws PgBridgeError instanceof Error when resetDb is called while the pool is busy', async () => {
+    // Own a fresh bridge: this describe sits outside the shared-fixture
+    // lifecycle, so the outer bridge's PGlite is already closed here.
+    const localBridge = new PGliteBridge();
+    const pool = bridgePool(localBridge);
+
+    // Occupy the pool so the idle guard fires.
+    await pool.query('SELECT 1');
+    const floating = pool.query('SELECT pg_sleep(0.1)').catch(() => undefined);
+
+    let caught: unknown;
+    try {
+      await localBridge.resetDb();
+    } catch (e) {
+      caught = e;
+    } finally {
+      await floating;
+      await localBridge.close();
+    }
+
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PgBridgeError).code).toBe('POOL_NOT_IDLE');
+    expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+    // Message must contain the core constraint phrase (method name + busy count vary)
+    expect((caught as PgBridgeError).message).toContain(
+      'requires no in-flight or waiting pool checkouts',
+    );
   });
 });

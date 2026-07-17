@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockPGlite } from '../__tests__/mocks.ts';
 import { setupPGlite } from '../__tests__/pglite.ts';
+import { PgBridgeError } from '../errors.ts';
 import { PGliteServer, type PGliteServerOptions } from './index.ts';
 
 // One shared PGlite for the ~19 tests that only need a caller-supplied instance
@@ -724,5 +725,57 @@ describe('PGliteServer', () => {
       await expect(server.close()).resolves.toBeUndefined();
       await expect(pending).rejects.toThrow(/EADDRINUSE/);
     });
+  });
+});
+
+// ————— Tier A site pins: pglite-server/index.ts —————
+
+// Site :145 — SERVER_CLOSED
+describe('PGliteServer.listen() Tier A site pin — SERVER_CLOSED', () => {
+  it('rejects with PgBridgeError instanceof Error when listen() is called after close()', async () => {
+    const pglite = new PGlite();
+    await pglite.waitReady;
+    const server = new PGliteServer({ pglite });
+    await server.listen();
+    await server.close();
+    await pglite.close();
+
+    let caught: unknown;
+    try {
+      await server.listen();
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PgBridgeError).code).toBe('SERVER_CLOSED');
+    expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+    expect((caught as PgBridgeError).message).toBe(
+      'PGliteServer is closed — create a new instance to listen again.',
+    );
+  });
+});
+
+// Site :149 — SERVER_PGLITE_CLOSED
+describe('PGliteServer.listen() Tier A site pin — SERVER_PGLITE_CLOSED', () => {
+  it('rejects with PgBridgeError instanceof Error when the supplied PGlite is closed', async () => {
+    const closed = createMockPGlite({ closed: true });
+    const server = new PGliteServer({ pglite: closed });
+
+    let caught: unknown;
+    try {
+      await server.listen();
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PgBridgeError).code).toBe('SERVER_PGLITE_CLOSED');
+    expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+    expect((caught as PgBridgeError).message).toBe(
+      'PGliteServer requires an open PGlite instance; got a closed one.',
+    );
   });
 });

@@ -38,6 +38,7 @@ import nodePath from 'node:path';
 import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 
 import { PGliteDuplex } from '../duplex';
+import { PgBridgeError } from '../errors.ts';
 import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SessionLock } from '../utils/session-lock.ts';
 
@@ -140,13 +141,24 @@ export class PGliteServer {
     });
   }
 
+  /**
+   * @throws {PgBridgeError} `SERVER_CLOSED` after `close()` (create a new
+   *   instance to listen again); `SERVER_PGLITE_CLOSED` when the provided
+   *   PGlite instance is already closed.
+   */
   listen = async (): Promise<string> => {
     if (this.#closing) {
-      throw new Error('PGliteServer is closed — create a new instance to listen again.');
+      throw new PgBridgeError(
+        'SERVER_CLOSED',
+        'PGliteServer is closed — create a new instance to listen again.',
+      );
     }
     if (this.#listening) return this.#listening;
     if (this.pglite.closed) {
-      throw new Error('PGliteServer requires an open PGlite instance; got a closed one.');
+      throw new PgBridgeError(
+        'SERVER_PGLITE_CLOSED',
+        'PGliteServer requires an open PGlite instance; got a closed one.',
+      );
     }
 
     const attempt = new Promise<string>((resolve, reject) => {

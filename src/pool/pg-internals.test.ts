@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
+import { PgBridgeError } from '../errors.ts';
 import { assertPgInternals, getPgActiveQuery } from './pg-internals.ts';
 
 type Features = { fastQueryPath: boolean; statementCaching: boolean };
@@ -20,8 +21,9 @@ const FAST_QUERY_SEAMS = [
 const CLOSE = 'client.connection.close()';
 const CONNECTION_PARAMETERS = 'client.connectionParameters (object with an own query_timeout)';
 
-const seamError = (invalid: readonly string[]): Error =>
-  new Error(
+const seamError = (invalid: readonly string[]): PgBridgeError =>
+  new PgBridgeError(
+    'UNSUPPORTED_PG_INTERNALS',
     [
       'Unsupported pg internals: prisma-pglite-bridge relies on undocumented pg 8.x private state.',
       'Make sure prisma-pglite-bridge and @prisma/adapter-pg use one deduplicated pg 8.x installation.',
@@ -286,5 +288,45 @@ describe('getPgActiveQuery', () => {
     const client = { queryQueue: [] } as unknown as pg.Client;
 
     expect(getPgActiveQuery(client)).toBeUndefined();
+  });
+});
+
+// ————— Tier A site pin: pool/pg-internals.ts:138 — UNSUPPORTED_PG_INTERNALS —————
+// After implementation: assertPgInternals must throw PgBridgeError with
+// code UNSUPPORTED_PG_INTERNALS and the exact current message text.
+describe('assertPgInternals Tier A site pin (PgBridgeError)', () => {
+  it('throws PgBridgeError (instanceof Error) when pg internals are incompatible', () => {
+    // A client with neither _getActiveQuery nor own queryQueue triggers the throw.
+    const client = {
+      _getActiveQuery: undefined,
+      connection: {
+        parsedStatements: {},
+        stream: {},
+        parse: () => {},
+        bind: () => {},
+        describe: () => {},
+        execute: () => {},
+        sync: () => {},
+        sendCopyFail: () => {},
+        close: () => {},
+      },
+      connectionParameters: { query_timeout: false },
+    } as unknown as pg.Client;
+
+    let caught: unknown;
+    try {
+      assertPgInternals(client, { fastQueryPath: false, statementCaching: false });
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PgBridgeError).code).toBe('UNSUPPORTED_PG_INTERNALS');
+    expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+    // Message must start with the first line of the multi-line message
+    expect((caught as PgBridgeError).message).toContain(
+      'Unsupported pg internals: prisma-pglite-bridge relies on undocumented pg 8.x private state.',
+    );
   });
 });

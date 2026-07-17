@@ -36,6 +36,7 @@ const TEARDOWN_DRAIN_MS = 10_000;
  *  `new PGlite()` for the same reason (~135 MB eager WASM init that only GC
  *  reclaims). Not public API — the package entry re-exports named symbols
  *  only and deliberately omits this.
+ *  @throws {TypeError} when `max` is not a positive integer.
  *  @internal */
 export const assertPoolMax = (max: number): void => {
   if (!Number.isInteger(max) || max < 1) {
@@ -292,6 +293,7 @@ export class PgBridgePool extends pg.Pool {
    *  gap cannot escape the barrier. */
   readonly #pendingTeardowns: Set<DuplexTeardown>;
 
+  /** @throws {TypeError} when `max` is not a positive integer. */
   constructor({
     bridgeId = Symbol('bridge'),
     max = 1,

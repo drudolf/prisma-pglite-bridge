@@ -44,6 +44,7 @@
 import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 
+import { PgBridgeError } from '../errors.ts';
 import { assertPoolMax, PgBridgePool } from '../pool';
 import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
 import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
@@ -220,6 +221,12 @@ export class PGliteBridge {
   readonly #ownsPglite: boolean;
   #closing: Promise<void> | undefined;
 
+  /**
+   * @throws {TypeError} when `max` is not a positive integer (validated
+   *   before the owned PGlite is created).
+   * @throws {PgBridgeError} `INVALID_STATS_LEVEL` for an unrecognized
+   *   `statsLevel`.
+   */
   constructor(options: PGliteBridgeOptions = {}) {
     // Validate before any PGlite is created so a rejected configuration
     // cannot leak an unclosed WASM instance. `?? 1` mirrors the pool
@@ -227,7 +234,10 @@ export class PGliteBridge {
     assertPoolMax(options.max ?? 1);
     const statsLevel = options.statsLevel ?? 'off';
     if (statsLevel !== 'off' && statsLevel !== 'basic' && statsLevel !== 'full') {
-      throw new Error(`statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`);
+      throw new PgBridgeError(
+        'INVALID_STATS_LEVEL',
+        `statsLevel must be 'off', 'basic', or 'full'; got ${String(statsLevel)}`,
+      );
     }
 
     const preparedStatements = options.preparedStatements ?? true;
@@ -291,6 +301,10 @@ export class PGliteBridge {
    * still waiting for dispatch — the operation runs raw SQL on the PGlite
    * instance bypassing the pool, so concurrent pool traffic would
    * interleave unsafely. Await all pending Prisma queries first.
+   *
+   * @throws {PgBridgeError} `POOL_NOT_IDLE` under the conditions above;
+   *   `SNAPSHOT_INVALID` when a snapshot restore finds the schema changed
+   *   since {@link snapshotDb} (re-run `snapshotDb()` after schema changes).
    */
   resetDb = async (): Promise<void> => {
     this.#assertPoolIdle('resetDb');
@@ -308,6 +322,8 @@ export class PGliteBridge {
    * statements directly against the PGlite instance, bypassing the pool's
    * `SessionLock`. Call from a test `beforeAll` after migrations but
    * before Prisma traffic starts.
+   *
+   * @throws {PgBridgeError} `POOL_NOT_IDLE` under the conditions above.
    */
   snapshotDb = async (): Promise<void> => {
     this.#assertPoolIdle('snapshotDb');
@@ -318,6 +334,8 @@ export class PGliteBridge {
    * Discard the current snapshot. Subsequent `resetDb` calls truncate to
    * empty. Same concurrency requirements as {@link snapshotDb} — throws if
    * any pool client is checked out or a checkout is waiting for dispatch.
+   *
+   * @throws {PgBridgeError} `POOL_NOT_IDLE` under the conditions above.
    */
   resetSnapshot = async (): Promise<void> => {
     this.#assertPoolIdle('resetSnapshot');
@@ -333,7 +351,8 @@ export class PGliteBridge {
     // contract, this guard just converts the observable misuse into a throw.
     const busy = this.#pool.totalCount - this.#pool.idleCount + this.#pool.waitingCount;
     if (busy > 0) {
-      throw new Error(
+      throw new PgBridgeError(
+        'POOL_NOT_IDLE',
         `${method}() requires no in-flight or waiting pool checkouts; got ${busy}. ` +
           'Await all pending Prisma queries (or end an open `$transaction`) before calling.',
       );

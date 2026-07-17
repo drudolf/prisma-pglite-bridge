@@ -4,6 +4,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockPGlite, createMockTelemetry } from '../__tests__/mocks.ts';
 import { setupPGlite } from '../__tests__/pglite.ts';
+import { PgBridgeError } from '../errors.ts';
 import { PgBridgePool } from '../pool';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import { SessionLock } from '../utils/session-lock.ts';
@@ -2918,5 +2919,66 @@ describe('PGliteDuplex COPY FROM STDIN capture (raw frames)', () => {
 
     duplex.destroy();
     await duplex.onClose;
+  });
+});
+
+// ————— Tier A site pins: utils/wait-pglite-ready.ts —————
+// waitPGliteReady is exercised via PGliteDuplex (the duplex calls it
+// internally). The throws surface on the duplex 'error' channel.
+// The pins below capture the error object to verify it is a PgBridgeError.
+
+describe('waitPGliteReady Tier A site pins (PgBridgeError)', () => {
+  // Helper: create a duplex, write the startup message, and capture the
+  // first error emitted on the 'error' event before the duplex is destroyed.
+  const captureFirstDuplexError = (duplex: PGliteDuplex): Promise<unknown> =>
+    new Promise<unknown>((resolve) => {
+      duplex.on('error', (err) => resolve(err));
+    });
+
+  // Site :22 — PGLITE_CLOSED
+  it('emits PgBridgeError with code PGLITE_CLOSED when pglite is closed', async () => {
+    const closedPglite = createMockPGlite({ ready: false, closed: true });
+    const duplex = new PGliteDuplex(closedPglite);
+    const errorPromise = captureFirstDuplexError(duplex);
+
+    // Startup bytes trigger the waitPGliteReady call inside the duplex.
+    const startupMsg = Buffer.alloc(8);
+    startupMsg.writeInt32BE(8, 0);
+    startupMsg.writeInt32BE(196608, 4);
+    duplex.write(startupMsg);
+
+    const caught = await errorPromise;
+    duplex.destroy();
+
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PgBridgeError).code).toBe('PGLITE_CLOSED');
+    expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+    expect((caught as PgBridgeError).message).toBe('PGlite instance closed');
+  });
+
+  // Site :28 — PGLITE_NOT_READY
+  it('emits PgBridgeError with code PGLITE_NOT_READY when pglite.waitReady rejects', async () => {
+    const failingPglite = createMockPGlite({
+      ready: false,
+      closed: false,
+      waitReady: Promise.reject(new Error('startup failed')),
+    });
+    const duplex = new PGliteDuplex(failingPglite);
+    const errorPromise = captureFirstDuplexError(duplex);
+
+    const startupMsg = Buffer.alloc(8);
+    startupMsg.writeInt32BE(8, 0);
+    startupMsg.writeInt32BE(196608, 4);
+    duplex.write(startupMsg);
+
+    const caught = await errorPromise;
+    duplex.destroy();
+
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PgBridgeError).code).toBe('PGLITE_NOT_READY');
+    expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+    expect((caught as PgBridgeError).message).toBe('PGlite instance not ready: startup failed');
   });
 });

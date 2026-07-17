@@ -76,6 +76,9 @@ export const assertExactlyOneSchemaSource = (
  * source, build the client, seed, and (unless disabled) snapshot. On any
  * failure after the bridge is created the bridge is closed before the error
  * propagates — no PGlite instance outlives a failed setup.
+ *
+ * @throws {TypeError} when neither or both of `migrations`/`schema` are
+ *   provided (see {@link assertExactlyOneSchemaSource}).
  */
 export const createBridgeContext = async <TClient>(
   options: SetupPGliteBridgeOptions<TClient>,

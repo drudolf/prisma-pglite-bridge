@@ -20,6 +20,7 @@ For known limits and runtime warnings see
 - [`PGliteServer`](#pgliteserver)
 - [`PGliteDuplex`](#pgliteduplex)
 - [`SessionLock`](#sessionlock)
+- [Errors: `PgBridgeError`](#errors-pgbridgeerror)
 - [Diagnostics channel exports](#diagnostics-channel-exports)
 - [Bridge fs-sync policy](#bridge-fs-sync-policy)
 
@@ -513,6 +514,36 @@ the owner's idle ReadyForQuery, so a transaction (or a suspended
 cursor) holds the session until it completes. `PGliteBridge` and
 `PgBridgePool` install one automatically when `max > 1`; export
 it for custom multi-duplex setups built on top of `PGliteDuplex`.
+
+## Errors: `PgBridgeError`
+
+User-actionable failures (misconfiguration, misuse, unusable inputs) throw
+`PgBridgeError`, exported from the package root together with the
+`PgBridgeErrorCode` union. Match on `error.code` — messages are human-facing
+and may be reworded in any release. Codes are stable within a major version:
+new codes may be added in minors; no code is renamed, removed, or
+re-assigned to a different failure without a major bump.
+
+| Code | Thrown by | Trigger |
+| --- | --- | --- |
+| `UNSUPPORTED_PG_INTERNALS` | pool client construction (first `connect()`/`query()`) | the installed `pg` copy lacks the private internals the bridge drives — see [troubleshooting](./troubleshooting.md#unsupported-pg-internals) |
+| `BRIDGE_OPTIONS_REQUIRED` | `PgBridgeClient` construction | the client was constructed without the pool's internal options (construct via `PgBridgePool`, not directly) |
+| `POOL_NOT_IDLE` | `resetDb()` / `snapshotDb()` / `resetSnapshot()` | a pool client is checked out or a checkout is waiting for dispatch |
+| `INVALID_STATS_LEVEL` | `new PGliteBridge(...)` | `statsLevel` is not `'off'`, `'basic'`, or `'full'` |
+| `SERVER_CLOSED` | `PGliteServer.listen()` | `listen()` after `close()` |
+| `SERVER_PGLITE_CLOSED` | `PGliteServer.listen()` | the provided PGlite instance is already closed |
+| `PGLITE_CLOSED` | duplex startup / recovery (surfaces via connection or query rejection) | the PGlite instance was closed |
+| `PGLITE_NOT_READY` | duplex startup / recovery (surfaces via connection or query rejection) | PGlite failed to become ready (includes the readiness timeout) |
+| `MIGRATIONS_UNAVAILABLE` | `pushMigrations()` | no usable migrations source: no `sql`, no `migration.sql` files, no loadable `prisma.config.ts` |
+| `MIGRATIONS_APPLY_FAILED` | `pushMigrations()` | applying the SQL failed; the PGlite error is preserved as `cause` |
+| `SNAPSHOT_INVALID` | `resetDb()` (snapshot restore) | the schema changed since `snapshotDb()` — re-run `snapshotDb()` |
+
+Argument-type validation keeps the JavaScript-idiomatic `TypeError` (for
+example `max` on `PGliteBridge`/`PgBridgePool`, `copyAggregateCapBytes` on
+`PGliteDuplex`, and the testing helpers' schema-source guard). Protocol
+integrity errors from the duplex and errors that mirror stock `pg` behavior
+(such as `Query read timeout`) deliberately stay plain `Error` — they travel
+pg's own error channels, where class identity is not part of the contract.
 
 ## Diagnostics channel exports
 

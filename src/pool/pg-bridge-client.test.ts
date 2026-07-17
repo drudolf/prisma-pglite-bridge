@@ -6,6 +6,7 @@ import pg from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setupPGlite } from '../__tests__/pglite.ts';
 import { PGliteDuplex } from '../duplex/index.ts';
+import { PgBridgeError } from '../errors.ts';
 import { SessionLock } from '../utils/session-lock.ts';
 import { FastQuery } from './fast-query.ts';
 import {
@@ -2642,5 +2643,36 @@ describe('PgBridgeClient — duplex teardown handle', () => {
     } finally {
       Object.defineProperty(connectionPrototype, 'close', closeDescriptor);
     }
+  });
+});
+
+// ————— Tier A site pin: pool/pg-bridge-client.ts:214 — BRIDGE_OPTIONS_REQUIRED —————
+// After implementation: the constructor must throw PgBridgeError with
+// code BRIDGE_OPTIONS_REQUIRED and the exact current message text.
+describe('PgBridgeClient constructor Tier A site pin (PgBridgeError)', () => {
+  it('throws PgBridgeError instanceof Error when bridge options are missing', () => {
+    let caught: unknown;
+    try {
+      new PgBridgeClient();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PgBridgeError).code).toBe('BRIDGE_OPTIONS_REQUIRED');
+    expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+    expect((caught as PgBridgeError).message).toBe('PgBridgeClient requires bridge options');
+  });
+
+  it('throws PgBridgeError with code BRIDGE_OPTIONS_REQUIRED for a config without the options key', () => {
+    let caught: unknown;
+    try {
+      new PgBridgeClient({} as ConstructorParameters<typeof PgBridgeClient>[0]);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    expect((caught as PgBridgeError).code).toBe('BRIDGE_OPTIONS_REQUIRED');
+    expect((caught as PgBridgeError).message).toBe('PgBridgeClient requires bridge options');
   });
 });

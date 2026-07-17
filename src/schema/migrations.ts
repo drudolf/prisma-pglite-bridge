@@ -17,6 +17,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
+import { PgBridgeError } from '../errors.ts';
 
 export interface PushMigrationsOptions {
   /** Pre-generated SQL to apply directly. */
@@ -93,7 +94,8 @@ export const getMigrationSQL = async (options: PushMigrationsOptions): Promise<s
   if (options.migrationsPath) {
     const sql = readMigrationFiles(options.migrationsPath);
     if (sql) return sql;
-    throw new Error(
+    throw new PgBridgeError(
+      'MIGRATIONS_UNAVAILABLE',
       `No migration.sql files found in ${options.migrationsPath}. Run \`prisma migrate dev\` to generate migration files.`,
     );
   }
@@ -103,7 +105,8 @@ export const getMigrationSQL = async (options: PushMigrationsOptions): Promise<s
     const sql = readMigrationFiles(migrationsPath);
     if (sql) return sql;
 
-    throw new Error(
+    throw new PgBridgeError(
+      'MIGRATIONS_UNAVAILABLE',
       `No migration.sql files found in auto-discovered path ${migrationsPath}. ` +
         'Run `prisma migrate dev` to generate migration files, ' +
         'or pass pre-generated SQL via the `sql` option.',
@@ -111,14 +114,16 @@ export const getMigrationSQL = async (options: PushMigrationsOptions): Promise<s
   }
 
   if (options.configRoot) {
-    throw new Error(
+    throw new PgBridgeError(
+      'MIGRATIONS_UNAVAILABLE',
       `prisma.config.ts loaded from configRoot (${options.configRoot}) but no schema ` +
         'or migrations path could be resolved. Ensure your config specifies a schema path, ' +
         'or pass pre-generated SQL via the `sql` option.',
     );
   }
 
-  throw new Error(
+  throw new PgBridgeError(
+    'MIGRATIONS_UNAVAILABLE',
     'No migration files found and no prisma.config.ts could be loaded. ' +
       'Run `prisma migrate dev` to generate them, ' +
       'or pass pre-generated SQL via the `sql` option.',
@@ -134,6 +139,11 @@ export const getMigrationSQL = async (options: PushMigrationsOptions): Promise<s
  *
  * Pass the same PGlite instance you handed to {@link PGliteBridge}
  * (i.e. `bridge.pglite`) — or any standalone `PGlite` you own.
+ *
+ * @throws {PgBridgeError} `MIGRATIONS_UNAVAILABLE` when no usable
+ *   migrations source resolves (no `sql`, no `migration.sql` files, no
+ *   loadable `prisma.config.ts`); `MIGRATIONS_APPLY_FAILED` (with `cause`)
+ *   when applying the SQL fails.
  */
 export const pushMigrations = async (
   pglite: PGlite | PGliteInterface,
@@ -145,7 +155,8 @@ export const pushMigrations = async (
     await pglite.exec(sql);
   } catch (err) {
     const where = pglite.dataDir ? `PGlite(dataDir=${pglite.dataDir})` : 'in-memory PGlite';
-    throw new Error(
+    throw new PgBridgeError(
+      'MIGRATIONS_APPLY_FAILED',
       `Failed to apply schema SQL to ${where}. Check your schema or migration files.`,
       { cause: err },
     );

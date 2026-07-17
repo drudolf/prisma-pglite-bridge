@@ -1,6 +1,7 @@
 import type { PGlite, PGliteInterface } from '@electric-sql/pglite';
 import pg from 'pg';
 import { PGliteDuplex } from '../duplex';
+import { PgBridgeError } from '../errors.ts';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import type { SessionLock } from '../utils/session-lock.ts';
 import { createStatementNameGenerator } from '../utils/statement-names.ts';
@@ -211,7 +212,7 @@ export class PgBridgeClient extends pg.Client {
 
   constructor(config?: PgBridgeClientConfig) {
     if (!config?.[PgBridgeClient.OptionsKey]) {
-      throw new Error('PgBridgeClient requires bridge options');
+      throw new PgBridgeError('BRIDGE_OPTIONS_REQUIRED', 'PgBridgeClient requires bridge options');
     }
     const { [PgBridgeClient.OptionsKey]: bridge, ...clientConfig } = config;
 

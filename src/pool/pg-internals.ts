@@ -11,6 +11,7 @@
  */
 import type pg from 'pg';
 import pgUtils from 'pg/lib/utils.js';
+import { PgBridgeError } from '../errors.ts';
 
 /**
  * Augment pg's published types with the internal surface the bridge drives.
@@ -135,7 +136,8 @@ export const assertPgInternals = (client: pg.Client, features: PgInternalFeature
   const invalid = checks.filter(([compatible]) => !compatible).map(([, diagnostic]) => diagnostic);
   if (invalid.length === 0) return;
 
-  throw new Error(
+  throw new PgBridgeError(
+    'UNSUPPORTED_PG_INTERNALS',
     [
       'Unsupported pg internals: prisma-pglite-bridge relies on undocumented pg 8.x private state.',
       'Make sure prisma-pglite-bridge and @prisma/adapter-pg use one deduplicated pg 8.x installation.',

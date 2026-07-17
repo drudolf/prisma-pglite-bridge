@@ -135,7 +135,8 @@ export interface PGliteDuplexOptions {
    * before executing (the whole copy conversation reaches PGlite as one
    * call; peak transient memory is ~2× this during assembly). Breaching it
    * discards the remainder and answers the copy with an in-band error —
-   * never a teardown. Default {@link MAX_COPY_AGGREGATE_BYTES}.
+   * never a teardown. Default {@link MAX_COPY_AGGREGATE_BYTES}. A negative
+   * or non-integer value throws a `TypeError` at construction.
    */
   copyAggregateCapBytes?: number;
 }

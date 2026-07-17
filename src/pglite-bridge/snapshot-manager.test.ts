@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockPGlite } from '../__tests__/mocks.ts';
 import { setupPGlite } from '../__tests__/pglite.ts';
+import { PgBridgeError } from '../errors.ts';
 import { SnapshotManager } from './snapshot-manager.ts';
 
 const pglite = await setupPGlite();
@@ -603,5 +604,42 @@ describe('snapshot manager', () => {
       );
       expect(rows[0]?.count).toBe('0');
     });
+  });
+});
+
+// ————— Tier A site pin: pglite-bridge/snapshot-manager.ts:273 — SNAPSHOT_INVALID —————
+// After implementation: the restore loop must throw PgBridgeError with
+// code SNAPSHOT_INVALID when a snapshotted table no longer exists.
+describe('SnapshotManager restore Tier A site pin — SNAPSHOT_INVALID (table dropped)', () => {
+  // Uses an isolated PGlite so this describe does not pollute the shared fixture.
+  it('rejects resetDb with PgBridgeError instanceof Error when a snapshotted table no longer exists', async () => {
+    const iso = new PGlite();
+    try {
+      await iso.exec(
+        `CREATE TABLE snap_kept_tier_a (id int);
+         CREATE TABLE snap_dropped_tier_a (id int, v text);
+         INSERT INTO snap_dropped_tier_a VALUES (1, 'a')`,
+      );
+
+      const snapshot = new SnapshotManager(iso);
+      await snapshot.snapshotDb();
+
+      await iso.exec('DROP TABLE snap_dropped_tier_a');
+
+      const caught = await snapshot.resetDb().then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+
+      expect(caught).toBeInstanceOf(PgBridgeError);
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as PgBridgeError).code).toBe('SNAPSHOT_INVALID');
+      expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+      // Message must contain the table name and the "no longer exists" phrase
+      expect((caught as PgBridgeError).message).toContain('snap_dropped_tier_a');
+      expect((caught as PgBridgeError).message).toContain('no longer exists');
+    } finally {
+      await iso.close();
+    }
   });
 });

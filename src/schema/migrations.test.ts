@@ -2,6 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTempDir, createTempFile, removeTempDir } from '../__tests__/file-system.ts';
+import { PgBridgeError } from '../errors.ts';
 import { PGliteBridge } from '../pglite-bridge';
 import {
   getMigrationSQL,
@@ -401,5 +402,75 @@ describe('pushMigrations', () => {
       CREATE TABLE other.t (id int PRIMARY KEY);
     `);
     await expect(hasSchema(sharedPglite)).resolves.toBe(false);
+  });
+});
+
+// ————— Tier A site pins: schema/migrations.ts —————
+
+// Sites :96 and :106 — MIGRATIONS_UNAVAILABLE (two of the four)
+describe('getMigrationSQL Tier A site pins — MIGRATIONS_UNAVAILABLE', () => {
+  // Site :96 — explicit migrationsPath that exists but has no migration files
+  it('rejects with PgBridgeError (code MIGRATIONS_UNAVAILABLE) when explicit path has no files', async () => {
+    const { path: migrationsPath } = createTempDir('tier-a-pin-empty');
+    try {
+      const caught = await getMigrationSQL({ migrationsPath }).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(caught).toBeInstanceOf(PgBridgeError);
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as PgBridgeError).code).toBe('MIGRATIONS_UNAVAILABLE');
+      expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+      expect((caught as PgBridgeError).message).toBe(
+        `No migration.sql files found in ${migrationsPath}. Run \`prisma migrate dev\` to generate migration files.`,
+      );
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+
+  // Site :121 — no configRoot supplied and no prisma config available
+  it('rejects with PgBridgeError (code MIGRATIONS_UNAVAILABLE) for the final fallback (no config, no path)', async () => {
+    // Reuses the established importMigrationsWithBrokenConfig helper so that
+    // prisma/config cannot be imported, forcing the final throw site (:121).
+    const { getMigrationSQL: getMigrationSQLBroken } = await importMigrationsWithBrokenConfig();
+
+    const caught = await getMigrationSQLBroken({}).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    // importMigrationsWithBrokenConfig loads a fresh module graph, so its
+    // PgBridgeError is a different class object — instanceof against this
+    // file's import cannot hold. Pin the contract shape instead; instanceof
+    // Error still holds (same-realm Error base).
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PgBridgeError).constructor.name).toBe('PgBridgeError');
+    expect((caught as PgBridgeError).code).toBe('MIGRATIONS_UNAVAILABLE');
+    expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+    expect((caught as PgBridgeError).message).toBe(
+      'No migration files found and no prisma.config.ts could be loaded. Run `prisma migrate dev` to generate them, or pass pre-generated SQL via the `sql` option.',
+    );
+  });
+});
+
+// Site :148 — MIGRATIONS_APPLY_FAILED (preserves { cause })
+describe('pushMigrations Tier A site pin — MIGRATIONS_APPLY_FAILED', () => {
+  it('rejects with PgBridgeError (code MIGRATIONS_APPLY_FAILED) with cause populated on exec failure', async () => {
+    // Uses sharedPglite (already warm) — invalid SQL triggers the catch block
+    // at migrations.ts:148 that wraps the PGlite exec error and re-throws.
+    const caught = await pushMigrations(sharedPglite, { sql: 'NOT VALID SQL' }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PgBridgeError).code).toBe('MIGRATIONS_APPLY_FAILED');
+    expect((caught as PgBridgeError).name).toBe('PgBridgeError');
+    expect((caught as PgBridgeError).message).toBe(
+      'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
+    );
+    // { cause } must be populated (the PGlite exec error)
+    expect((caught as PgBridgeError).cause).toBeInstanceOf(Error);
   });
 });
