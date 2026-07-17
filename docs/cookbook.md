@@ -159,6 +159,23 @@ throws while pool clients are checked out. The exception is
 `createBridgeTest({ scope: 'test' })`, which gives every test its own
 instance.
 
+**Session hygiene without `resetDb`.** `resetDb()` already resets session
+state between tests — `SET` variables, temp tables, cursors, `LISTEN`
+registrations, and advisory locks (everything `DISCARD ALL` covers except
+`DEALLOCATE ALL`, so named prepared statements stay cached). If you use a
+bare `PgBridgePool` without the bridge's reset, run the reset yourself:
+
+```typescript
+await pool.query('DISCARD ALL');
+```
+
+The bridge evicts its statement caches across all clients automatically.
+Two constraints, both consequences of the shared single session: issue it
+only while the pool is otherwise fully idle (or at `max: 1` with no
+concurrent checkout) — with other clients checked out it destroys *their*
+session state too — and outside any open transaction, where the backend
+rejects it.
+
 ### Wiring the bridge into your app
 
 How your application code obtains its Prisma client decides how you plug
