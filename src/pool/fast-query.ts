@@ -1,4 +1,5 @@
 import type pg from 'pg';
+import type { TypesLike } from './fast-array-parsers.ts';
 import { prepareValue } from './pg-internals.ts';
 
 export type FastQueryField = { name: string; dataTypeID: number; format?: string };
@@ -12,8 +13,6 @@ export type FastQueryResult = {
 };
 
 type Parser = (raw: string) => unknown;
-
-export type FastQueryTypes = { getTypeParser: (oid: number, format?: string) => Parser };
 
 // Mirrors pg's Result command-tag regex: COMMAND [oid] [rows].
 const COMMAND_TAG = /^([A-Za-z]+)(?: (\d+))?(?: (\d+))?/;
@@ -52,7 +51,7 @@ export class FastQuery implements pg.Submittable {
   readonly promise: Promise<FastQueryResult> = this.deferred.promise;
 
   private readonly values: unknown[];
-  private readonly types: FastQueryTypes;
+  private readonly types: TypesLike;
   private readonly fieldsCache: Map<string, FastQueryField[]>;
   private fields: FastQueryField[] = [];
   private parsers: Parser[] = [];
@@ -73,7 +72,7 @@ export class FastQuery implements pg.Submittable {
    *   sentinel for statements without result columns.
    */
   constructor(
-    config: { name: string; text: string; values?: unknown[]; types: FastQueryTypes },
+    config: { name: string; text: string; values?: unknown[]; types: TypesLike },
     fieldsCache: Map<string, FastQueryField[]>,
   ) {
     this.name = config.name;
