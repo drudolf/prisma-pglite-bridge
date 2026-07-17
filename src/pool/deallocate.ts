@@ -133,7 +133,8 @@ const scanRegularIdentifier = (
   let name = '';
   for (let i = from; i < end; i++) {
     const c = text.charCodeAt(i);
-    name += c >= 0x41 && c <= 0x5a ? String.fromCharCode(c + 0x20) : (text[i] as string);
+    // charAt never yields undefined — no cast under noUncheckedIndexedAccess.
+    name += c >= 0x41 && c <= 0x5a ? String.fromCharCode(c + 0x20) : text.charAt(i);
   }
   return { name, next: end };
 };
@@ -157,7 +158,7 @@ const scanDelimitedIdentifier = (
       }
       return name === '' ? null : { name, next: i + 1 };
     }
-    name += text[i] as string;
+    name += text.charAt(i);
     i++;
   }
   return null;

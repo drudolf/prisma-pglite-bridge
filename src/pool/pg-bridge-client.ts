@@ -5,6 +5,7 @@ import { PgBridgeError } from '../errors.ts';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import type { SessionLock } from '../utils/session-lock.ts';
 import { createStatementNameGenerator } from '../utils/statement-names.ts';
+import type { BridgeWarningType } from '../warnings.ts';
 import { decodeStatementCacheInvalidation, type StatementCacheInvalidation } from './deallocate.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 import { FastQuery, type FastQueryField, type FastQueryResult } from './fast-query.ts';
@@ -64,6 +65,12 @@ type PgBridgeClientConfig = pg.ClientConfig & {
 const isSubmittable = (value: unknown): value is pg.Submittable =>
   typeof (value as { submit?: unknown }).submit === 'function';
 
+type QueryCallback = (err: unknown, res: unknown) => void;
+/** pg's own contract: any function in the callback slot IS the callback —
+ *  the predicate asserts the signature the same way pg does, centralizing
+ *  what were two inline casts. */
+const isQueryCallback = (value: unknown): value is QueryCallback => typeof value === 'function';
+
 const QUERY_READ_TIMEOUT_MESSAGE = 'Query read timeout';
 
 type QueryTimeout = {
@@ -73,6 +80,11 @@ type QueryTimeout = {
   clear: () => void;
 };
 
+/** Mirrors stock pg's readTimeout handling: pg forwards the user-supplied
+ *  `query_timeout` value to `setTimeout` uncoerced (pg 8.22 client.js:664),
+ *  so string values keep working there — `delay: unknown` plus the
+ *  setTimeout-boundary cast below are deliberate parity, not a missing
+ *  narrowing. */
 const createQueryTimeout = (delay: unknown): QueryTimeout => {
   const error = new Error(QUERY_READ_TIMEOUT_MESSAGE);
   let fired = false;
@@ -353,7 +365,7 @@ export class PgBridgeClient extends pg.Client {
       process.emitWarning(
         'A pool client was released with an open transaction; attempting ROLLBACK. ' +
           'Commit or roll back before release().',
-        { type: 'PGliteBridgeAbandonedTransactionWarning' },
+        { type: 'PGliteBridgeAbandonedTransactionWarning' satisfies BridgeWarningType },
       );
       // super.query, not this.query: re-entering query() from a chain link
       // would chain onto the link's own unsettled tail and deadlock. A bare
@@ -410,6 +422,14 @@ export class PgBridgeClient extends pg.Client {
    * stock pg — both serialized on one submission chain so mixed-path call order
    * cannot invert.
    */
+  // `any` is irreducible here. The honest union of the three real return
+  // shapes — `Promise<unknown> | pg.Submittable | undefined` — was attempted
+  // (2026-07-17) and rejected: return positions are covariant, so an
+  // override must be a subtype of EVERY base overload's return
+  // (`Promise<QueryArrayResult>`, `T extends Submittable`, …), which no
+  // honest union satisfies; the mismatch then cascades into consumer
+  // assignability (`PoolConfig.Client` rejects the class). Only `any`
+  // inhabits the whole overload set.
   // biome-ignore lint/suspicious/noExplicitAny: satisfy pg.Client.query's overload union
   override query(...args: unknown[]): any {
     const first = args[0];
@@ -685,8 +705,8 @@ export class PgBridgeClient extends pg.Client {
     let positionalCb: ((err: unknown, res: unknown) => void) | undefined;
     for (let i = 1; i < args.length; i++) {
       const arg = args[i];
-      if (typeof arg === 'function') {
-        positionalCb = arg as (err: unknown, res: unknown) => void;
+      if (isQueryCallback(arg)) {
+        positionalCb = arg;
       } else {
         retained.push(arg);
       }
@@ -704,14 +724,10 @@ export class PgBridgeClient extends pg.Client {
     }
     // Single read of a possibly-accessor config.callback.
     const configCb = first.callback;
-    if (typeof configCb === 'function') {
+    if (isQueryCallback(configCb)) {
       // The selected callback is omitted from the re-entry snapshot; pg would
       // overwrite it with the positional callback we synthesize on re-entry.
-      return {
-        callback: configCb as (err: unknown, res: unknown) => void,
-        retained,
-        capture: { omit: true },
-      };
+      return { callback: configCb, retained, capture: { omit: true } };
     }
     // A captured non-function callback value is injected into the ordinary
     // snapshot from this one read (stripped-then-re-copied, matching pg keeping

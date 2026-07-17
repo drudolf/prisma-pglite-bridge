@@ -99,11 +99,6 @@ const bindAdapter = async (adapter: PrismaPg): Promise<object> => {
   return bindMigrationAwareSqlAdapterFactory(wrapFactoryForPg18(adapter));
 };
 
-const emptyFilter = (): { externalTables: string[]; externalEnums: string[] } => ({
-  externalTables: [],
-  externalEnums: [],
-});
-
 /**
  * Drop every non-system schema (and recreate `public`). Issued as raw SQL
  * through the adapter rather than `engine.reset(...)` because the engine only
@@ -163,7 +158,7 @@ export const pushSchema = async (
     const result = await engine.schemaPush({
       force: options.acceptDataLoss ?? false,
       schema: { files: [{ path: filename, content: options.schema }] },
-      filters: emptyFilter(),
+      filters: { externalTables: [], externalEnums: [] },
     });
     return {
       executedSteps: result.executedSteps,

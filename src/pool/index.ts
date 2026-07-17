@@ -16,6 +16,7 @@ import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import { pgliteNeedsProtocolCleanup } from '../utils/pglite-capabilities.ts';
 import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SessionLock } from '../utils/session-lock.ts';
+import type { BridgeWarningType } from '../warnings.ts';
 import {
   type DuplexTeardown,
   PgBridgeClient,
@@ -361,7 +362,7 @@ export class PgBridgePool extends pg.Pool {
           'increase throughput. Concurrent transactions from different pools ' +
           'may interleave; for transaction isolation across pools coordinate ' +
           "explicitly (await one pool's transaction before starting another's).",
-        { type: 'PGliteBridgeSharedInstanceWarning' },
+        { type: 'PGliteBridgeSharedInstanceWarning' satisfies BridgeWarningType },
       );
     }
 

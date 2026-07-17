@@ -48,6 +48,7 @@ import { PgBridgeError } from '../errors.ts';
 import { assertPoolMax, PgBridgePool } from '../pool';
 import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
 import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
+import type { BridgeWarningType } from '../warnings.ts';
 import { SnapshotManager } from './snapshot-manager.ts';
 
 /** @internal Exported for testing. */
@@ -55,7 +56,7 @@ export const emitBridgeLeakWarning = (): void => {
   process.emitWarning(
     'PGliteBridge was garbage-collected before close() was called. ' +
       'Call bridge.close() to release the pool and finalize stats().',
-    { type: 'PGliteBridgeLeakWarning' },
+    { type: 'PGliteBridgeLeakWarning' satisfies BridgeWarningType },
   );
 };
 

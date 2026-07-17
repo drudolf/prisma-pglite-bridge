@@ -88,7 +88,8 @@ export class SessionLock {
    * @deprecated Ownership has been acquired at admission (`acquire`) since
    * the admission-reservation fix, and the bridge no longer calls this. Kept
    * as a behavior-identical shim for custom multi-duplex setups that used
-   * the portal-hold API; scheduled for removal in the next major.
+   * the portal-hold API; scheduled for removal in the next major
+   * (removal target: 2.0.0).
    * @returns `true` if `id` now holds (or already held) the session.
    */
   hold(id: symbol): boolean {

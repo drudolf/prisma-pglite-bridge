@@ -1,4 +1,9 @@
 {
+  // exactOptionalPropertyTypes stays OFF deliberately (audited 2026-07-17):
+  // one intentional incompatible write site (pool/index.ts sessionLock
+  // conditional-undefined spread) and no known presence-semantics bug —
+  // zero `in`-checks on optional properties, all optional reads go through
+  // `??`. Revisit if optionals ever gain `in`-based presence semantics.
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2024"],
