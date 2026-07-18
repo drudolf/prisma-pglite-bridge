@@ -22,3 +22,35 @@ jobs:
       - run: pnpm check
       - run: pnpm test:coverage
       - run: pnpm check:exports
+      - run: pnpm check:pool-purity
+
+  pool-smoke:
+    # Proves the `./pool` entry works with NO @prisma/* package installed:
+    # packs the tarball, installs it with peers auto-install off and only
+    # the non-Prisma peers present, runs a query through PgBridgePool.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm pack
+      - run: |
+          mkdir /tmp/pool-smoke && cd /tmp/pool-smoke
+          printf 'auto-install-peers=false\n' > .npmrc
+          pnpm init
+          pnpm add "$GITHUB_WORKSPACE"/prisma-pglite-bridge-*.tgz pg@^8.16.3 '@electric-sql/pglite@^0.5.4'
+          node --input-type=module -e '
+            const prismaPresent = await import("@prisma/adapter-pg").then(() => true, () => false);
+            if (prismaPresent) throw new Error("@prisma/adapter-pg unexpectedly installed - smoke is vacuous");
+            const { PgBridgePool } = await import("prisma-pglite-bridge/pool");
+            const pool = new PgBridgePool();
+            const { rows } = await pool.query("SELECT 1 AS ok");
+            if (rows[0].ok !== 1) throw new Error("query failed");
+            await pool.end();
+            console.log("pool smoke OK");
+          '

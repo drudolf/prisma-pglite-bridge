@@ -35,6 +35,12 @@ TypeScript works out of the box — `@prisma/adapter-pg` ships `pg`'s
 type declarations. Add `@types/pg` only if your own code imports
 `pg` directly.
 
+Using the bridge without Prisma (drizzle, kysely, knex, typeorm,
+mikro-orm)? Import from `prisma-pglite-bridge/pool` — that entry never
+loads `@prisma/*` code at runtime. The Prisma packages still land in
+`node_modules` (the peers above plus a ~5.5 MB schema engine) until
+2.0; they are install weight only on this path.
+
 ## Quickstart
 
 ```typescript
@@ -105,6 +111,19 @@ methodology live in the
 ```sh
 NODE_OPTIONS="--expose-gc" pnpm bench --scenario findmany-focused -n 1000 -w 100 -r 5
 ```
+
+The same wire path serves other ORMs: `PgBridgePool` is a `pg.Pool`,
+so drizzle, kysely, knex, typeorm, and mikro-orm run their standard
+Postgres dialects on PGlite through `prisma-pglite-bridge/pool` — a
+Prisma-free entry — and beat their native PGlite drivers on every
+measured operation (query-builder p50 2.2–3.9×, typeorm 1.7–2.5×,
+mikro-orm 1.4–1.9×; spreads in the
+[ORM tables](./benchmark/BENCHMARK.md)). The mechanism is the same one
+behind the Prisma numbers: PGlite's public `query()` API takes a mutex
+and makes ~6 WASM protocol crossings per call, while the bridge issues
+one buffered raw-stream write. Wiring recipes and driver-agnostic
+testing helpers live in the
+[cookbook](./docs/cookbook.md#other-orms).
 
 Test-setup cost matters as much as query speed for a suite.
 `createBridgeTest`'s `scope` trades isolation against per-test

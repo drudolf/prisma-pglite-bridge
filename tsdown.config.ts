@@ -13,7 +13,14 @@ const neverBundle = [
 ];
 
 export default defineConfig({
-  entry: ['src/index.ts', 'src/testing/vitest.ts', 'src/testing/jest.ts'],
+  entry: [
+    'src/index.ts',
+    'src/entry-pool.ts',
+    'src/testing/vitest.ts',
+    'src/testing/jest.ts',
+    'src/testing/pool-vitest.ts',
+    'src/testing/pool-jest.ts',
+  ],
   format: ['esm', 'cjs'],
   dts: true,
   sourcemap: true,

@@ -17,6 +17,7 @@ For known limits and runtime warnings see
 - [`hasMigrations(pglite)`](#hasmigrationspglite)
 - [`hasSchema(pglite)`](#hasschemapglite)
 - [`PgBridgePool`](#pgbridgepool)
+- [The `/pool` entry and pool testing helpers](#the-pool-entry-and-pool-testing-helpers)
 - [`PGliteServer`](#pgliteserver)
 - [`PGliteDuplex`](#pgliteduplex)
 - [`SessionLock`](#sessionlock)
@@ -463,6 +464,59 @@ explicitly if cross-pool isolation matters.
 
 Most users should prefer [`PGliteBridge`](#pglitebridge), which
 wraps this class and adds schema/reset/snapshot lifecycle.
+
+## The `/pool` entry and pool testing helpers
+
+`prisma-pglite-bridge/pool` re-exports the Prisma-free subset of the
+root entry — `PgBridgePool`, `PGliteDuplex`, `SessionLock`,
+`PgBridgeError`, and the diagnostics channels — through a module graph
+that never imports `@prisma/*` (CI-enforced by a purity gate plus a
+no-Prisma install smoke test). Both entries share one module instance,
+so `instanceof` works across them. Use it from non-Prisma stacks
+(drizzle, kysely, knex, typeorm, mikro-orm — wiring recipes in the
+[cookbook](./cookbook.md#other-orms)).
+
+`prisma-pglite-bridge/pool/vitest` and `prisma-pglite-bridge/pool/jest`
+are the driver-agnostic counterparts of the Prisma testing helpers,
+sharing their snapshot/reset machinery:
+
+- `setupPGlitePool(options)` — one call: create a `PgBridgePool` (and,
+  when `options.pool.pglite` is omitted, an owned in-memory PGlite),
+  run `setup`, build the client, `seed`, snapshot, and register
+  `beforeEach(resetDb)` + `afterAll(close)` unless
+  `registerHooks: false`. Returns
+  `{ client, pool, pglite, resetDb, snapshotDb, close }`.
+- `createPoolTest(options)` (vitest only) — fixture form with
+  `{ pool, client }` fixtures and the same `scope: 'test' | 'file' |
+  'worker'` semantics as `createBridgeTest`, including the per-file
+  template dump behind `scope: 'test'` (the only scope safe for
+  `test.concurrent`).
+
+Options (`SetupPGlitePoolOptions<TClient>`):
+
+- `client: (pool) => TClient | Promise<TClient>` — build the ORM handle;
+  async factories (`await MikroORM.init(...)`) are awaited.
+- `setup: ({ pool, pglite }) => Promise<void>` — apply the schema (your
+  ORM's migrator or raw DDL); runs before `seed`.
+- `seed?: (client) => Promise<void>` — seed through the client, before
+  the snapshot.
+- `dispose?: (client) => Promise<void>` — ORM teardown (`destroy()` /
+  `close()`), called by `close()` before the pool shuts down; a dispose
+  that already ended the pool is tolerated.
+- `snapshot?: boolean` — default `true`; with `false`, `resetDb()`
+  truncates all user tables (`RESTART IDENTITY CASCADE`) instead of
+  restoring, then runs the same session-state reset as
+  [`PGliteBridge.resetDb`](#pglitebridge) — schema objects, extensions,
+  and named prepared statements survive.
+- `registerHooks?: boolean` — default `true` (one-call form only).
+- `pool?: PgBridgePoolOptions` — forwarded; supplying `pool.pglite`
+  makes the instance caller-owned (`close()` leaves it open).
+
+`resetDb`/`snapshotDb` require an idle pool and throw
+`PgBridgeError` `POOL_NOT_IDLE` while clients are checked out, like the
+bridge methods. On any failure after the pool is created, `dispose` is
+attempted when the client exists, and the pool — plus an internally
+created PGlite — is closed before the error propagates.
 
 ## `PGliteServer`
 

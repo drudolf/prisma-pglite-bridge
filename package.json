@@ -39,6 +39,36 @@
         "default": "./dist/index.cjs"
       }
     },
+    "./pool": {
+      "import": {
+        "types": "./dist/entry-pool.d.mts",
+        "default": "./dist/entry-pool.mjs"
+      },
+      "require": {
+        "types": "./dist/entry-pool.d.cts",
+        "default": "./dist/entry-pool.cjs"
+      }
+    },
+    "./pool/vitest": {
+      "import": {
+        "types": "./dist/testing/pool-vitest.d.mts",
+        "default": "./dist/testing/pool-vitest.mjs"
+      },
+      "require": {
+        "types": "./dist/testing/pool-vitest.d.cts",
+        "default": "./dist/testing/pool-vitest.cjs"
+      }
+    },
+    "./pool/jest": {
+      "import": {
+        "types": "./dist/testing/pool-jest.d.mts",
+        "default": "./dist/testing/pool-jest.mjs"
+      },
+      "require": {
+        "types": "./dist/testing/pool-jest.d.cts",
+        "default": "./dist/testing/pool-jest.cjs"
+      }
+    },
     "./vitest": {
       "import": {
         "types": "./dist/testing/vitest.d.mts",
@@ -62,6 +92,15 @@
   },
   "typesVersions": {
     "*": {
+      "pool": [
+        "./dist/entry-pool.d.cts"
+      ],
+      "pool/vitest": [
+        "./dist/testing/pool-vitest.d.cts"
+      ],
+      "pool/jest": [
+        "./dist/testing/pool-jest.d.cts"
+      ],
       "vitest": [
         "./dist/testing/vitest.d.cts"
       ],
@@ -92,6 +131,7 @@
     "lint:fix": "biome check --write .",
     "check": "tsc --noEmit && biome check . && markdownlint-cli2 '**/*.md' '#node_modules' '#.claude' '#vendor' && knip",
     "check:exports": "attw --pack --profile strict",
+    "check:pool-purity": "tsx scripts/check-pool-purity.ts",
     "changeset": "changeset",
     "bench": "tsx benchmark/run.ts",
     "bench:isolation": "tsx benchmark/isolation-cost.ts",

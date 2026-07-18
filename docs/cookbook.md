@@ -11,6 +11,9 @@ For the underlying API, see the [API reference](./api.md).
   - [Choosing an isolation model](#choosing-an-isolation-model)
   - [Wiring the bridge into your app](#wiring-the-bridge-into-your-app)
   - [Schema and seed](#schema-and-seed)
+- [Other ORMs](#other-orms)
+  - [Wiring recipes](#wiring-recipes)
+  - [Testing with any ORM](#testing-with-any-orm)
 - [Local development and scripts](#local-development-and-scripts)
   - [Persistent database](#persistent-database)
   - [Dev server for Studio, psql, and the CLI](#dev-server-for-studio-psql-and-the-cli)
@@ -410,6 +413,103 @@ beforeEach(() => resetDb()); // restores the snapshot — no re-seed needed
 To re-seed every test (when seed data varies per spec), drop
 `snapshotDb()` and re-invoke `seed(prisma)` inside `beforeEach` after
 `resetDb()`.
+
+## Other ORMs
+
+`PgBridgePool` extends `pg.Pool`, so every ORM's standard Postgres
+dialect runs on PGlite unchanged — and faster than the native PGlite
+drivers: in the [ORM benchmark](../benchmark/BENCHMARK.md) the pool beats
+every native driver on every operation (query builders 2.2–3.9× p50,
+typeorm 1.7–2.5×, mikro-orm 1.4–1.9×), because PGlite's public `query()`
+API makes ~6 separate WASM protocol crossings per call while the bridge
+issues one buffered raw-stream write.
+
+Import from `prisma-pglite-bridge/pool` — a subpath whose module graph
+never loads any `@prisma/*` code (CI-enforced). "Prisma-free" is
+import-graph-only: the package still installs its Prisma dependencies
+(~5.6 MB, dominated by the schema engine) until 2.0; they are never
+loaded at runtime through this entry. The root
+`prisma-pglite-bridge` entry keeps requiring the Prisma peers.
+
+### Wiring recipes
+
+All verified by the benchmark harness (`benchmark/orm/`):
+
+```typescript
+import { PgBridgePool } from 'prisma-pglite-bridge/pool';
+
+const pool = new PgBridgePool();
+
+// drizzle
+import { drizzle } from 'drizzle-orm/node-postgres';
+const db = drizzle(pool);
+
+// kysely
+import { Kysely, PostgresDialect } from 'kysely';
+const db = new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });
+
+// knex (CJS — default import only); knex >= 3.3.0's connectionPool
+// hands it the pool without owning it: destroy() releases the reference.
+import makeKnex from 'knex';
+const db = makeKnex({ client: 'pg', connectionPool: pool });
+
+// typeorm — inject the pool through the `driver` option's Pool shim
+import { DataSource } from 'typeorm';
+const ds = new DataSource({
+  type: 'postgres',
+  driver: { Pool: function PoolShim() { return pool; } },
+  database: 'postgres',
+  entities: [...],
+});
+
+// mikro-orm (v7, kysely-based) — hand the dialect as driverOptions
+import { MikroORM } from '@mikro-orm/postgresql';
+import { PostgresDialect } from 'kysely';
+const orm = await MikroORM.init({
+  entities: [...],
+  dbName: 'postgres',
+  driverOptions: new PostgresDialect({ pool }),
+});
+```
+
+Caveats: mikro-orm v7 inlines parameters into the SQL text, so the
+bridge's statement caching never engages there (its 1.4–1.9× win is pure
+wire path); and the [unindexed-sort ceiling](./api.md#performance-notes)
+applies to every driver equally.
+
+### Testing with any ORM
+
+`prisma-pglite-bridge/pool/vitest` (and `/pool/jest`) give non-Prisma
+stacks the same testing lifecycle as the Prisma helpers — snapshot,
+per-test reset, and the `test`/`file`/`worker` isolation scopes — with
+your ORM's own migrator (or raw DDL) as the schema source:
+
+```typescript
+import { createPoolTest } from 'prisma-pglite-bridge/pool/vitest';
+import { Kysely, PostgresDialect } from 'kysely';
+
+const test = createPoolTest<Kysely<Database>>({
+  setup: async ({ pool }) => {
+    await pool.query('CREATE TABLE users (id serial PRIMARY KEY, name text NOT NULL)');
+  },
+  client: (pool) => new Kysely<Database>({ dialect: new PostgresDialect({ pool }) }),
+  seed: async (db) => {
+    await db.insertInto('users').values({ name: 'Ada' }).execute();
+  },
+  dispose: (db) => db.destroy(),
+});
+
+test('starts from the seeded snapshot', async ({ client }) => {
+  expect(await client.selectFrom('users').selectAll().execute()).toHaveLength(1);
+});
+```
+
+`setupPGlitePool` is the one-call variant (hooks registered for you, like
+`setupPGliteBridge`); async client factories (`await MikroORM.init(...)`)
+are supported, and `dispose` runs your ORM's teardown (`destroy()` /
+`close()`) before the pool shuts down. Release or return all checked-out
+clients before `resetDb` — it throws `POOL_NOT_IDLE` while pool traffic
+is in flight, same as the Prisma helpers.
 
 ## Local development and scripts
 

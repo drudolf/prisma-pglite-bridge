@@ -47,6 +47,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PgBridgeError } from '../errors.ts';
 import { assertPoolMax, PgBridgePool } from '../pool';
 import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
+import { assertPoolIdle } from '../utils/assert-pool-idle.ts';
 import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import type { BridgeWarningType } from '../warnings.ts';
 import { SnapshotManager } from './snapshot-manager.ts';
@@ -344,20 +345,14 @@ export class PGliteBridge {
   };
 
   #assertPoolIdle(method: string): void {
-    // waitingCount covers the same-tick window: pg-pool defers dispatch of a
-    // queued checkout by one tick, so an un-awaited query/connect fired in
-    // the calling tick is a waiter, not yet a checkout — invisible to
-    // totalCount - idleCount. A query behind a caller-side async hop is
-    // invisible to EVERY pool counter; "await all queries first" remains the
-    // contract, this guard just converts the observable misuse into a throw.
-    const busy = this.#pool.totalCount - this.#pool.idleCount + this.#pool.waitingCount;
-    if (busy > 0) {
-      throw new PgBridgeError(
-        'POOL_NOT_IDLE',
-        `${method}() requires no in-flight or waiting pool checkouts; got ${busy}. ` +
-          'Await all pending Prisma queries (or end an open `$transaction`) before calling.',
-      );
-    }
+    // Shared busy-count logic (and its same-tick waitingCount rationale)
+    // lives in utils/assert-pool-idle.ts; the advice sentence stays
+    // Prisma-flavored here, byte-identical to the pre-extraction message.
+    assertPoolIdle(
+      this.#pool,
+      method,
+      'Await all pending Prisma queries (or end an open `$transaction`) before calling.',
+    );
   }
 
   /**
