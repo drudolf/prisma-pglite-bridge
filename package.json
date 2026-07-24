@@ -164,7 +164,7 @@
     }
   },
   "dependencies": {
-    "@prisma/driver-adapter-utils": "^7.8.0",
+    "@prisma/driver-adapter-utils": "^7.9.0",
     "@prisma/schema-engine-wasm": "7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a",
     "postgres-array": "^3.0.4"
   },
@@ -180,9 +180,9 @@
     "@mikro-orm/core": "^7.1.5",
     "@mikro-orm/pglite": "^7.1.5",
     "@mikro-orm/postgresql": "^7.1.5",
-    "@prisma/adapter-pg": "^7.8.0",
-    "@prisma/client": "^7.8.0",
-    "@prisma/config": "^7.8.0",
+    "@prisma/adapter-pg": "^7.9.0",
+    "@prisma/client": "^7.9.0",
+    "@prisma/config": "^7.9.0",
     "@types/node": "^26.1.0",
     "@types/pg": "^8.20.0",
     "@types/pg-copy-streams": "^1.2.5",
@@ -205,7 +205,7 @@
     "pg-cursor": "^2.21.0",
     "pg-query-stream": "^4.16.0",
     "pglite-prisma-adapter": "^0.7.2",
-    "prisma": "^7.8.0",
+    "prisma": "^7.9.0",
     "tsdown": "^0.22.4",
     "tsx": "^4.23.0",
     "typeorm": "^1.0.0",
