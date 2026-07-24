@@ -195,28 +195,24 @@ describe('decodeStatementCacheInvalidation — rejected inputs fail closed', () 
 // rejected"). Separate describe so the grammar tables above stay
 // backend-free.
 describe('decodeStatementCacheInvalidation — parse_ident oracle (real PGlite)', () => {
-  it.each([
-    'MÜNZE',
-    'münze',
-    '"a""b"',
-    '"MiXeD"',
-    '_x$1',
-    '\u{20000}',
-  ])('agrees with parse_ident for DEALLOCATE %j', async (spelling) => {
-    const { rows } = await pglite.query<{ parts: unknown }>(
-      'SELECT parse_ident($1, true) AS parts',
-      [spelling],
-    );
-    const parts = rows[0]?.parts;
-    if (!Array.isArray(parts) || parts.length === 0) {
-      throw new Error(`parse_ident returned no identifiers for ${JSON.stringify(spelling)}`);
-    }
-    const backendName: unknown = parts[parts.length - 1];
-    if (typeof backendName !== 'string') {
-      throw new Error(`parse_ident returned a non-string part for ${JSON.stringify(spelling)}`);
-    }
-    expect(decodeStatementCacheInvalidation(`DEALLOCATE ${spelling}`)).toEqual({
-      name: backendName,
-    });
-  });
+  it.each(['MÜNZE', 'münze', '"a""b"', '"MiXeD"', '_x$1', '\u{20000}'])(
+    'agrees with parse_ident for DEALLOCATE %j',
+    async (spelling) => {
+      const { rows } = await pglite.query<{ parts: unknown }>(
+        'SELECT parse_ident($1, true) AS parts',
+        [spelling],
+      );
+      const parts = rows[0]?.parts;
+      if (!Array.isArray(parts) || parts.length === 0) {
+        throw new Error(`parse_ident returned no identifiers for ${JSON.stringify(spelling)}`);
+      }
+      const backendName: unknown = parts[parts.length - 1];
+      if (typeof backendName !== 'string') {
+        throw new Error(`parse_ident returned a non-string part for ${JSON.stringify(spelling)}`);
+      }
+      expect(decodeStatementCacheInvalidation(`DEALLOCATE ${spelling}`)).toEqual({
+        name: backendName,
+      });
+    },
+  );
 });

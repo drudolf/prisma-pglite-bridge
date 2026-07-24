@@ -42,32 +42,33 @@ afterEach(() => {
 });
 
 describe('PGliteBridge — max validation before PGlite creation', () => {
-  it.each([
-    0, 1.5, -1,
-  ])('rejects max: %s with the pool TypeError before constructing any PGlite', async (max) => {
-    const { bridgeModule, pgliteCtor } = await importBridgeWithPGliteSpy();
-    let constructed: InstanceType<BridgeModule['PGliteBridge']> | undefined;
-    try {
-      let caught: unknown;
+  it.each([0, 1.5, -1])(
+    'rejects max: %s with the pool TypeError before constructing any PGlite',
+    async (max) => {
+      const { bridgeModule, pgliteCtor } = await importBridgeWithPGliteSpy();
+      let constructed: InstanceType<BridgeModule['PGliteBridge']> | undefined;
       try {
-        constructed = new bridgeModule.PGliteBridge({ max });
-      } catch (err) {
-        caught = err;
+        let caught: unknown;
+        try {
+          constructed = new bridgeModule.PGliteBridge({ max });
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(TypeError);
+        expect((caught as TypeError).message).toBe(
+          `PgBridgePool: max must be a positive integer (got ${String(max)})`,
+        );
+        // The load-bearing ordering pin: the constructor's own comment says
+        // "Validate before any PGlite is created" — an invalid max must be
+        // rejected before `new PGlite()` runs, not by the pool afterwards.
+        expect(pgliteCtor).not.toHaveBeenCalled();
+      } finally {
+        // Safety net: if the guard ever regresses to not throwing at all,
+        // don't leak the constructed (mocked) bridge into later tests.
+        await constructed?.close();
       }
-      expect(caught).toBeInstanceOf(TypeError);
-      expect((caught as TypeError).message).toBe(
-        `PgBridgePool: max must be a positive integer (got ${String(max)})`,
-      );
-      // The load-bearing ordering pin: the constructor's own comment says
-      // "Validate before any PGlite is created" — an invalid max must be
-      // rejected before `new PGlite()` runs, not by the pool afterwards.
-      expect(pgliteCtor).not.toHaveBeenCalled();
-    } finally {
-      // Safety net: if the guard ever regresses to not throwing at all,
-      // don't leak the constructed (mocked) bridge into later tests.
-      await constructed?.close();
-    }
-  });
+    },
+  );
 
   it('accepts a valid max — the guard does not over-reject', async () => {
     const { bridgeModule, pgliteCtor } = await importBridgeWithPGliteSpy();

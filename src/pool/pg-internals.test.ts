@@ -163,16 +163,17 @@ describe('assertPgInternals', () => {
     ).not.toThrow();
   });
 
-  it.each(
-    FAST_QUERY_SEAMS,
-  )('requires connection.%s when the fast path is enabled', (property, label, invalid) => {
-    expect(() =>
-      assertPgInternals(clientFixture(undefined, { [property]: invalid }), {
-        fastQueryPath: true,
-        statementCaching: false,
-      }),
-    ).toThrowError(seamError([label]));
-  });
+  it.each(FAST_QUERY_SEAMS)(
+    'requires connection.%s when the fast path is enabled',
+    (property, label, invalid) => {
+      expect(() =>
+        assertPgInternals(clientFixture(undefined, { [property]: invalid }), {
+          fastQueryPath: true,
+          statementCaching: false,
+        }),
+      ).toThrowError(seamError([label]));
+    },
+  );
 
   it('rejects a callable connection.stream when the fast path is enabled', () => {
     expect(() =>

@@ -341,26 +341,25 @@ describe('PGliteBridge', () => {
     }
   });
 
-  it.each([
-    'resetDb',
-    'snapshotDb',
-    'resetSnapshot',
-  ] as const)('%s rejects while a same-tick pool checkout is still waiting for dispatch', async (method) => {
-    const pool = bridgePool(bridge);
-    // Awaited warm-up so the same-tick checkout queues behind an idle
-    // client (waiting=1, in-flight=0) instead of growing the pool.
-    await pool.query('SELECT 1');
+  it.each(['resetDb', 'snapshotDb', 'resetSnapshot'] as const)(
+    '%s rejects while a same-tick pool checkout is still waiting for dispatch',
+    async (method) => {
+      const pool = bridgePool(bridge);
+      // Awaited warm-up so the same-tick checkout queues behind an idle
+      // client (waiting=1, in-flight=0) instead of growing the pool.
+      await pool.query('SELECT 1');
 
-    const floating = pool.query('SELECT 1').catch(() => undefined);
-    try {
-      await expect(bridge[method]()).rejects.toThrow(poolBusyMessage(method, 1));
-    } finally {
-      await settleFloating(floating);
-      // Red state only: snapshotDb/resetSnapshot ran and mutated snapshot
-      // state — normalize to "no snapshot" so later tests are unaffected.
-      await bridge.resetSnapshot().catch(() => undefined);
-    }
-  });
+      const floating = pool.query('SELECT 1').catch(() => undefined);
+      try {
+        await expect(bridge[method]()).rejects.toThrow(poolBusyMessage(method, 1));
+      } finally {
+        await settleFloating(floating);
+        // Red state only: snapshotDb/resetSnapshot ran and mutated snapshot
+        // state — normalize to "no snapshot" so later tests are unaffected.
+        await bridge.resetSnapshot().catch(() => undefined);
+      }
+    },
+  );
 
   it('emitBridgeLeakWarning emits a typed process warning', () => {
     const spy = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});

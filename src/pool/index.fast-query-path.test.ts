@@ -1162,34 +1162,37 @@ describe('PgBridgePool — bounded DEALLOCATE decoder (backend regressions)', ()
     quotedAdjacencyRow('direct adjacency, doubled-quote name', 'a"b', 'DEALLOCATE"a""b"'),
     quotedAdjacencyRow('PREPARE adjacency, hyphenated name', 'p-q', 'DEALLOCATE PREPARE"p-q"'),
     quotedAdjacencyRow('direct adjacency, quoted "ALL" targets one name', 'ALL', 'DEALLOCATE"ALL"'),
-  ])('quoted-adjacent %s evicts only the target — neighbor stays warm, target re-Parses and re-Describes', async (_label, targetName, sql) => {
-    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
-    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
-    await withClient(async (client) => {
-      const target = namedShape(targetName);
-      const neighbor = namedShape('adjacency_neighbor');
-      await client.query(target);
-      await client.query(neighbor);
+  ])(
+    'quoted-adjacent %s evicts only the target — neighbor stays warm, target re-Parses and re-Describes',
+    async (_label, targetName, sql) => {
+      const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+      const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+      await withClient(async (client) => {
+        const target = namedShape(targetName);
+        const neighbor = namedShape('adjacency_neighbor');
+        await client.query(target);
+        await client.query(neighbor);
 
-      await client.query(sql);
+        await client.query(sql);
 
-      // Neighbor FIRST: a broadened / wrong eviction surfaces here before
-      // the target's recovery could mask it.
-      parseSpy.mockClear();
-      describeSpy.mockClear();
-      const warm = await client.query(neighbor);
-      expect(parseSpy).not.toHaveBeenCalled();
-      expect(describeSpy).not.toHaveBeenCalled();
-      expect(warm.rows).toEqual([[7]]);
+        // Neighbor FIRST: a broadened / wrong eviction surfaces here before
+        // the target's recovery could mask it.
+        parseSpy.mockClear();
+        describeSpy.mockClear();
+        const warm = await client.query(neighbor);
+        expect(parseSpy).not.toHaveBeenCalled();
+        expect(describeSpy).not.toHaveBeenCalled();
+        expect(warm.rows).toEqual([[7]]);
 
-      // Target: exactly one fresh Parse AND one fresh Describe, succeeding.
-      // Pre-fix this rejects with 26000 (eviction skipped).
-      const revived = await client.query(target);
-      expect(parseSpy).toHaveBeenCalledTimes(1);
-      expect(describeSpy).toHaveBeenCalledTimes(1);
-      expect(revived.rows).toEqual([[7]]);
-    });
-  });
+        // Target: exactly one fresh Parse AND one fresh Describe, succeeding.
+        // Pre-fix this rejects with 26000 (eviction skipped).
+        const revived = await client.query(target);
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(describeSpy).toHaveBeenCalledTimes(1);
+        expect(revived.rows).toEqual([[7]]);
+      });
+    },
+  );
 
   // Plan C, backend semantic pins — GREEN on both sides of the fix. They pin
   // the lexer/protocol agreement that 100% source coverage cannot establish:
@@ -1223,32 +1226,35 @@ describe('PgBridgePool — bounded DEALLOCATE decoder (backend regressions)', ()
   it.each([
     ['VT', '\v', 't_vt', 'n_vt'],
     ['FF', '\f', 't_ff', 'n_ff'],
-  ])('C2 %s separator between DEALLOCATE and a regular name evicts only the target — neighbor stays warm', async (_label, sep, targetName, neighborName) => {
-    // Regular (unquoted) names are chosen lowercase so PGlite's ASCII fold
-    // leaves the SQL identifier byte-equal to the protocol name.
-    const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
-    const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
-    await withClient(async (client) => {
-      const target = namedShape(targetName);
-      const neighbor = namedShape(neighborName);
-      await client.query(target);
-      await client.query(neighbor);
+  ])(
+    'C2 %s separator between DEALLOCATE and a regular name evicts only the target — neighbor stays warm',
+    async (_label, sep, targetName, neighborName) => {
+      // Regular (unquoted) names are chosen lowercase so PGlite's ASCII fold
+      // leaves the SQL identifier byte-equal to the protocol name.
+      const parseSpy = vi.spyOn(pg.Connection.prototype, 'parse');
+      const describeSpy = vi.spyOn(pg.Connection.prototype, 'describe');
+      await withClient(async (client) => {
+        const target = namedShape(targetName);
+        const neighbor = namedShape(neighborName);
+        await client.query(target);
+        await client.query(neighbor);
 
-      await client.query(`DEALLOCATE${sep}${targetName}`);
+        await client.query(`DEALLOCATE${sep}${targetName}`);
 
-      parseSpy.mockClear();
-      describeSpy.mockClear();
-      const warm = await client.query(neighbor);
-      expect(parseSpy).not.toHaveBeenCalled();
-      expect(describeSpy).not.toHaveBeenCalled();
-      expect(warm.rows).toEqual([[7]]);
+        parseSpy.mockClear();
+        describeSpy.mockClear();
+        const warm = await client.query(neighbor);
+        expect(parseSpy).not.toHaveBeenCalled();
+        expect(describeSpy).not.toHaveBeenCalled();
+        expect(warm.rows).toEqual([[7]]);
 
-      const revived = await client.query(target);
-      expect(parseSpy).toHaveBeenCalledTimes(1);
-      expect(describeSpy).toHaveBeenCalledTimes(1);
-      expect(revived.rows).toEqual([[7]]);
-    });
-  });
+        const revived = await client.query(target);
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(describeSpy).toHaveBeenCalledTimes(1);
+        expect(revived.rows).toEqual([[7]]);
+      });
+    },
+  );
 });
 
 // Plan A1/A2 — a caller mutates an object query-config AFTER query() returns

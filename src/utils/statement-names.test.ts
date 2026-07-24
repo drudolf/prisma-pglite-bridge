@@ -281,16 +281,19 @@ describe('createStatementNameGenerator', () => {
       ['negative integer', -5],
       ['fractional number', 2.5],
       ['NaN', Number.NaN],
-    ])('treats poisoned slot (%s) as 0 — produces ppb_0_0 and heals the slot to 1', (_label, poison) => {
-      holder[NAMESPACE_SEQ] = poison;
+    ])(
+      'treats poisoned slot (%s) as 0 — produces ppb_0_0 and heals the slot to 1',
+      (_label, poison) => {
+        holder[NAMESPACE_SEQ] = poison;
 
-      const name = promoteOne('select 1');
+        const name = promoteOne('select 1');
 
-      // Self-heal: namespace must be 0 regardless of the poison value,
-      // and the slot must advance to 1 after the generator is created.
-      expect(name).toBe('ppb_0_0');
-      expect(holder[NAMESPACE_SEQ]).toBe(1);
-    });
+        // Self-heal: namespace must be 0 regardless of the poison value,
+        // and the slot must advance to 1 after the generator is created.
+        expect(name).toBe('ppb_0_0');
+        expect(holder[NAMESPACE_SEQ]).toBe(1);
+      },
+    );
 
     it('valid slot value increments normally — slot 7 produces ppb_7_0 and slot becomes 8', () => {
       holder[NAMESPACE_SEQ] = 7;
