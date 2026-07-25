@@ -261,10 +261,16 @@ export class FastQuery implements pg.Submittable {
 
   /**
    * Settles immediately — fatal connection errors never deliver a
-   * ReadyForQuery (stock Query settles its callback the same way).
+   * ReadyForQuery (stock Query settles its callback the same way). A
+   * buffered first error wins over the fatal one: symmetric with
+   * handleReadyForQuery's settlement, and stock parity — pg's Query
+   * swaps in _canceledDueToError before invoking its callback. Only
+   * this promise's rejection reason is chosen here; pg.Client records
+   * its connection-error state before the active query's handler runs,
+   * so teardown and pool eviction never depend on it.
    */
   handleError(error: Error): void {
-    this.settle(error);
+    this.settle(this.bufferedError ?? error);
   }
 
   handleReadyForQuery(): void {

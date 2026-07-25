@@ -522,6 +522,51 @@ describe('FastQuery — settlement', () => {
     expect(() => query.handleReadyForQuery()).not.toThrow();
     await expect(query.promise).rejects.toBe(boom);
   });
+
+  // STOCK PARITY: pg's Query swaps _canceledDueToError (the buffered
+  // row-parser failure) in for the fatal error before invoking its
+  // callback — the caller sees the root cause, not the teardown.
+  it('prefers a buffered row-parser failure over a later fatal error', async () => {
+    const { query } = buildQuery({
+      types: makeTypes(() => () => {
+        throw new Error('row parser boom');
+      }),
+    });
+    query.handleRowDescription({ fields: [{ name: 'n', dataTypeID: 23, format: 'text' }] });
+    query.handleDataRow({ fields: ['1'] });
+
+    query.handleError(new Error('connection terminated'));
+
+    await expect(query.promise).rejects.toThrow('row parser boom');
+  });
+
+  // MODULE DISCIPLINE (no stock counterpart — stock pg wedges on a bind
+  // throw): first-error-wins holds uniformly across bufferedError
+  // sources, not just the row-parser case stock pg arbitrates.
+  it('prefers a buffered bind failure over a later fatal error', async () => {
+    const { query } = buildQuery();
+    const conn = createMockConnection();
+    conn.bind = () => {
+      throw new Error('bind boom');
+    };
+
+    expect(query.submit(conn)).toBeNull();
+    query.handleError(new Error('connection terminated'));
+
+    await expect(query.promise).rejects.toThrow('bind boom');
+  });
+
+  // Uniform-rule pin for the documented-unreachable source: the
+  // PortalSuspended sentinel names a protocol violation that preceded
+  // the fatal error, so it stays the rejection reason.
+  it('prefers the buffered PortalSuspended sentinel over a later fatal error', async () => {
+    const { query } = buildQuery();
+
+    query.handlePortalSuspended();
+    query.handleError(new Error('connection terminated'));
+
+    await expect(query.promise).rejects.toThrow('unexpected PortalSuspended');
+  });
 });
 
 describe('FastQuery — NoData sentinel', () => {
