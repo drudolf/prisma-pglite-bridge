@@ -65,7 +65,11 @@ export const rewriteRowDescriptionInPlace = (buf: Buffer): void => {
   // int16 field count); pass a shorter, protocol-invalid frame through
   // untouched instead of throwing RangeError on the field-count read.
   if (buf.length < 7) return;
-  const fieldCount = buf.readInt16BE(5);
+  // Unsigned on purpose, matching rowDescriptionNeedsRewrite: the wire type
+  // is Int16, but a field count is inherently non-negative, and the
+  // gate/worker pair must walk identical field sequences on hostile frames
+  // too. A phantom-large count terminates at the truncation bail below.
+  const fieldCount = buf.readUInt16BE(5);
   let p = 7;
   for (let i = 0; i < fieldCount; i++) {
     while (p < buf.length && buf[p] !== 0) p++;

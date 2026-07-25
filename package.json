@@ -191,6 +191,7 @@
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "embedded-postgres": "18.4.0-beta.17",
+    "fast-check": "3.23.2",
     "husky": "^9.1.7",
     "knex": "^3.3.0",
     "knex-pglite": "^0.14.0",

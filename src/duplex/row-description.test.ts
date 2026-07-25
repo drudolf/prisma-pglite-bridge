@@ -102,6 +102,23 @@ describe('rewriteRowDescriptionInPlace', () => {
     expect(frame.equals(before)).toBe(true);
   });
 
+  it('rewrites a qualifying field under a phantom-large fieldCount (>= 0x8000)', () => {
+    // Hostile frame: declared fieldCount 0x8000 with one real qualifying
+    // field. Read signed, the count is negative and the rewrite loop never
+    // runs while the unsigned predicate still walks the real field — the
+    // gate/worker pair must agree, so both read unsigned and the phantom
+    // tail terminates at the truncation bail.
+    const frame = Buffer.from(
+      encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]),
+    );
+    frame.writeUInt16BE(0x8000, 5);
+
+    expect(rowDescriptionNeedsRewrite(frame)).toBe(true);
+    rewriteRowDescriptionInPlace(frame);
+
+    expect(readField(frame, 0)).toEqual({ name: 'contype', oid: 25, size: -1 });
+  });
+
   it('widens only system-catalog "char" fields to text in place', () => {
     const frame = Buffer.from(
       encodeRowDescription([

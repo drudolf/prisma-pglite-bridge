@@ -237,6 +237,34 @@ describe('BackendMessageFramer', () => {
     expect(collect(outputs)).toEqual(malformedZ);
   });
 
+  it('does not treat a non-RFQ 0x5a frame as ReadyForQuery in the slow path', () => {
+    // Split so the countdown passes through payloadBytesRemaining === 1 at a
+    // chunk boundary — deriving RFQ-ness from the countdown (instead of the
+    // header-decode latch) reclassified the frame mid-payload here.
+    const malformedZ = encodeMessage(0x5a, new Uint8Array([0x49, 0xaa]));
+    const { framer, outputs, statuses } = makeHarness();
+
+    framer.write(malformedZ.subarray(0, 6));
+    framer.write(malformedZ.subarray(6));
+    framer.flush();
+
+    expect(statuses).toEqual([]);
+    expect(collect(outputs)).toEqual(malformedZ);
+  });
+
+  it('does not leak stale held-RFQ state into a split non-RFQ 0x5a frame after a real RFQ', () => {
+    const malformedZ = encodeMessage(0x5a, new Uint8Array([0x49, 0xaa]));
+    const { framer, outputs, statuses } = makeHarness(true);
+
+    framer.write(RFQ_IDLE);
+    framer.write(malformedZ.subarray(0, 6));
+    framer.write(malformedZ.subarray(6));
+    framer.flush();
+
+    expect(statuses).toEqual([0x49]);
+    expect(collect(outputs)).toEqual(malformedZ);
+  });
+
   it('copies when the chunk is backed by a SharedArrayBuffer', () => {
     const shared = new SharedArrayBuffer(DATA.length);
     const sharedChunk = new Uint8Array(shared);
@@ -780,6 +808,12 @@ describe('BackendMessageFramer', () => {
 
       // Partial RFQ: dirties messageType, headerBytesRead, and rfqBytesRead.
       framer.write(RFQ_IDLE.subarray(0, 3));
+      framer.reset(false);
+      expect(logicalState(framer)).toEqual(logicalState(fresh));
+
+      // RFQ cut right after its header: completes header decode, dirtying
+      // the rfqFrame latch with the status byte still pending.
+      framer.write(RFQ_IDLE.subarray(0, 5));
       framer.reset(false);
       expect(logicalState(framer)).toEqual(logicalState(fresh));
 

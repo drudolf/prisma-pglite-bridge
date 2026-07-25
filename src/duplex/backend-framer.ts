@@ -44,6 +44,13 @@ export class BackendMessageFramer {
   private headerBytesRead = 0;
   private payloadBytesRemaining = 0;
   private rfqBytesRead = 0;
+  /** True iff the in-flight slow-path frame is a real ReadyForQuery (type Z
+   *  AND declared length 5). Latched once at header decode — deriving this
+   *  from `payloadBytesRemaining` later is unsound, because the countdown of
+   *  a longer Z-typed frame passes through 1 and would reclassify it
+   *  mid-payload. Rewritten at every header decode; the clears in `reset()`
+   *  and `finishMessage()` are hygiene, not correctness. */
+  private rfqFrame = false;
   /** Slow-path RowDescription accumulator. Set once the T-frame header is decoded
    *  and a multi-chunk payload starts arriving; cleared after rewrite + emit. */
   private rowDescBuffer?: Buffer;
@@ -77,6 +84,7 @@ export class BackendMessageFramer {
     this.headerBytesRead = 0;
     this.payloadBytesRemaining = 0;
     this.rfqBytesRead = 0;
+    this.rfqFrame = false;
     this.rowDescBuffer = undefined;
     this.rowDescOffset = 0;
     this.dropNextCopyInResponse = dropFirstCopyInResponse;
@@ -216,12 +224,13 @@ export class BackendMessageFramer {
         }
 
         this.payloadBytesRemaining = messageLength - 4;
+        this.rfqFrame = this.messageType === READY_FOR_QUERY && messageLength === 5;
 
         if (this.messageType === ERROR_RESPONSE) {
           this.onErrorResponse?.();
         }
 
-        if (this.isReadyForQueryFrame()) {
+        if (this.rfqFrame) {
           continue;
         }
 
@@ -248,7 +257,7 @@ export class BackendMessageFramer {
         continue;
       }
 
-      if (this.isReadyForQueryFrame()) {
+      if (this.rfqFrame) {
         const bytesToCopy = Math.min(this.payloadBytesRemaining, chunk.length - offset);
         const payloadChunk = chunk.subarray(offset, offset + bytesToCopy);
         this.heldRfq.set(payloadChunk, this.rfqBytesRead);
@@ -322,10 +331,6 @@ export class BackendMessageFramer {
     }
   }
 
-  private isReadyForQueryFrame(): boolean {
-    return this.messageType === READY_FOR_QUERY && this.payloadBytesRemaining === 1;
-  }
-
   private finishReadyForQuery(): void {
     const status = this.heldRfq[5];
     /* c8 ignore next — heldRfq[5] always populated before finishReadyForQuery */
@@ -387,6 +392,7 @@ export class BackendMessageFramer {
     this.messageType = undefined;
     this.headerBytesRead = 0;
     this.payloadBytesRemaining = 0;
+    this.rfqFrame = false;
     this.droppingMessage = false;
     if (!this.suppressIntermediateReadyForQuery) {
       this.rfqBytesRead = 0;
