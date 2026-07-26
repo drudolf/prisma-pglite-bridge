@@ -21,10 +21,34 @@
  */
 
 /**
+ * PG only forms an E-string or dollar-quote token at a word boundary:
+ * `LIKE'\'` is keyword + standard string, `a$tag$` is one identifier.
+ * A char that could continue an identifier (PG's ident_cont: ASCII
+ * word chars, `$`, and every high-bit byte) glues the opener to the
+ * preceding token. `$` and digits are in the set deliberately — a
+ * quote glued to them is never valid PG grammar, so blocking it is
+ * always fail-closed. charAt(-1) is '' at start of text (no glue).
+ */
+const isIdentifierGlue = (ch: string): boolean =>
+  ch !== '' && (/[A-Za-z0-9_$]/.test(ch) || ch.charCodeAt(0) >= 0x80);
+
+/**
  * Replace string literals ('…' with '' escapes and E'…' backslash
  * escapes), quoted identifiers ("…"), dollar-quoted bodies
- * ($tag$…$tag$), line comments (-- …) and nested block comments with
- * spaces, so tokenization sees only structural SQL.
+ * ($tag$…$tag$), line comments (-- …) and nested block comments, so
+ * tokenization sees only structural SQL. Quoted regions become a `?`
+ * placeholder and comments become a space: PG treats comments as
+ * whitespace (comment-only segments must not count as statements) but
+ * parse-rejects literal-only segments (which therefore must count —
+ * `E'x'; COPY t FROM STDIN` is a multi-statement text). `?` can never
+ * leak into classification: the tokenizer matches only
+ * `[a-z_][a-z0-9_]*` and the splitter matches only `;`.
+ *
+ * Assumes `standard_conforming_strings = on` (the PG default since
+ * 9.1; PGlite does accept `SET standard_conforming_strings = off`, in
+ * which case plain '…' literals honor backslash escapes and this
+ * scanner's spans can diverge — accepted residual, no bridge path
+ * changes the GUC).
  */
 const stripQuotedAndComments = (text: string): string => {
   const out: string[] = [];
@@ -58,7 +82,10 @@ const stripQuotedAndComments = (text: string): string => {
       out.push(' ');
       continue;
     }
-    if (ch === "'" || ((ch === 'e' || ch === 'E') && next === "'")) {
+    if (
+      ch === "'" ||
+      ((ch === 'e' || ch === 'E') && next === "'" && !isIdentifierGlue(text.charAt(i - 1)))
+    ) {
       const escaping = ch !== "'"; // E'…' honors backslash escapes
       i += escaping ? 2 : 1;
       while (i < n) {
@@ -77,7 +104,7 @@ const stripQuotedAndComments = (text: string): string => {
         }
         i++;
       }
-      out.push(' ');
+      out.push('?');
       continue;
     }
     if (ch === '"') {
@@ -93,17 +120,22 @@ const stripQuotedAndComments = (text: string): string => {
         }
         i++;
       }
-      out.push(' ');
+      out.push('?');
       continue;
     }
-    if (ch === '$') {
-      // Dollar quote: $tag$ … $tag$ where tag is [A-Za-z_][A-Za-z0-9_]* or empty.
-      const tagMatch = /^\$[A-Za-z_]?[A-Za-z0-9_]*\$/.exec(text.slice(i));
+    if (ch === '$' && !isIdentifierGlue(text.charAt(i - 1))) {
+      // Dollar quote: $tag$ … $tag$ where tag is [A-Za-z_][A-Za-z0-9_]*
+      // or empty — digits-only ($1$) is a parameter + stray $, not a
+      // delimiter. PG allows high-bit bytes inside tags, which this
+      // ASCII-only match rejects; the body then stays visible to the
+      // tokenizer, which can only over-reject or over-capture, never
+      // forward a hidden copy-in (fail-closed residual).
+      const tagMatch = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(text.slice(i));
       if (tagMatch) {
         const closer = tagMatch[0];
         const end = text.indexOf(closer, i + closer.length);
         i = end === -1 ? n : end + closer.length;
-        out.push(' ');
+        out.push('?');
         continue;
       }
     }

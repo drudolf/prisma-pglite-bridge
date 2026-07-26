@@ -71,8 +71,42 @@ describe('sniffCopyIn', () => {
         'a quoted semicolon before the real statement separator',
         "COPY t FROM STDIN WITH (DELIMITER ';'); SELECT 1",
       ],
+      // Word-boundary regressions: PG lexes the first statement's quote/tag
+      // as ending at the word boundary, so the ; is a real separator and the
+      // trailing COPY is a second statement. The scanner used to swallow the
+      // tail (verdict not-copy-in = instance death). See the characterization
+      // table in copy-in.property.test.ts for the full grid.
+      [
+        "an E-string opener glued to a keyword (LIKE'\\')",
+        "SELECT 'a' LIKE'\\'; COPY t FROM STDIN",
+      ],
+      ['a $ inside a preceding identifier (a$tag$)', 'SELECT 1 AS a$tag$; COPY t FROM STDIN'],
+      ['a literal-only leading statement', "E'x'; COPY t FROM STDIN"],
+      ['a quoted-identifier-only leading statement', '"foo"; COPY t FROM STDIN'],
     ])('%s: %j', (_label, text) => {
       expect(sniffCopyIn(text)).toBe('reject-multi');
+    });
+  });
+
+  describe('word-boundary guards that must keep their prior verdict', () => {
+    it.each([
+      [
+        'a free-standing E-string option is still stripped',
+        "COPY t FROM STDIN WITH (DELIMITER E'\\t')",
+        'capture',
+      ],
+      [
+        'a dollar-quoted body still hides the phrase',
+        'SELECT $$COPY t FROM STDIN$$',
+        'not-copy-in',
+      ],
+      [
+        'a bare parameter opens no dollar quote',
+        'SELECT $1$x COPY t FROM STDIN $1$x',
+        'not-copy-in',
+      ],
+    ] as const)('%s: %j', (_label, text, expected) => {
+      expect(sniffCopyIn(text)).toBe(expected);
     });
   });
 });
