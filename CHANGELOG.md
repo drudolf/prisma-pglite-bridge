@@ -1,5 +1,45 @@
 # prisma-pglite-bridge
 
+## 1.7.1
+
+### Patch Changes
+
+- 8bee247: Fix three word-boundary defects in the `COPY … FROM STDIN` sniffer,
+  found by a new property-based suite with an 88-cell characterization
+  table cross-checked against real PGlite statement splitting. The
+  scanner opened an E-string at `e'`/`E'` and a dollar quote at `$tag$`
+  without requiring the PostgreSQL word boundary, so text like
+  `SELECT 'a' LIKE'\'; COPY t FROM STDIN` or
+  `SELECT 1 AS a$tag$; COPY t FROM STDIN` — two statements to PostgreSQL —
+  was misread as one and classified `not-copy-in`, forwarding a copy-in to
+  PGlite (WASM `exit(1)`, instance death). The opener now requires that
+  the preceding character cannot continue an identifier (ASCII word
+  chars, `$`, and high-bit bytes all count as glue), the dollar-tag rule
+  rejects digits-only pseudo-tags (`$1$` is a parameter, not a
+  delimiter), and literal-only statements (`E'x';…`) now count toward the
+  statement split instead of vanishing. Every changed verdict moves in
+  the fail-closed direction.
+- 35c0e5e: Fix two hostile-frame defects in the backend framing layer, found by the
+  new property-based test suite. A Z-typed frame with a declared length ≠ 5
+  could be reclassified as ReadyForQuery mid-payload when a chunk boundary
+  left exactly one payload byte remaining, corrupting the output stream
+  with stale held-RFQ bytes and firing a spurious `onReadyForQuery`; frame
+  classification is now latched once at header decode. RowDescription
+  fieldCount was read signed in `rewriteRowDescriptionInPlace` but unsigned
+  in `rowDescriptionNeedsRewrite`, letting the rewrite gate and worker
+  disagree on frames declaring ≥ 0x8000 fields; both now read unsigned.
+  Neither defect is reachable from a well-behaved backend.
+- 363f796: `FastQuery.handleError` now prefers a buffered first error (row-parser
+  throw, bind serialization failure, PortalSuspended sentinel) over the
+  incoming fatal connection error as the promise rejection reason,
+  matching stock pg's `_canceledDueToError` handling and
+  `handleReadyForQuery`'s own settlement. Previously a connection dying
+  after a buffered type-parser failure reported the socket teardown
+  instead of the root cause. Found by the new fast-path property suite's
+  stock-Query differential. Connection teardown and pool eviction are
+  unaffected — pg.Client records connection-error state before the query
+  handler runs.
+
 ## 1.7.0
 
 ### Minor Changes
