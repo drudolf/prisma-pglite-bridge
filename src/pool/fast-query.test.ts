@@ -992,3 +992,54 @@ describe('pg seam contract', () => {
     expect(typeof connection.close, 'connection.close').toBe('function');
   });
 });
+
+describe('mutation-hardening: survivor kills', () => {
+  it('anchors the command tag at the start so a leading-space tag yields no command/rowCount', async () => {
+    const { query } = buildQuery();
+    const conn = createMockConnection();
+    query.submit(conn);
+
+    // The ^-anchored COMMAND_TAG must NOT match a tag that does not begin with
+    // a letter. Without the anchor a stray 'SELECT' later in the string would
+    // be picked up, wrongly setting command/rowCount.
+    query.handleCommandComplete({ text: ' SELECT 3' });
+    query.handleReadyForQuery();
+
+    await expect(query.promise).resolves.toMatchObject({
+      command: null,
+      rowCount: null,
+      oid: null,
+    });
+  });
+
+  it('does not clobber cached fields with the NoData sentinel on a warm describe-skipped execution', async () => {
+    const text = 'SELECT $1::int AS n';
+    const cache = new Map<string, FastQueryField[]>([['q1', [{ name: 'n', dataTypeID: 23 }]]]);
+    const conn = createMockConnection({ parsedStatements: { q1: text } });
+    const { query } = buildQuery({ text, cache });
+
+    // Warm path: describe is skipped, so describeSent stays false and no
+    // RowDescription arrives.
+    expect(query.submit(conn)).toBeNull();
+    expect(conn.methods()).toEqual(['bind', 'execute', 'sync']);
+
+    query.handleCommandComplete({ text: 'SELECT 1' });
+    query.handleReadyForQuery();
+    await expect(query.promise).resolves.toBeDefined();
+
+    // The NoData branch (describeSent && !fieldsReceived && !settled) must NOT
+    // fire on a warm execution — the cached fields survive untouched.
+    expect(cache.get('q1')).toEqual([{ name: 'n', dataTypeID: 23 }]);
+  });
+
+  it('aborts a server-initiated COPY with the exact No source stream defined message', () => {
+    const { query } = buildQuery();
+    const conn = createMockConnection();
+    query.submit(conn);
+
+    query.handleCopyInResponse(conn);
+
+    // The abort reason is forwarded to the backend verbatim — pin the message.
+    expect(conn.argOf('sendCopyFail')).toBe('No source stream defined');
+  });
+});

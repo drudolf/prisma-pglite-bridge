@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-
+import { propertyRuns } from '../__tests__/property-runs.ts';
 import {
   type ConnectionShim,
   errorMessage,
@@ -144,7 +144,7 @@ describe('FastQuery receive-side properties', () => {
           expect(fastOutcome.message).toBe(stockOutcome.message);
         }
       }),
-      { numRuns: 500 },
+      { numRuns: propertyRuns(500) },
     );
   });
 

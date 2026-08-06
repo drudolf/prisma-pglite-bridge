@@ -4,7 +4,7 @@ import fc from 'fast-check';
 // defeat the type lookup (TS7016).
 import TypeOverrides from 'pg/lib/type-overrides';
 import { describe, expect, it } from 'vitest';
-
+import { propertyRuns } from '../__tests__/property-runs.ts';
 import {
   ALL_WRAPPED_ARRAY_OIDS,
   type ArrayLiteralScenario,
@@ -38,7 +38,7 @@ describe('wrapTypesWithFastArrayParsers properties', () => {
         const ref = reference.getTypeParser(oid, 'text')(scenario.literal);
         expect(fast).toEqual(ref);
       }),
-      { numRuns: 500 },
+      { numRuns: propertyRuns(500) },
     );
   });
 

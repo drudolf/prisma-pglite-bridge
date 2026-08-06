@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { PGlite } from '@electric-sql/pglite';
+import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
@@ -1089,6 +1089,111 @@ describe('PgBridgeClient', () => {
     }
   });
 
+  it('does NOT evict when a Submittable DEALLOCATE completes with an error (callback channel)', async () => {
+    // Kills 2314 (`if (err == null) evict()` → `if (true) evict()`): a FAILED
+    // Submittable DEALLOCATE (callback fired with err != null) must NOT wipe the
+    // statement caches — pg calls callback(err) XOR emits 'error' and never emits
+    // 'end', so eviction has no completion signal to fire on. The mutant evicts
+    // regardless, discarding a warm parse-skip entry that PGlite still holds.
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+        statementCaching: true,
+      },
+    });
+    try {
+      // Prime a warm parse-skip entry the eviction would wipe.
+      parsedStatementsOf(client as unknown as pg.PoolClient).sub_err_victim = 'SELECT 1';
+      // Stub stock admission so no real query runs; return the submittable like pg.
+      pg.Client.prototype.query = vi.fn(
+        (arg: unknown) => arg,
+      ) as unknown as typeof pg.Client.prototype.query;
+
+      const delivered: unknown[] = [];
+      const submittable = {
+        text: 'DEALLOCATE ALL',
+        submit: (): void => {},
+        callback: (err: unknown) => {
+          delivered.push(err);
+        },
+        once: (): void => {},
+      };
+      const returned = (client.query as unknown as (arg: unknown) => unknown)(submittable);
+      expect(returned).toBe(submittable);
+
+      // Fire the bridge-wrapped callback with an ERROR (a failed DEALLOCATE).
+      const boom = new Error('prepared statement does not exist');
+      (submittable.callback as (err: unknown, res: unknown) => void)(boom, undefined);
+
+      // The original callback still received the error (delegation is unconditional)...
+      expect(delivered).toEqual([boom]);
+      // ...but no eviction ran: the warm entry survives. The mutant wipes it.
+      expect(parsedStatementsOf(client as unknown as pg.PoolClient).sub_err_victim).toBe(
+        'SELECT 1',
+      );
+    } finally {
+      pg.Client.prototype.query = origQuery;
+      client.deregisterLiveClient();
+    }
+  });
+
+  it('does not invoke a non-function once() when arming the end channel (fail-closed)', async () => {
+    // Kills 2319 (`typeof target.once === 'function'` → true): a Submittable whose
+    // `once` is NOT a function must skip the 'end' arm silently, never invoking it.
+    // The mutant drops the type guard and blindly calls `once.call(submittable,
+    // 'end', evict)`; a Submittable simply lacking once() can't distinguish that
+    // (the call throws and is swallowed by the arm's catch), so probe with a
+    // non-function `once` carrying a recording `.call`. Under the guard it is never
+    // touched; under the mutant it is invoked. Arming must also not throw.
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+        statementCaching: true,
+      },
+    });
+    try {
+      pg.Client.prototype.query = vi.fn(
+        (arg: unknown) => arg,
+      ) as unknown as typeof pg.Client.prototype.query;
+
+      const onceCallArgs: unknown[][] = [];
+      // `once` is a non-function object; its `.call` records invocation. The type
+      // guard means the bridge must never reach it — the mutant (guard → true) does.
+      const submittable = {
+        text: 'DEALLOCATE ALL',
+        submit: (): void => {},
+        callback: (_err: unknown): void => {},
+        once: {
+          call: (...args: unknown[]): void => {
+            onceCallArgs.push(args);
+          },
+        },
+      } as Record<string, unknown>;
+
+      // Arming must not throw for a Submittable whose once() is not a function.
+      let returned: unknown;
+      expect(() => {
+        returned = (client.query as unknown as (arg: unknown) => unknown)(submittable);
+      }).not.toThrow();
+      expect(returned).toBe(submittable);
+
+      // Guard skipped the non-function once: its .call was never invoked. The mutant
+      // invokes it with ['end', evict].
+      expect(onceCallArgs).toEqual([]);
+    } finally {
+      pg.Client.prototype.query = origQuery;
+      client.deregisterLiveClient();
+    }
+  });
+
   it('evicts exactly once when a configured query_timeout arms but does not fire on the Submittable', async () => {
     const { pool, close } = await createBridgePool(pglite);
     try {
@@ -1916,6 +2021,39 @@ describe('PgBridgeClient — submission-chain query_timeout budget', () => {
     }
   });
 
+  it('restores the per-query timeout on the owned config after suppression', async () => {
+    // Kills 2183 (`ownedConfig !== undefined` on the restore line → false): the
+    // suppression frame sets the owned snapshot's query_timeout to 0 for stock
+    // admission and MUST restore it in the finally. Under the mutant the restore is
+    // skipped, so the snapshot's query_timeout is left at 0 instead of its original.
+    // Observe by capturing the owned snapshot pg is handed and reading its
+    // query_timeout after the query settles: 0 during submit (suppressed), restored
+    // to the per-query value afterward.
+    const origQuery = pg.Client.prototype.query;
+    const client = clientWithTimeout(0);
+    let owned: { query_timeout?: unknown } | undefined;
+    let seenDuringSubmit: unknown;
+    try {
+      pg.Client.prototype.query = vi.fn((config: unknown) => {
+        if (typeof config === 'object' && config !== null) {
+          owned = config as { query_timeout?: unknown };
+          seenDuringSubmit = (config as { query_timeout?: unknown }).query_timeout;
+        }
+        return Promise.resolve({ command: 'SELECT' });
+      }) as unknown as typeof pg.Client.prototype.query;
+
+      await client.query({ text: 'SELECT timed', query_timeout: 20 });
+
+      // Suppressed to 0 for stock admission (the bridge owns the timer)...
+      expect(seenDuringSubmit).toBe(0);
+      // ...then restored on the owned snapshot in the finally. The mutant leaves 0.
+      expect(owned?.query_timeout).toBe(20);
+    } finally {
+      pg.Client.prototype.query = origQuery;
+      client.deregisterLiveClient();
+    }
+  });
+
   it('never mutates a frozen caller query config', async () => {
     vi.useFakeTimers();
     const origQuery = pg.Client.prototype.query;
@@ -2674,5 +2812,449 @@ describe('PgBridgeClient constructor Tier A site pin (PgBridgeError)', () => {
     expect(caught).toBeInstanceOf(PgBridgeError);
     expect((caught as PgBridgeError).code).toBe('BRIDGE_OPTIONS_REQUIRED');
     expect((caught as PgBridgeError).message).toBe('PgBridgeClient requires bridge options');
+  });
+});
+
+describe('mutation-hardening: survivor kills', () => {
+  it('deregisters from the live-client registry on end and idempotently, dropping the empty Set', async () => {
+    // Sole client of a FRESH PGlite so the registry Set is exactly {this} and its
+    // removal empties + drops the WeakMap entry. Kills: the 'end' hook (2019/2020),
+    // the deregister body/guards (2021/2022/2024), and the size===0 cleanup (2026).
+    const db = new PGlite();
+    await db.waitReady;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite: db,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    try {
+      // Registered at construction.
+      expect(liveClients.get(db)?.has(client)).toBe(true);
+
+      // 'end' must invoke deregisterLiveClient (kills 2019 empty-event, 2020 no-op arrow).
+      client.emit('end');
+      expect(liveClients.get(db)?.has(client) ?? false).toBe(false);
+      // Last client of this PGlite gone → the Set is dropped from the WeakMap
+      // (kills 2026: size===0 → false leaves an empty Set behind).
+      expect(liveClients.has(db)).toBe(false);
+
+      // Idempotent: a second explicit call must not throw (kills 2024's inverted
+      // guard, which would call .delete on an undefined Set).
+      expect(() => client.deregisterLiveClient()).not.toThrow();
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('rollbackAbandonedTransaction skips a wedged bare Submittable and an idle non-tx client without registering a cleanup link', async () => {
+    // Stubbed-query seam (mirrors the existing cleanup-link tests). Two early-return
+    // guards must fire: (a) active-query + no-chain + no-suspended-portal (2032/2044),
+    // (b) idle + no-chain + not-in-transaction (2046/2052). In both, NO cleanup link
+    // may be registered and NO abandoned-transaction warning may be emitted.
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    const warnings: string[] = [];
+    const origEmit = process.emitWarning.bind(process);
+    process.emitWarning = ((w: unknown) => {
+      warnings.push(typeof w === 'string' ? w : String((w as Error)?.message ?? w));
+      return undefined as never;
+    }) as typeof process.emitWarning;
+    const chainOf = () =>
+      (client as unknown as { querySubmissionChain?: Promise<void> }).querySubmissionChain;
+    try {
+      pg.Client.prototype.query = vi.fn(() =>
+        Promise.resolve({ command: 'SELECT' }),
+      ) as unknown as typeof pg.Client.prototype.query;
+
+      // (b) Idle, not in a transaction, no chain: must early-return (2046/2052).
+      // Ensure a clean idle state.
+      expect(chainOf()).toBeUndefined();
+      client.rollbackAbandonedTransaction();
+      expect(chainOf()).toBeUndefined();
+
+      // (a) Simulate a wedged bare Submittable: pg has an active query, the bridge
+      // has no submission chain, and no suspended portal is recorded. The guard
+      // (2032/2044) must skip — no link, no warning. Falling through (mutant) would
+      // reach #chainRollbackCleanup (inTransaction: true below), registering a link.
+      const getPgActiveQuery = (await import('./pg-internals.ts')).getPgActiveQuery;
+      // Fabricate the active query on the slot pg-internals actually reads:
+      // client._getActiveQuery() → client._activeQuery (pg >= 8.17), which the
+      // deprecated client.activeQuery getter also delegates to. NOT connection._activeQuery.
+      const active = new pg.Query('SELECT 1');
+      (client as unknown as { _activeQuery?: unknown })._activeQuery = active;
+      // Assert the fabrication lands where the guard reads it — a seam change must
+      // fail here loudly, not silently skip the kill assertion below.
+      expect(getPgActiveQuery(client)).toBe(active);
+      // hasSuspendedPortal → false (no recoverable portal).
+      Object.defineProperty(client.connection.stream, 'hasSuspendedPortal', {
+        value: () => false,
+        configurable: true,
+      });
+      Object.defineProperty(client.connection.stream, 'inTransaction', {
+        get: () => true,
+        configurable: true,
+      });
+
+      client.rollbackAbandonedTransaction();
+      // Wedged bare Submittable (active query, no chain, no suspended portal):
+      // the guard must early-return — no cleanup link registered. The mutant that
+      // drops the guard falls through and registers one (chainOf() becomes defined).
+      expect(chainOf()).toBeUndefined();
+      expect(warnings.filter((w) => w.includes('open transaction'))).toEqual([]);
+    } finally {
+      process.emitWarning = origEmit;
+      pg.Client.prototype.query = origQuery;
+      client.deregisterLiveClient();
+      const stream = client.connection.stream;
+      if (stream instanceof PGliteDuplex && !stream.destroyed) stream.destroy();
+      await settledOrPending((stream as PGliteDuplex).onClose, 2_000).catch(() => {});
+    }
+  });
+
+  it('emits the full abandoned-transaction warning message including the roll-back guidance', async () => {
+    const { pool, close } = await createBridgePool(pglite);
+    const warnings: string[] = [];
+    const origEmit = process.emitWarning.bind(process);
+    process.emitWarning = ((w: unknown) => {
+      warnings.push(typeof w === 'string' ? w : String((w as Error)?.message ?? w));
+      return undefined as never;
+    }) as typeof process.emitWarning;
+    try {
+      const client = await pool.connect();
+      try {
+        // Open a transaction and release without COMMIT/ROLLBACK: the cleanup link
+        // emits the abandoned-transaction warning, whose message tail (2064) must
+        // include the exact guidance.
+        await client.query('BEGIN');
+        (
+          client as unknown as { rollbackAbandonedTransaction: () => void }
+        ).rollbackAbandonedTransaction();
+        // Let the chained cleanup link run.
+        await client.query('SELECT 1').catch(() => {});
+      } finally {
+        client.release();
+      }
+    } finally {
+      process.emitWarning = origEmit;
+      await endPoolAndBarrier(close);
+    }
+    const abandoned = warnings.filter((w) => w.includes('attempting ROLLBACK'));
+    expect(abandoned).toHaveLength(1);
+    expect(abandoned[0]).toContain('Commit or roll back before release().');
+  });
+
+  it('the deferred cleanup link clears its own chain slot and leaves a successor tail intact', async () => {
+    // Stubbed-query seam. Kills the cleanup link's releaseChainTail: the body must
+    // run (2070), the identity check must be === and true only for its own tail
+    // (2071 true-stomps a successor, 2072 false-never-clears, 2073 inverted).
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    const view = client as unknown as {
+      querySubmissionChain?: Promise<void>;
+      rollbackAbandonedTransaction: () => void;
+    };
+    try {
+      const gates: Array<() => void> = [];
+      pg.Client.prototype.query = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            gates.push(resolve);
+          }),
+      ) as unknown as typeof pg.Client.prototype.query;
+
+      // Busy chain so the cleanup defers onto a link.
+      const opener = client.query('SELECT 1') as Promise<unknown>;
+      view.rollbackAbandonedTransaction();
+      // No successor yet: after the link settles, the chain must return to undefined
+      // (2070 body-empty / 2072 false → chain never cleared).
+      gates[0]?.();
+      await opener;
+      await vi.waitFor(() => expect(view.querySubmissionChain).toBeUndefined());
+
+      // Now: busy chain again, defer another cleanup link, then chain a successor
+      // BEFORE the link settles — the link's release must NOT clear the successor's
+      // tail (2071 true / 2073 inverted would stomp it).
+      const opener2 = client.query('SELECT 2') as Promise<unknown>;
+      view.rollbackAbandonedTransaction();
+      const successor = client.query('SELECT 3') as Promise<unknown>;
+      const successorTail = view.querySubmissionChain;
+      expect(successorTail).toBeDefined();
+      gates[1]?.();
+      await opener2;
+      // Drain the cleanup link; the successor tail must survive it.
+      await vi.waitFor(() => expect(gates.length).toBeGreaterThanOrEqual(3));
+      expect(view.querySubmissionChain).toBe(successorTail);
+      gates[2]?.();
+      await expect(successor).resolves.toBeUndefined();
+    } finally {
+      pg.Client.prototype.query = origQuery;
+      client.deregisterLiveClient();
+    }
+  });
+
+  it('an ordinary query tail-release leaves a concurrent query tail intact', {
+    timeout: 5_000,
+  }, async () => {
+    // Kills 2211 (ordinary releaseChainTail identity `=== chainTail` → true): a
+    // concurrent second query installs its own tail; when the first settles it must
+    // clear ONLY its own slot, leaving the second's tail so a third query stays
+    // serialized behind it.
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    const view = client as unknown as { querySubmissionChain?: Promise<void> };
+    try {
+      const gates: Array<() => void> = [];
+      pg.Client.prototype.query = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            gates.push(resolve);
+          }),
+      ) as unknown as typeof pg.Client.prototype.query;
+
+      // First takes the reservation path; second and third are ordinary
+      // chained queries (2211 lives in the ordinary releaseChainTail). Chain a
+      // third BEFORE the second settles so the second's release runs while the
+      // third's tail is the live chain slot.
+      const first = client.query('SELECT 1') as Promise<unknown>;
+      const second = client.query('SELECT 2') as Promise<unknown>;
+      const third = client.query('SELECT 3') as Promise<unknown>;
+      const thirdTail = view.querySubmissionChain;
+      expect(thirdTail).toBeDefined();
+
+      // Drain the reservation (first) → the second's deferred execute runs and
+      // pushes its own gate.
+      gates[0]?.();
+      await first;
+      await vi.waitFor(() => expect(gates.length).toBeGreaterThanOrEqual(2));
+
+      // Settle the SECOND: its releaseChainTail fires while thirdTail is
+      // installed. The identity check must clear ONLY the second's own slot,
+      // leaving thirdTail intact. Under the mutant (=== → true) the second's
+      // release clears the chain unconditionally, discarding thirdTail.
+      gates[1]?.();
+      await second;
+      expect(view.querySubmissionChain).toBe(thirdTail);
+
+      // Drain the third and confirm the chain empties.
+      await vi.waitFor(() => expect(gates.length).toBeGreaterThanOrEqual(3));
+      gates[2]?.();
+      await expect(third).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(view.querySubmissionChain).toBeUndefined());
+    } finally {
+      pg.Client.prototype.query = origQuery;
+      client.deregisterLiveClient();
+    }
+  });
+
+  it('routes both null and undefined queries to stock pg synchronous TypeError', () => {
+    // Kills the nullish dispatch guard (2083/2084/2085/2087): each of null and
+    // undefined must throw pg's synchronous TypeError. Under any mutant that stops
+    // routing a nullish first to stock pg, isSubmittable(first) reads `.submit` off
+    // null/undefined and throws a DIFFERENT (Cannot read properties) error — or the
+    // call no longer throws synchronously at all.
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    try {
+      const throwsPgTypeError = (arg: unknown): Error => {
+        let caught: unknown;
+        try {
+          (client.query as unknown as (a: unknown) => unknown)(arg);
+        } catch (e) {
+          caught = e;
+        }
+        expect(caught).toBeInstanceOf(TypeError);
+        return caught as Error;
+      };
+      // pg's message for a nullish query is the 'Client was passed a null or
+      // undefined query' family — not the 'Cannot read properties of null (reading
+      // submit)' the mutant would produce.
+      const nullErr = throwsPgTypeError(null);
+      const undefErr = throwsPgTypeError(undefined);
+      expect(nullErr.message).not.toMatch(/reading '?submit'?/);
+      expect(undefErr.message).not.toMatch(/reading '?submit'?/);
+    } finally {
+      client.deregisterLiveClient();
+    }
+  });
+
+  // 2152 (`prior === undefined` → true) is EQUIVALENT — no deterministic test can
+  // kill it, so no test lives here. The mutant makes a reservation be published for
+  // BUSY queries too, but on the busy path execute is deferred (`prior.then(execute)`)
+  // so hooks run async — there is no synchronous re-entry for the reservation to
+  // guard, and the reservationTail substitutes for the ordinary chainTail with
+  // identical clear semantics (self-identity, clears on settle AND reject) and
+  // identical chaining. Submission order, chain-defined-while-pending,
+  // drain-to-undefined, and idle-path re-engagement are all preserved; the sole
+  // difference is a one-microtask-later clear that no query can synchronously
+  // observe. Proof + reclassification: .claude/verify/triage-pool-pg-bridge-client.json.
+
+  it('string-form query with a connection-default timeout settles via the timer, no ownedConfig throw', async () => {
+    // Kills 2176/2177 (`ownedConfig?.query_timeout` → non-optional, `ownedConfig !==
+    // undefined` → true): a STRING-form query has no ownedConfig, so execute() must
+    // guard the config reads; the mutants throw TypeError reading/writing
+    // .query_timeout of undefined. Also kills 2174: with no per-query config but a
+    // connection default, timeout !== undefined, so the suppression frame runs and
+    // must not blow up on the absent ownedConfig.
+    vi.useFakeTimers();
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      query_timeout: 30,
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    const never = Promise.withResolvers<unknown>();
+    try {
+      pg.Client.prototype.query = vi.fn(
+        () => never.promise,
+      ) as unknown as typeof pg.Client.prototype.query;
+      // String form (no ownedConfig) + connection-default timeout: must submit
+      // without throwing, then time out via the bridge timer.
+      const timed = client.query('SELECT slow') as Promise<unknown>;
+      let outcome: unknown = 'pending';
+      void timed.then(
+        (v) => {
+          outcome = v;
+        },
+        (e) => {
+          outcome = e;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(30);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe('Query read timeout');
+    } finally {
+      never.resolve(undefined);
+      pg.Client.prototype.query = origQuery;
+      vi.useRealTimers();
+      client.deregisterLiveClient();
+    }
+  });
+
+  it('a no-timeout query does not arm the suppression frame', async () => {
+    // Kills 2174 (`timeout === undefined` → false): with NO timeout configured,
+    // execute() must take the fast `return submitWithCloses()` path and never touch
+    // connectionParameters.query_timeout or the suppression stash. The mutant runs
+    // the suppression frame, transiently zeroing connectionParameters and leaving
+    // observable side effects the fast path never has.
+    const origQuery = pg.Client.prototype.query;
+    const client = new PgBridgeClient({
+      [PgBridgeClient.OptionsKey]: {
+        pglite,
+        sessionLock: new SessionLock(),
+        bridgeId: Symbol('bridge'),
+        syncToFs: false,
+      },
+    });
+    const cp = (client as unknown as { connectionParameters: { query_timeout: unknown } })
+      .connectionParameters;
+    try {
+      let observedAtSubmit: unknown = 'unset';
+      pg.Client.prototype.query = vi.fn(() => {
+        // Under the mutant the suppression frame has set connectionParameters to 0
+        // by submit time; under the original it is untouched (sentinel below).
+        observedAtSubmit = cp.query_timeout;
+        return Promise.resolve({ command: 'SELECT' });
+      }) as unknown as typeof pg.Client.prototype.query;
+      // A truthy sentinel would itself arm the timeout (query_timeout is the
+      // trigger), collapsing the fast/suppression distinction. Use the genuine
+      // no-timeout state (undefined) and detect the mutant by the transient 0
+      // its suppression frame writes to connectionParameters at submit time.
+      cp.query_timeout = undefined;
+      await client.query('SELECT nolimit');
+      expect(observedAtSubmit).toBe(undefined);
+      expect(cp.query_timeout).toBe(undefined);
+    } finally {
+      pg.Client.prototype.query = origQuery;
+      client.deregisterLiveClient();
+    }
+  });
+
+  it('a positional values array overrides config.values without reading the shadowed getter, on both promise and callback re-entry', async () => {
+    // Kills the valuesOverride wiring on the promise path (2107/2108, line 524) and
+    // the callback re-entry path (2255/2256, line 765). The snapshot MUST take the
+    // positional array as authoritative and NEVER read config.values. Plain
+    // config.values can't distinguish the mutants — stock pg (and #fastSubmit's
+    // `args[1] ?? config.values`) re-apply the positional array downstream, so the
+    // result is 42 either way. The load-bearing observable is the shadowed
+    // config.values GETTER: with the override (original) snapshotQueryConfig never
+    // reads it; without it (2107 `{}` / 2108 `false`) the snapshot falls back to
+    // config.values and invokes the getter. A throwing getter turns that read into
+    // a rejection the query would never otherwise produce.
+    const { pool, close } = await createBridgePool(pglite);
+    const makeCfg = () => {
+      const cfg: { text: string; values?: unknown } = { text: 'SELECT $1::int AS v' };
+      Object.defineProperty(cfg, 'values', {
+        get() {
+          throw new Error('shadowed config.values getter must not be read when overridden');
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      return cfg;
+    };
+    try {
+      const client = await pool.connect();
+      try {
+        // Promise path: positional [42] wins and the config.values getter is never
+        // read, so the query resolves. Under the mutant the getter throws during
+        // snapshot → the promise rejects.
+        const rp = (await (client.query as unknown as (...a: unknown[]) => Promise<unknown>)(
+          makeCfg(),
+          [42],
+        )) as pg.QueryResult<{ v: number }>;
+        expect(rp.rows[0]?.v).toBe(42);
+
+        // Callback re-entry path: same override, same getter-untouched requirement.
+        const delivered = await new Promise<number>((resolve, reject) => {
+          (client.query as unknown as (...a: unknown[]) => unknown)(
+            makeCfg(),
+            [42],
+            (err: unknown, res: pg.QueryResult<{ v: number }>) => {
+              if (err) reject(err);
+              else resolve(res.rows[0]?.v as number);
+            },
+          );
+        });
+        expect(delivered).toBe(42);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await endPoolAndBarrier(close);
+    }
   });
 });

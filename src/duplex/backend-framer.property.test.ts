@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-
+import { propertyRuns } from '../__tests__/property-runs.ts';
 import {
   type CallbackEvent,
   concatBytes,
@@ -60,7 +60,7 @@ describe('BackendMessageFramer properties', () => {
         expect(collect(split.outputs)).toEqual(collect(whole.outputs));
         expect(split.trace).toEqual(whole.trace);
       }),
-      { numRuns: 500 },
+      { numRuns: propertyRuns(500) },
     );
   });
 
@@ -75,7 +75,7 @@ describe('BackendMessageFramer properties', () => {
         expect(collect(harness.outputs)).toEqual(expected.output);
         expect(harness.trace).toEqual(expected.trace);
       }),
-      { numRuns: 500 },
+      { numRuns: propertyRuns(500) },
     );
   });
 

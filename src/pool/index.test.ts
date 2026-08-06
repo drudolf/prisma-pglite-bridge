@@ -6,9 +6,10 @@ import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
 import { createMockPGlite } from '../__tests__/mocks.ts';
 import { setupPGlite } from '../__tests__/pglite.ts';
 import { PGliteDuplex } from '../duplex/index.ts';
+import { SessionLock } from '../utils/session-lock.ts';
 import { PgBridgePool, type PgBridgePoolOptions } from './index.ts';
 import { PgBridgeClient } from './pg-bridge-client.ts';
-import { livePoolCounts } from './session-registry.ts';
+import { liveClientCounts, livePoolCounts } from './session-registry.ts';
 
 const pglite = await setupPGlite();
 
@@ -103,6 +104,40 @@ describe('PgBridgePool — max default', () => {
       }
     },
   );
+
+  describe('mutation-hardening', () => {
+    it('injects a SessionLock only for max > 1 (undefined at max:1, present at max:2)', async () => {
+      // The pool forwards its bridge options verbatim under the symbol key, so
+      // pg.Pool retains them on `options`. At max:1 the sessionLock slot must be
+      // `undefined` (no cross-client coordination needed); `max > 1 -> true` and
+      // `max > 1 -> max >= 1` both wrongly inject a SessionLock at max:1.
+      const one = new PgBridgePool({ pglite, max: 1 });
+      try {
+        const injected = (
+          one.options as unknown as {
+            [k: symbol]: { sessionLock?: SessionLock };
+          }
+        )[PgBridgeClient.OptionsKey]?.sessionLock;
+        expect(injected).toBeUndefined();
+      } finally {
+        await one.end();
+      }
+
+      // max:2 must inject a real SessionLock — pins the truthy arm so the guard
+      // is not simply `false`.
+      const two = new PgBridgePool({ pglite, max: 2 });
+      try {
+        const injected = (
+          two.options as unknown as {
+            [k: symbol]: { sessionLock?: SessionLock };
+          }
+        )[PgBridgeClient.OptionsKey]?.sessionLock;
+        expect(injected).toBeInstanceOf(SessionLock);
+      } finally {
+        await two.end();
+      }
+    });
+  });
 });
 
 describe('PgBridgePool — idleTimeoutMillis default', () => {
@@ -367,6 +402,76 @@ describe('PgBridgePool — connect-time statement cleanup', () => {
       await pool.end();
       await pglite.query('SELECT 1');
     }
+  });
+
+  describe('mutation-hardening', () => {
+    it('the connect/remove/release listeners early-return for a non-PgBridgeClient', async () => {
+      // Each listener guards with `if (!(client instanceof PgBridgeClient)) return`.
+      // The `-> false` mutants drop the guard, so a NON-PgBridgeClient emitted on
+      // these events would run the session-cleanup work. Emit plain objects (NOT
+      // via PgBridgeClient.prototype, so instanceof is false) carrying spies and
+      // assert none of the guarded work runs. A dedicated PGlite keeps the
+      // mutant's stray count writes from bleeding into other tests.
+      const local = new PGlite();
+      await local.waitReady;
+      const pool = new PgBridgePool({ pglite: local });
+      try {
+        // connect (mutant 1891): the guarded work is `client.query('DEALLOCATE ALL')`.
+        const connectQuery = vi.fn();
+        pool.emit('connect', { query: connectQuery } as unknown as pg.PoolClient);
+
+        // remove (mutant 1903): the guarded work is `client.deregisterLiveClient()`.
+        const deregister = vi.fn();
+        pool.emit('remove', { deregisterLiveClient: deregister } as unknown as pg.PoolClient);
+
+        // release (mutant 1911): the guarded work is `client.releaseAbandonedPortalHold()`.
+        const releasePortal = vi.fn();
+        pool.emit(
+          'release',
+          undefined as unknown as Error,
+          { releaseAbandonedPortalHold: releasePortal } as unknown as pg.PoolClient,
+        );
+
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(connectQuery).not.toHaveBeenCalled();
+        expect(deregister).not.toHaveBeenCalled();
+        expect(releasePortal).not.toHaveBeenCalled();
+      } finally {
+        await pool.end();
+        await local.close();
+      }
+    });
+
+    it("'remove' decrements the cross-pool client count by exactly one", async () => {
+      // The 'remove' listener computes `Math.max(0, (liveClientCounts.get() ?? 1) - 1)`.
+      // Mutant 1904 (`?? 1` -> `&& 1`) collapses a truthy count to 1; mutant 1905
+      // (max -> min) floors it to 0. Both wrongly store 0 when the count was 2 and
+      // one client is removed; the original stores 1.
+      const local = new PGlite();
+      await local.waitReady;
+      const pool = new PgBridgePool({ pglite: local, max: 2 });
+      let a: pg.PoolClient | undefined;
+      let b: pg.PoolClient | undefined;
+      try {
+        a = await pool.connect();
+        b = await pool.connect();
+        expect(liveClientCounts.get(local)).toBe(2);
+
+        // Force-destroy A: pg-pool 'remove's it, running the decrement.
+        a.release(new Error('force-destroy one of two'));
+        a = undefined;
+        // Barrier: serialize behind the teardown ROLLBACK, then flush the remove tick.
+        await local.query('SELECT 1').catch(() => {});
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(liveClientCounts.get(local)).toBe(1);
+      } finally {
+        a?.release();
+        b?.release();
+        await pool.end();
+        await local.close();
+      }
+    });
   });
 });
 
@@ -750,6 +855,120 @@ describe('PgBridgePool — shared-PGlite warning', () => {
       await local.close();
     }
   });
+
+  describe('mutation-hardening', () => {
+    it('prunes a settled teardown so end() takes the synchronous slot-release arm', async () => {
+      // The onTeardownCreated closure registers each client's teardown and prunes
+      // it on settle. Dropping the prune (`() => pendingTeardowns.delete(t)` ->
+      // `() => undefined`) leaves the set non-empty after a destroyed client's
+      // teardown settles, so end()'s `#pendingTeardowns.size === 0` gate fails and
+      // the slot is released on the DEFERRED (post-drain) arm instead of
+      // synchronously. Observed via slot-release timing: a second pool constructed
+      // synchronously right after end() sees the slot already freed (orig, no
+      // warning) or still held (mutant, warning).
+      const local = new PGlite();
+      await local.waitReady;
+      const warnings: Error[] = [];
+      const onWarning = (w: Error): void => {
+        if (w.name === 'PGliteBridgeSharedInstanceWarning') warnings.push(w);
+      };
+      process.on('warning', onWarning);
+      let b: PgBridgePool | undefined;
+      try {
+        const a = new PgBridgePool({ pglite: local });
+        const client = await a.connect();
+        // Force-destroy: pg-pool removes the client (totalCount -> 0 sync) and its
+        // duplex teardown ROLLBACK runs, then the duplex closes.
+        client.release(new Error('force-destroy for teardown prune'));
+        // Deterministic barrier: serialize behind the teardown ROLLBACK inside
+        // runExclusive, then flush the .then() prune microtask + the close tick.
+        await local.query('SELECT 1').catch(() => {});
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        await new Promise((resolve) => setImmediate(resolve));
+
+        // Original: teardown pruned -> size 0 & totalCount 0 -> sync arm frees the
+        // slot INSIDE this call, before b is constructed. Mutant: size 1 ->
+        // deferred arm, slot still held.
+        const ending = a.end();
+        b = new PgBridgePool({ pglite: local });
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(warnings).toHaveLength(0);
+        await ending;
+      } finally {
+        process.removeListener('warning', onWarning);
+        await b?.end();
+        await local.close();
+      }
+    });
+
+    it('the shared-instance warning carries all three message fragments verbatim', async () => {
+      // Three StringLiteral survivors blank one concatenation fragment each; the
+      // existing warning test only pins the WASM-mutex and interleave phrases
+      // (untouched fragments). Pin the exact text of each mutated fragment.
+      const local = new PGlite();
+      await local.waitReady;
+      const warnings: Error[] = [];
+      const onWarning = (w: Error): void => {
+        if (w.name === 'PGliteBridgeSharedInstanceWarning') warnings.push(w);
+      };
+      process.on('warning', onWarning);
+      const first = new PgBridgePool({ pglite: local });
+      let second: PgBridgePool | undefined;
+      try {
+        second = new PgBridgePool({ pglite: local });
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(warnings.length).toBeGreaterThanOrEqual(1);
+        const message = warnings[0]?.message ?? '';
+        // Fragment 1 (mutant 1880).
+        expect(message).toContain('Multiple live PgBridgePools share one PGlite instance');
+        // Fragment 3 (mutant 1882).
+        expect(message).toContain('increase throughput');
+        expect(message).toContain('Concurrent transactions from different pools');
+        // Fragment 5 (mutant 1884).
+        expect(message).toContain("await one pool's transaction before starting another's");
+      } finally {
+        process.removeListener('warning', onWarning);
+        await second?.end();
+        await first.end();
+        await local.close();
+      }
+    });
+
+    it('a never-connected pool frees its slot synchronously inside end()', async () => {
+      // A never-connected pool (totalCount 0, no teardowns) must free its slot on
+      // the SYNC arm — before super.end() drains. Mutant 1924
+      // (`totalCount===0 && size===0` -> false) and mutant 1927 (`===` -> `!==`)
+      // both force the DEFERRED arm, so the slot stays held until drain. Observed
+      // via timing: a second pool constructed synchronously after end() sees the
+      // slot freed (orig, no warning) or still held (mutant, warning).
+      const local = new PGlite();
+      await local.waitReady;
+      const warnings: Error[] = [];
+      const onWarning = (w: Error): void => {
+        if (w.name === 'PGliteBridgeSharedInstanceWarning') warnings.push(w);
+      };
+      process.on('warning', onWarning);
+      let b: PgBridgePool | undefined;
+      try {
+        const a = new PgBridgePool({ pglite: local }); // count -> 1, never connected
+        const ending = a.end(); // sync arm frees the slot to 0 before b constructs
+        b = new PgBridgePool({ pglite: local }); // orig: count 0 -> 1, no warning
+        await new Promise((resolve) => setImmediate(resolve));
+
+        // Orig: b saw a freed slot -> no shared-instance warning. Mutant: the slot
+        // was still held (deferred), so b sees count 2 -> warns.
+        expect(warnings).toHaveLength(0);
+        await ending;
+      } finally {
+        process.removeListener('warning', onWarning);
+        await b?.end();
+        await local.close();
+      }
+    });
+  });
 });
 
 describe('PgBridgePool — rollback on forced client release', () => {
@@ -807,6 +1026,92 @@ describe('PgBridgePool — #releaseLiveSlot tolerates a missing livePoolCounts e
     } finally {
       await local.close();
     }
+  });
+
+  describe('mutation-hardening', () => {
+    it('end() double-releases the slot when releaseAfterDrain is not gated (single end)', async () => {
+      // A never-connected pool takes the SYNC release arm. Mutant 1917
+      // (releaseAfterDrain init true) and mutant 1947 (deferred `if (true)`) both
+      // make drainAndClose release the slot a SECOND time. With a co-live pool the
+      // count is 2, so the floor does not mask the double-release: the slot lands
+      // at 0 (mutant) vs 1 (orig). Swallow the (correct) shared-instance warning.
+      const local = new PGlite();
+      await local.waitReady;
+      const swallow = (w: Error): void => {
+        if (w.name === 'PGliteBridgeSharedInstanceWarning') return;
+      };
+      process.on('warning', swallow);
+      let b: PgBridgePool | undefined;
+      try {
+        const a = new PgBridgePool({ pglite: local }); // count -> 1
+        b = new PgBridgePool({ pglite: local }); // count -> 2
+        expect(livePoolCounts.get(local)).toBe(2);
+
+        // A never connected -> sync arm frees once (2 -> 1); the deferred arm must
+        // NOT fire again. Await so drainAndClose has run.
+        await a.end();
+        expect(livePoolCounts.get(local)).toBe(1);
+      } finally {
+        process.removeListener('warning', swallow);
+        await b?.end();
+        await local.close();
+      }
+    });
+
+    it('end() releases the slot exactly once across a double end() while another pool is live', async () => {
+      // Mutant 1919 (`!#endStarted` -> true) and mutant 1922 (`#endStarted = true`
+      // -> false) both remove the exactly-once latch, so a SECOND end() re-runs
+      // the release decision. The existing exactly-once test uses a count that
+      // floors at 0 (masking the extra decrement); a co-live pool keeps the count
+      // at 2 -> 1, where the second decrement (1 -> 0 mutant) is visible.
+      const local = new PGlite();
+      await local.waitReady;
+      const swallow = (w: Error): void => {
+        if (w.name === 'PGliteBridgeSharedInstanceWarning') return;
+      };
+      process.on('warning', swallow);
+      let b: PgBridgePool | undefined;
+      try {
+        const a = new PgBridgePool({ pglite: local }); // count -> 1
+        b = new PgBridgePool({ pglite: local }); // count -> 2
+        expect(livePoolCounts.get(local)).toBe(2);
+
+        await a.end(); // first end: 2 -> 1
+        // pg-pool rejects a repeated end(); the latch must keep the count at 1.
+        await a.end().catch(() => {});
+        expect(livePoolCounts.get(local)).toBe(1);
+      } finally {
+        process.removeListener('warning', swallow);
+        await b?.end();
+        await local.close();
+      }
+    });
+
+    it('#releaseLiveSlot decrements the pool slot by exactly one when two pools are live', async () => {
+      // #releaseLiveSlot does `Math.max(0, (livePoolCounts.get() ?? 1) - 1)`.
+      // Mutant 1961 (max -> min) floors to 0. With two live pools (count 2),
+      // ending one must leave the count at 1 (orig) not 0 (mutant). The existing
+      // NaN-floor test only exercises count 0, where max/min agree.
+      const local = new PGlite();
+      await local.waitReady;
+      const swallow = (w: Error): void => {
+        if (w.name === 'PGliteBridgeSharedInstanceWarning') return;
+      };
+      process.on('warning', swallow);
+      let a: PgBridgePool | undefined;
+      try {
+        a = new PgBridgePool({ pglite: local }); // count -> 1
+        const b = new PgBridgePool({ pglite: local }); // count -> 2
+        expect(livePoolCounts.get(local)).toBe(2);
+
+        await b.end(); // #releaseLiveSlot: max(0, 2-1) = 1
+        expect(livePoolCounts.get(local)).toBe(1);
+      } finally {
+        process.removeListener('warning', swallow);
+        await a?.end();
+        await local.close();
+      }
+    });
   });
 });
 

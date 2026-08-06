@@ -230,8 +230,10 @@ export class FastQuery implements pg.Submittable {
    *  own Result parsing. */
   handleCommandComplete(msg: { text: string }): void {
     const match = COMMAND_TAG.exec(msg.text);
-    /* v8 ignore next — command tags are server-generated and always match */
+    /* v8 ignore start — command tags are server-generated and always match */
+    // Stryker disable next-line ConditionalExpression: accept — Server-generated command tags always start with [A-Za-z]+ so COMMAND_TAG.exec never returns null; the !match guard is defensively unreachable and already marked /* v8 ignore next */.
     if (!match) return;
+    /* v8 ignore stop */
     // The command group is mandatory in the regex — present whenever it matches.
     this.command = match[1] as string;
     if (match[3] !== undefined) {
@@ -291,6 +293,7 @@ export class FastQuery implements pg.Submittable {
     if (this.settled) return;
     this.settled = true;
     if (error) {
+      // Stryker disable next-line ArrayDeclaration: accept — On the error path settle() rejects (rows are never included in a rejection), settled=true drops all straggler rows, and the resolve payload is unreachable after reject — so the cleared this.rows value is never read; hygiene-only clear.
       this.rows = [];
       this.deferred.reject(error);
       return;

@@ -284,10 +284,12 @@ export class PGliteDuplex extends Duplex {
     this.framer = new BackendMessageFramer({
       rewriteSystemCatalogCharOids: this.rewriteSystemCatalogCharOids,
       onChunk: (chunk) => {
-        /* c8 ignore next — race-only: teardown/Terminate during a recovery stream */
+        /* c8 ignore start — race-only: teardown/Terminate during a recovery stream */
+        // Stryker disable next-line ConditionalExpression,LogicalOperator,StringLiteral: accept — onChunk push-guard is /* c8 ignore */ race-only (teardown/Terminate during a recovery stream); forcing the whole condition true only pushes during a torn-down/terminated race, not deterministically reachable.
         if (!this.tornDown && this.phase !== 'terminated' && chunk.length > 0) {
           this.push(chunk);
         }
+        /* c8 ignore stop */
       },
       onErrorResponse: () => {
         this.errSeen = true;
@@ -299,6 +301,7 @@ export class PGliteDuplex extends Duplex {
         // previously suspended portal chain has ended (terminating Sync
         // response, or the RFQ PGlite appends to an error).
         this.portalSuspended = false;
+        // Stryker disable next-line ConditionalExpression,StringLiteral: accept — phase!=='terminated'→true drops the guard on updateStatus in onReadyForQuery; a framed RFQ while phase='terminated' occurs only via a recovery-stream/teardown race (drain loop and deliverRecoverySync both refuse to run streamProtocol once terminated).
         if (this.sessionLock && this.phase !== 'terminated') {
           this.sessionLock.updateStatus(this.duplexId, status);
         }
@@ -452,6 +455,7 @@ export class PGliteDuplex extends Duplex {
       // Loop until no more pending data to process
       while (this.input.length > 0) {
         /* c8 ignore start — race-only: destroy after a drain iteration resolves */
+        // Stryker disable next-line ConditionalExpression: accept — The `if (this.tornDown) break` is inside a /* c8 ignore start — race-only: destroy after a drain iteration resolves */ region; tornDown flips mid-drain only via a destroy racing an iteration, not deterministically reachable.
         if (this.tornDown) break;
         const beforeLength = this.input.length;
 

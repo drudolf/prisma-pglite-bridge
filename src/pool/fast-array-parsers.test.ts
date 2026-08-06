@@ -5,7 +5,12 @@ import type pg from 'pg';
 import TypeOverrides from 'pg/lib/type-overrides';
 import { describe, expect, it } from 'vitest';
 import { setupPGlite } from '../__tests__/pglite.ts';
-import { type TypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
+import {
+  isObject,
+  isTypesLike,
+  type TypesLike,
+  wrapTypesWithFastArrayParsers,
+} from './fast-array-parsers.ts';
 import { PgBridgePool } from './index.ts';
 
 const pglite = await setupPGlite();
@@ -254,6 +259,94 @@ describe('PgBridgeClient — wraps types in pool.query', () => {
       expect(result.rows[0]).toEqual(['CUSTOMIZED']);
     } finally {
       await pool.end();
+    }
+  });
+});
+
+describe('mutation-hardening: survivor kills', () => {
+  it('defaults the format to text when getTypeParser is called with a single argument', () => {
+    const inner = adapterStyleTypes();
+    const wrapped = wrapTypesWithFastArrayParsers(inner);
+    // Single-arg call must default to 'text' and hit the fast array path.
+    expect(wrapped.getTypeParser(1009)('{a,b,c}')).toEqual(['a', 'b', 'c']);
+    expect(wrapped.getTypeParser(1007)('{1,2}')).toEqual(['1', '2']);
+  });
+
+  it('isObject rejects null', () => {
+    expect(isObject(null)).toBe(false);
+    expect(isObject({})).toBe(true);
+  });
+
+  it('isTypesLike rejects a non-function getTypeParser', () => {
+    expect(isTypesLike({ getTypeParser: 42 })).toBe(false);
+    expect(isTypesLike({ getTypeParser: () => (raw: string) => raw })).toBe(true);
+  });
+
+  it('installs an element-parsing fast path for every element-OID array in the map', () => {
+    // Each array OID must resolve its element parser and parse the literal to a
+    // JS array. If the [arrayOid, elementOid] entry is dropped, the OID falls
+    // through to the inner identity parser and the raw literal is returned.
+    const cases: ReadonlyArray<{
+      arrayOid: number;
+      elementOid: number;
+      element: (raw: string) => unknown;
+      literal: string;
+      expected: unknown[];
+    }> = [
+      {
+        arrayOid: 1000,
+        elementOid: 16,
+        element: (raw) => raw === 't',
+        literal: '{t,f}',
+        expected: [true, false],
+      },
+      {
+        arrayOid: 1005,
+        elementOid: 21,
+        element: (raw) => Number(raw),
+        literal: '{7,8}',
+        expected: [7, 8],
+      },
+      {
+        arrayOid: 1017,
+        elementOid: 600,
+        element: (raw) => `P:${raw}`,
+        literal: '{p1,p2}',
+        expected: ['P:p1', 'P:p2'],
+      },
+      {
+        arrayOid: 1021,
+        elementOid: 700,
+        element: (raw) => Number(raw),
+        literal: '{1.5,2.5}',
+        expected: [1.5, 2.5],
+      },
+      {
+        arrayOid: 1022,
+        elementOid: 701,
+        element: (raw) => Number(raw),
+        literal: '{2.25,3.25}',
+        expected: [2.25, 3.25],
+      },
+      {
+        arrayOid: 1028,
+        elementOid: 26,
+        element: (raw) => Number(raw),
+        literal: '{42,43}',
+        expected: [42, 43],
+      },
+      {
+        arrayOid: 1187,
+        elementOid: 1186,
+        element: (raw) => `I:${raw}`,
+        literal: '{iv1,iv2}',
+        expected: ['I:iv1', 'I:iv2'],
+      },
+    ];
+    for (const { arrayOid, elementOid, element, literal, expected } of cases) {
+      const inner = adapterStyleTypes({ [elementOid]: element });
+      const wrapped = wrapTypesWithFastArrayParsers(inner);
+      expect(wrapped.getTypeParser(arrayOid, 'text')(literal), `OID ${arrayOid}`).toEqual(expected);
     }
   });
 });

@@ -137,3 +137,71 @@ describe('rewriteRowDescriptionInPlace', () => {
     expect(readField(frame, 3)).toEqual({ name: 'contype', oid: 25, size: -1 });
   });
 });
+
+describe('mutation-hardening: survivor kills', () => {
+  it('does not treat a user-space tableOID as system-catalog when a high byte is zeroed', () => {
+    const frame = Buffer.from(
+      encodeRowDescription([
+        { name: 'hi1', tableOID: 0x01000005, oid: 18, size: 1 },
+        { name: 'hi2', tableOID: 0x00010005, oid: 18, size: 1 },
+        { name: 'hi3', tableOID: 0x00004005, oid: 18, size: 1 },
+      ]),
+    );
+
+    expect(rowDescriptionNeedsRewrite(frame)).toBe(false);
+  });
+
+  it('reads the field count from offset 5, not a byte before it', () => {
+    const frame = Buffer.from(
+      encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]),
+    );
+    frame[4] = 0;
+
+    expect(rowDescriptionNeedsRewrite(frame)).toBe(true);
+  });
+
+  it('inspects exactly fieldCount fields, not one more', () => {
+    const frame = Buffer.from(
+      encodeRowDescription([
+        { name: 'id', tableOID: 0, oid: 23, size: 4 },
+        { name: 'contype', tableOID: 2606, oid: 18, size: 1 },
+      ]),
+    );
+    frame.writeUInt16BE(1, 5);
+
+    expect(rowDescriptionNeedsRewrite(frame)).toBe(false);
+  });
+
+  it('returns false when the last field is truncated by the sub-range end', () => {
+    const frame = Buffer.from(
+      encodeRowDescription([
+        { name: 'id', tableOID: 0, oid: 23, size: 4 },
+        { name: 'contype', tableOID: 2606, oid: 18, size: 1 },
+      ]),
+    );
+
+    expect(rowDescriptionNeedsRewrite(frame, 0, frame.length - 1)).toBe(false);
+  });
+
+  it('does not flag a char field whose tableOID equals the first user OID', () => {
+    const frame = Buffer.from(
+      encodeRowDescription([{ name: 'contype', tableOID: 16384, oid: 18, size: 1 }]),
+    );
+
+    expect(rowDescriptionNeedsRewrite(frame)).toBe(false);
+  });
+
+  it('rewrites exactly fieldCount fields, not one more', () => {
+    const frame = Buffer.from(
+      encodeRowDescription([
+        { name: 'id', tableOID: 0, oid: 23, size: 4 },
+        { name: 'contype', tableOID: 2606, oid: 18, size: 1 },
+      ]),
+    );
+    frame.writeUInt16BE(1, 5);
+
+    rewriteRowDescriptionInPlace(frame);
+
+    expect(readField(frame, 1)).toEqual({ name: 'contype', oid: 18, size: 1 });
+  });
+});

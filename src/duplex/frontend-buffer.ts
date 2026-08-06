@@ -102,10 +102,13 @@ export class FrontendMessageBuffer {
 
     while (remaining > 0) {
       const chunk = this.chunks[this.headIndex];
-      /* c8 ignore next 3 — guarded by line-116 length check */
+      /* c8 ignore start — guarded by line-116 length check */
+      // Stryker disable next-line BlockStatement,ConditionalExpression: accept — c8-ignored defensive underflow throw; line-77 length guard (length > totalLength throws) makes chunk always defined inside the slow-path loop, so the throw is unreachable and its removal unobservable.
       if (chunk === undefined) {
+        // Stryker disable next-line StringLiteral: accept — The thrown message is on the c8-ignored unreachable underflow branch (guaranteed defined by line-77 length check); its literal is never produced.
         throw new Error('FrontendMessageBuffer underflow');
       }
+      /* c8 ignore stop */
       const available = chunk.length - this.headOffset;
       const bytesToCopy = Math.min(remaining, available);
       result.set(chunk.subarray(this.headOffset, this.headOffset + bytesToCopy), writeOffset);

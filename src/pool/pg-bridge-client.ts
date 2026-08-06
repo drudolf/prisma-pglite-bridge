@@ -97,6 +97,7 @@ const createQueryTimeout = (delay: unknown): QueryTimeout => {
     }, delay as number);
   });
   const clear = (): void => {
+    // Stryker disable next-line ConditionalExpression: accept — createQueryTimeout.clear guard `timer === undefined`→false: clearTimeout(undefined) is a documented no-op and timer is already undefined on the taken path, so the early return is unobservable; clear() is only reached post-settle where the timer has already fired-or-cleared.
     if (timer === undefined) return;
     clearTimeout(timer);
     timer = undefined;
@@ -251,8 +252,10 @@ export class PgBridgeClient extends pg.Client {
     try {
       assertPgInternals(this, features);
     } catch (error) {
-      /* v8 ignore next -- pg 8.x invokes the supplied stream factory synchronously in super() */
+      /* v8 ignore start -- pg 8.x invokes the supplied stream factory synchronously in super() */
+      // Stryker disable next-line OptionalChaining: accept — `duplexBox.current?.destroy`→non-optional in the assertPgInternals catch: pg 8.x runs the stream factory synchronously in super(), so current is always set on this reachable arm (line is `/* v8 ignore */` for the undefined case); the `?.` guard is defensive-only and its removal changes nothing observable.
       duplexBox.current?.destroy();
+      /* v8 ignore stop */
       throw error;
     }
 
@@ -294,6 +297,7 @@ export class PgBridgeClient extends pg.Client {
    *  `PgBridgePool`'s `'release'` listener when this client returns to the
    *  pool. */
   releaseAbandonedPortalHold(): void {
+    // Stryker disable next-line OptionalChaining: accept — `this.#duplexBox.current?.releaseAbandonedPortalHold`→non-optional: pg runs the stream factory synchronously in super(), so #duplexBox.current is always defined for a constructed client; the `?.` undefined arm is unreachable (same guarantee as the /* v8 ignore */ teardown guards) and its removal is unobservable.
     this.#duplexBox.current?.releaseAbandonedPortalHold();
   }
 
@@ -320,6 +324,7 @@ export class PgBridgeClient extends pg.Client {
     if (
       getPgActiveQuery(this) != null &&
       this.querySubmissionChain === undefined &&
+      // Stryker disable next-line OptionalChaining: accept — `this.#duplexBox.current?.hasSuspendedPortal`→non-optional: #duplexBox.current is always defined post-construction (stream factory runs synchronously in super()), so the `?.` undefined arm is unreachable; removal is unobservable.
       this.#duplexBox.current?.hasSuspendedPortal() !== true
     ) {
       return;
@@ -333,6 +338,7 @@ export class PgBridgeClient extends pg.Client {
     // re-checks when it runs — which is also why a user-queued COMMIT tail
     // legitimately wins over the cleanup: the re-check finds the transaction
     // closed and no-ops silently.
+    // Stryker disable next-line OptionalChaining: accept — `this.#duplexBox.current?.inTransaction`→non-optional: #duplexBox.current is always defined post-construction (stream factory runs synchronously in super()), so the `?.` undefined arm is unreachable; removal is unobservable.
     if (this.querySubmissionChain === undefined && !this.#duplexBox.current?.inTransaction) {
       return;
     }
@@ -356,8 +362,10 @@ export class PgBridgeClient extends pg.Client {
     const prior = this.querySubmissionChain ?? Promise.resolve();
     const cleanup = (): Promise<void> => {
       const duplex = this.#duplexBox.current;
-      /* v8 ignore next — a release-registered link implies the stream factory ran */
+      /* v8 ignore start — a release-registered link implies the stream factory ran */
+      // Stryker disable next-line ConditionalExpression: accept — `duplex === undefined`→false inside the cleanup link: a release-registered link implies the stream factory ran (line is `/* v8 ignore */`), so current is always defined when the link runs; removing the guard is unobservable on every reachable path.
       if (duplex === undefined) return Promise.resolve();
+      /* v8 ignore stop */
       // Teardown won the race (or the in-flight query died with its
       // connection): the duplex _destroy path already rolls back. And a
       // transaction closed by the in-flight work itself needs no cleanup.
@@ -373,6 +381,7 @@ export class PgBridgeClient extends pg.Client {
       // naming, no dealloc intercept, no fast path).
       return super.query('ROLLBACK').then(
         () => undefined,
+        // Stryker disable next-line BlockStatement: accept — the ROLLBACK-rejection recovery block →`{}`: `/* v8 ignore */` defensive arm — pg's bare `super.query('ROLLBACK')` on a live abandoned tx does not reject in the test-reachable path, so the destroy-on-rollback-failure branch has no deterministic driver through the public API; unobservable without stubbing pg's ROLLBACK to reject, which is an internal seam not a behavior.
         (err: unknown) => {
           // The ROLLBACK failing means the connection itself is broken — a
           // plain swallow would park a dirty client in pg-pool's idle set
@@ -380,8 +389,10 @@ export class PgBridgeClient extends pg.Client {
           // instead: its _destroy path (rollbackIfInTransaction + lock
           // cancel) is the authoritative backstop, and pg-pool's idle
           // 'error' listener removes the dead client from the pool.
-          /* v8 ignore next — defensive arm: pg rejects with Error instances, and the duplex outlives its client */
+          /* v8 ignore start — defensive arm: pg rejects with Error instances, and the duplex outlives its client */
+          // Stryker disable next-line OptionalChaining: accept — `this.#duplexBox.current?.destroy`→non-optional inside the same `/* v8 ignore */` ROLLBACK-failure arm as 2068: unreachable deterministically; accept for the same reason.
           this.#duplexBox.current?.destroy(err instanceof Error ? err : new Error(String(err)));
+          /* v8 ignore stop */
         },
       );
     };
@@ -403,10 +414,14 @@ export class PgBridgeClient extends pg.Client {
   get teardown(): DuplexTeardown {
     const duplex = this.#duplexBox.current;
     return {
-      /* v8 ignore next — pg runs the stream factory synchronously in super(), so a constructed client always has a duplex */
+      /* v8 ignore start — pg runs the stream factory synchronously in super(), so a constructed client always has a duplex */
+      // Stryker disable next-line OptionalChaining: accept — `duplex?.onClose`→non-optional in the teardown getter: `/* v8 ignore */` — pg runs the stream factory synchronously in super() so a constructed client always has a duplex; the `?.` undefined arm is unreachable post-construction.
       settled: duplex?.onClose ?? Promise.resolve(),
-      /* v8 ignore next — same guarantee: the `?.` undefined arm is unreachable post-construction */
+      /* v8 ignore stop */
+      /* v8 ignore start — same guarantee: the `?.` undefined arm is unreachable post-construction */
+      // Stryker disable next-line OptionalChaining: accept — `duplex?.destroy`→non-optional in the teardown getter's abort: same `/* v8 ignore */` guarantee as 2077 — the undefined arm is unreachable post-construction.
       abort: (reason) => duplex?.destroy(reason),
+      /* v8 ignore stop */
     };
   }
 
@@ -491,6 +506,7 @@ export class PgBridgeClient extends pg.Client {
             // pg-pool evicts the dead client. (A Submittable WITHOUT
             // handleError crashes in that delivery — pg's own runtime
             // contract, identical to stock pg erroring such an object.)
+            // Stryker disable next-line OptionalChaining: accept — `this.#duplexBox.current?.destroy`→non-optional in the deferred-submit-throws recovery: this arm runs only on a connected client (the stream factory ran), where current is always defined, so the `?.` undefined arm is unreachable and its removal is unobservable.
             this.#duplexBox.current?.destroy(err instanceof Error ? err : new Error(String(err)));
           }
         });
@@ -953,6 +969,7 @@ export class PgBridgeClient extends pg.Client {
   #fastSubmit(args: unknown[]): (() => Promise<FastQueryResult>) | undefined {
     if (!this.#fastQueryPath) return undefined;
     const config = args[0];
+    // Stryker disable next-line ConditionalExpression: accept — non-object configs route to the stock path; every LEGAL first-arg is equivalent under `→false` (a string/number falls through the downstream `typeof name !== 'string'` check to the same `return undefined`), so only a type-illegal null/undefined first-arg distinguishes it, by throwing on `config.values` — a contract the fast suite deliberately does not pin.
     if (!isObject(config)) return undefined;
 
     const values = args[1] ?? config.values;

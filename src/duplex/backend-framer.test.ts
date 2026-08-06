@@ -891,4 +891,160 @@ describe('BackendMessageFramer', () => {
       expect(collect(outputs).length).toBe(copyInResponse.length);
     });
   });
+
+  describe('mutation-hardening: survivor kills', () => {
+    it('emits a ReadyForQuery immediately when constructed with no suppression option (default false)', () => {
+      // No suppressIntermediateReadyForQuery passed: the constructor default must
+      // be false, so a complete RFQ is emitted on write() rather than held.
+      const outputs: Uint8Array[] = [];
+      const statuses: number[] = [];
+      const framer = new BackendMessageFramer({
+        onChunk: (chunk) => outputs.push(chunk.slice()),
+        onReadyForQuery: (status) => statuses.push(status),
+      });
+      framer.write(RFQ_IDLE);
+      // Assert BEFORE flush: suppression-on (mutant) would hold the RFQ here.
+      expect(collect(outputs)).toEqual(RFQ_IDLE);
+      expect(statuses).toEqual([0x49]);
+      framer.flush();
+      expect(collect(outputs)).toEqual(RFQ_IDLE);
+    });
+
+    it('coalesces a trailing zero-payload message into the same fast-path slice (available === 5 boundary)', () => {
+      // DATA (9 bytes) then CopyDone (5 bytes, zero payload). At the CopyDone start
+      // `available === 5` exactly: `available >= 5` keeps it on the fast path so both
+      // messages coalesce into ONE passthrough slice. `available > 5` would divert
+      // CopyDone to the slow path, flushing DATA alone then emitting a separate prefix.
+      const copyDone = encodeMessage(0x63, new Uint8Array(0));
+      const combined = collect([DATA, copyDone]);
+      const outputs: Uint8Array[] = [];
+      const framer = new BackendMessageFramer({
+        onChunk: (chunk) => outputs.push(chunk),
+      });
+      framer.write(combined);
+      framer.flush();
+      expect(collect(outputs)).toEqual(combined);
+      expect(outputs).toHaveLength(1);
+    });
+
+    it('reads every length-header byte in the fast path (b1 and b3 are load-bearing)', () => {
+      // b1 (bits 24-31): length 0x01000000 = 16777216 is valid; zeroing b1 -> length 0
+      // -> Malformed<4. Original defers to the slow path (no throw on this 5-byte write).
+      const b1Header = new Uint8Array([0x44, 0x01, 0x00, 0x00, 0x00]);
+      expect(() => makeHarness().framer.write(b1Header)).not.toThrow();
+      // b3 (bits 8-15): length 0x00000100 = 256 is valid; zeroing b3 -> length 0 -> Malformed<4.
+      const b3Header = new Uint8Array([0x44, 0x00, 0x00, 0x01, 0x00]);
+      expect(() => makeHarness().framer.write(b3Header)).not.toThrow();
+    });
+
+    it('reads the b3 length byte when the header is assembled via the slow path', () => {
+      // Type byte alone, then the 4 length bytes: forces slow-path header decode.
+      // Length 0x00000100 = 256 is valid; zeroing b3 -> length 0 -> Malformed<4.
+      const { framer } = makeHarness();
+      framer.write(new Uint8Array([0x44]));
+      expect(() => framer.write(new Uint8Array([0x00, 0x00, 0x01, 0x00]))).not.toThrow();
+    });
+
+    it('accepts a message length of exactly the sanity cap on the fast path (boundary is >, not >=)', () => {
+      // 0x40000000 === MAX_MESSAGE_LENGTH. `> MAX` accepts it (deferring to the slow
+      // path); `>= MAX` would throw `exceeds sanity cap` on this 5-byte write.
+      const atCap = new Uint8Array([0x44, 0x40, 0x00, 0x00, 0x00]);
+      expect(() => makeHarness().framer.write(atCap)).not.toThrow();
+    });
+
+    it('accepts a message length of exactly the sanity cap when assembled via the slow path (boundary is >, not >=)', () => {
+      // Split header so length 0x40000000 === MAX decodes on the slow path. `> MAX`
+      // accepts it (waits for payload); `>= MAX` would throw `exceeds sanity cap`.
+      const { framer } = makeHarness();
+      framer.write(new Uint8Array([0x44]));
+      expect(() => framer.write(new Uint8Array([0x40, 0x00, 0x00, 0x00]))).not.toThrow();
+    });
+
+    it('does not invoke callbacks that were not provided', () => {
+      // onErrorResponse / onReadyForQuery are optional. With `?.` removed, the
+      // corresponding frame calls `undefined()` and throws TypeError. Cover both
+      // the fast path (whole frame in one chunk) and the slow path (split header).
+      const makeBare = () => {
+        const outputs: Uint8Array[] = [];
+        return {
+          outputs,
+          framer: new BackendMessageFramer({ onChunk: (chunk) => outputs.push(chunk.slice()) }),
+        };
+      };
+      // 74: ErrorResponse, fast path.
+      expect(() => makeBare().framer.write(ERROR)).not.toThrow();
+      // 180: ErrorResponse, slow path (type byte split from the length header).
+      {
+        const { framer } = makeBare();
+        framer.write(ERROR.subarray(0, 1));
+        expect(() => framer.write(ERROR.subarray(1, 5))).not.toThrow();
+      }
+      // 93: ReadyForQuery, fast path.
+      expect(() => makeBare().framer.write(RFQ_IDLE)).not.toThrow();
+      // 278: ReadyForQuery, slow path (finishReadyForQuery drives the callback).
+      {
+        const { framer } = makeBare();
+        framer.write(RFQ_IDLE.subarray(0, 3));
+        expect(() => framer.write(RFQ_IDLE.subarray(3))).not.toThrow();
+      }
+    });
+
+    it('only rewrites frames whose type byte is RowDescription, not lookalike payloads', () => {
+      // A DataRow-typed (0x44) frame carrying a payload that scans as a
+      // rewrite-needing RowDescription (pg_catalog oid-18 field). The type gate must
+      // keep it byte-identical; forcing the gate true would corrupt oid 18 -> 25.
+      const rd = encodeRowDescription([{ name: 'contype', tableOID: 2606, oid: 18, size: 1 }]);
+      const fake = rd.slice();
+      fake[0] = 0x44; // relabel T -> D; payload unchanged
+      const { framer, outputs } = makeHarness();
+      framer.write(fake);
+      framer.flush();
+      expect(collect(outputs)).toEqual(fake);
+      // The oid at the field slot is still 18 (offset: 7 + len('contype')+1 + 4 + 2 = 21).
+      expect(Buffer.from(collect(outputs)).readUInt32BE(21)).toBe(18);
+    });
+
+    it('finalizes a zero-payload dropped CopyInResponse so the stream ends cleanly', () => {
+      // Arm the drop, then feed a bare (zero-payload) CopyInResponse byte-by-byte so
+      // the header completes on the slow path with payloadBytesRemaining === 0. The
+      // drop branch must call finishMessage(); skipping it strands the framer
+      // mid-message so flush() throws Incomplete instead of returning cleanly.
+      const { framer, outputs } = makeHarness();
+      framer.reset(false, true);
+      const bareCopyIn = encodeMessage(0x47, new Uint8Array(0));
+      for (const piece of splitEvery(bareCopyIn, 1)) {
+        framer.write(piece);
+      }
+      expect(() => framer.flush()).not.toThrow();
+      expect(outputs).toHaveLength(0);
+    });
+
+    it.each([
+      { name: 'b1', header: [0x44, 0x01, 0x00, 0x00, 0x05], expected: 16777222 },
+      { name: 'b2', header: [0x44, 0x00, 0x01, 0x00, 0x05], expected: 65542 },
+      { name: 'b3', header: [0x44, 0x00, 0x00, 0x01, 0x05], expected: 262 },
+    ])(
+      'reports the true expected byte count from length $name in the incomplete-message error',
+      ({ header, expected }) => {
+        // Full 5-byte header (type + declared length), no payload: flush() recomputes
+        // the total from headerScratch. Zeroing any length byte would shrink the
+        // reported `expected` figure below its true value.
+        const { framer } = makeHarness();
+        framer.write(new Uint8Array(header));
+        expect(() => framer.flush()).toThrow(new RegExp(`expected ${expected} bytes`));
+      },
+    );
+
+    it('actually discards the held RFQ on flush({dropHeldReadyForQuery:true}) so a later flush cannot resurrect it', () => {
+      // With suppression on, DATA + a held final RFQ. flush({drop}) must clear the
+      // buffered RFQ (rfqBytesRead -> 0); if the drop is a no-op the RFQ stays
+      // buffered and a subsequent plain flush() emits the stale RFQ.
+      const { framer, outputs } = makeHarness(true);
+      framer.write(DATA);
+      framer.write(RFQ_IDLE);
+      framer.flush({ dropHeldReadyForQuery: true });
+      framer.flush();
+      expect(collect(outputs)).toEqual(DATA);
+    });
+  });
 });

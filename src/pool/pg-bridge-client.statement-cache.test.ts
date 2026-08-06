@@ -547,4 +547,198 @@ describe('PgBridgeClient — gated statement cache with piggybacked Close', () =
       await pglite.query('SELECT 1');
     }
   });
+
+  describe('mutation-hardening', () => {
+    it('applies object-form capacity/minUsages knobs from statementCaching', async () => {
+      // typeof caching === 'object' → true would spread a boolean, dropping the
+      // object knobs and reverting to defaults (capacity 500 / minUsages 2). Drive
+      // minUsages: 3 so the divergence is observable: a shape is named on its THIRD
+      // sighting under the object knob, but on its SECOND under the default gate the
+      // mutant falls back to.
+      const { pool, close } = await createCachingPool({ capacity: 2, minUsages: 3 });
+      try {
+        const client = await pool.connect();
+        try {
+          const before = new Set(await listPpb());
+          // Two sightings: below the (real) minUsages: 3 gate — no ppb_ statement.
+          await client.query({ text: 'SELECT $1::int AS n', values: [1] });
+          await client.query({ text: 'SELECT $1::int AS n', values: [1] });
+          const afterTwo = (await listPpb()).filter((name) => !before.has(name));
+          expect(afterTwo).toEqual([]); // mutant (default gate 2) would have promoted here
+          // Third sighting promotes under the object knob.
+          await client.query({ text: 'SELECT $1::int AS n', values: [1] });
+          const afterThree = (await listPpb()).filter((name) => !before.has(name));
+          expect(afterThree).toHaveLength(1);
+        } finally {
+          client.release();
+        }
+      } finally {
+        await close();
+        await pglite.query('SELECT 1');
+      }
+    });
+
+    it('wraps a config types object with fast-array parsers on the fast path', async () => {
+      // Kills the types-wrapping guard/block (2112/2114): a promoted named +
+      // rowMode:'array' shape carrying a `types` object must have that object
+      // wrapped so FastQuery resolves the ARRAY OID through the fast wrapper (which
+      // parses the array structure and delegates the ELEMENT to the original) rather
+      // than through the caller's array-OID parser directly.
+      //
+      // Stock pg.types parses int[] to a JS array either way, so a plain
+      // Array.isArray check cannot distinguish the mutant. Use a probe `types`
+      // whose ARRAY-OID parser (1007 = _int4) is a sentinel string and whose
+      // ELEMENT-OID parser (23 = int4) is a ×10 transform. Wrapped (original):
+      // wrapper handles 1007 and calls original(23) per element → [10,20,30].
+      // Unwrapped (mutant): FastQuery calls the sentinel array parser directly →
+      // 'UNWRAPPED:{1,2,3}'.
+      const probeTypes = {
+        getTypeParser: (oid: number, _format = 'text') => {
+          if (oid === 23) return (raw: string) => Number(raw) * 10; // int4 element
+          if (oid === 1007) return (raw: string) => `UNWRAPPED:${raw}`; // _int4 array sentinel
+          return (raw: string) => raw;
+        },
+      };
+      const { pool, close } = await createCachingPool(true);
+      try {
+        const client = await pool.connect();
+        try {
+          const shape = () => ({
+            text: 'SELECT ARRAY[1,2,3]::int[] AS a',
+            values: [] as unknown[],
+            rowMode: 'array' as const,
+            types: probeTypes,
+          });
+          // First sighting below the gate (stock pg), second promotes to FastQuery.
+          await client.query(shape());
+          const promoted = await client.query(shape());
+          expect(promoted.constructor.name).not.toBe('Result'); // fast path engaged
+          // Wrapped types → the int[] column is parsed via the wrapper's array
+          // parser + delegated ×10 element parser: [10,20,30]. The mutant leaves
+          // types unwrapped, so FastQuery hits the sentinel array parser instead.
+          const cell = (promoted.rows as unknown[][])[0]?.[0];
+          expect(Array.isArray(cell)).toBe(true);
+          expect(cell).toEqual([10, 20, 30]);
+        } finally {
+          client.release();
+        }
+      } finally {
+        await close();
+        await pglite.query('SELECT 1');
+      }
+    });
+
+    it('injects a generated statement name only when the config text is a string', async () => {
+      // Kills 2137 (`typeof queryConfig.text === 'string'` → true): with the guard
+      // forced true, a config whose `text` is NOT a string still calls the name
+      // generator. The injected name is unobservable through a clean execution (pg
+      // rejects a non-string text), but the generator has a SIDE EFFECT — a promotion
+      // consumes the client's monotonic seq. The observable is the seq suffix of the
+      // NEXT real promotion: a fresh client's first promotion is ppb_<ns>_0 under the
+      // guard (non-string calls skipped), but ppb_<ns>_1 under the mutant — a
+      // non-string text that COERCES to cacheable SQL (an array whose toString is
+      // 'SELECT 999') promotes and steals seq 0. Under the mutant that named
+      // non-string Parse also wedges the session, so the real query never promotes;
+      // either way the mutant fails this test. Queries are bounded so the mutant
+      // fails fast instead of hanging.
+      const bounded = (p: Promise<unknown>): Promise<unknown> =>
+        Promise.race([
+          p.catch(() => undefined),
+          new Promise((resolve) => setTimeout(resolve, 1_000)),
+        ]);
+      const { pool, close } = await createCachingPool(true);
+      try {
+        const client = await pool.connect();
+        try {
+          const before = new Set(await listPpb());
+          // Non-string text object form, twice. It coerces to the cacheable string
+          // 'SELECT 999', so under the mutant the generator promotes it (seq 0).
+          // Under the guard it is skipped (typeof text !== 'string').
+          const arrText = ['SELECT 999'] as unknown as string;
+          await bounded(client.query({ text: arrText, values: [], rowMode: 'array' as const }));
+          await bounded(client.query({ text: arrText, values: [], rowMode: 'array' as const }));
+          // No ppb_ statement lands from the non-string text either way.
+          expect((await listPpb()).filter((n) => !before.has(n))).toEqual([]);
+
+          // A real string text promotes on its 2nd sighting. Under the guard its seq
+          // suffix is _0 (the non-string calls consumed nothing). Under the mutant the
+          // wedged session prevents promotion (no fresh ppb_ lands), failing the
+          // length assertion; if it did land it would carry the stolen _1 suffix.
+          await bounded(client.query({ text: 'SELECT $1::int AS n', values: [1] }));
+          await bounded(client.query({ text: 'SELECT $1::int AS n', values: [1] }));
+          const promoted = (await listPpb()).filter((n) => !before.has(n));
+          expect(promoted).toHaveLength(1);
+          const seq = Number((promoted[0] as string).split('_').pop());
+          expect(seq).toBe(0); // mutant: the non-string promotion stole seq 0 → this is 1
+        } finally {
+          client.release();
+        }
+      } finally {
+        await close();
+        await pglite.query('SELECT 1');
+      }
+    });
+
+    it('a valueless named + array-rowMode config still takes the fast path', async () => {
+      // Kills 2383 (`values !== undefined && !Array.isArray(values)` → `!Array.isArray
+      // (values)`): a promoted shape executed WITHOUT a values array (values undefined)
+      // must stay eligible for FastQuery. The mutant disqualifies it (!isArray(undefined)
+      // is true) and falls back to stock pg's `Result`.
+      const { pool, close } = await createCachingPool(true);
+      try {
+        const client = await pool.connect();
+        try {
+          // A parameterless cacheable shape (no values). First sighting below the gate;
+          // second promotes. Then run WITHOUT a values array.
+          const named = { text: 'SELECT 7 AS n', rowMode: 'array' as const, types: pg.types };
+          await client.query(named);
+          const promoted = await client.query(named);
+          // Under the original the promoted no-values run is FastQuery (not a Result);
+          // under the mutant it degrades to stock pg's Result.
+          expect(promoted.rows).toEqual([[7]]);
+          expect(promoted.constructor.name).not.toBe('Result');
+        } finally {
+          client.release();
+        }
+      } finally {
+        await close();
+        await pglite.query('SELECT 1');
+      }
+    });
+
+    it('does not decode statement-cache invalidation for a config whose text is not a string', async () => {
+      // Kills 2274 (`isObject(config) && typeof config.text === 'string'` → true): the
+      // detection must only trust a STRING text. Forced true, a config object with a
+      // non-string `text` (e.g. an accessor returning a DEALLOCATE-shaped non-string,
+      // or a number) would be handed to decodeStatementCacheInvalidation as a
+      // non-string and could mis-decode / throw. Assert a warm named statement is NOT
+      // evicted by a non-string-text object-form query.
+      const { pool, close } = await createCachingPool(true);
+      try {
+        const client = await pool.connect();
+        try {
+          // Promote a shape so there is a ppb_ statement + a fields cache entry.
+          const before = new Set(await listPpb());
+          await client.query({ text: 'SELECT $1::int AS n', values: [1] });
+          await client.query({ text: 'SELECT $1::int AS n', values: [1] });
+          const promoted = (await listPpb()).filter((n) => !before.has(n));
+          expect(promoted).toHaveLength(1);
+
+          // A non-string-text object-form query: detection must return null (no
+          // dealloc), so the promoted statement survives and re-runs on the fast path.
+          await client
+            .query({ text: Number(123) as unknown as string, rowMode: 'array' as const })
+            .catch(() => {});
+          expect(await listPpb()).toEqual(expect.arrayContaining(promoted));
+          const warm = await client.query({ text: 'SELECT $1::int AS n', values: [2] });
+          expect(warm.rows).toEqual([{ n: 2 }]);
+        } finally {
+          client.release();
+        }
+      } finally {
+        await close();
+        await pglite.query('SELECT 1');
+      }
+    });
+  });
 });

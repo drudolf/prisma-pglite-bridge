@@ -483,17 +483,22 @@ export class PgBridgePool extends pg.Pool {
       const drained = await Promise.race([
         Promise.all([...this.#pendingTeardowns].map((t) => t.settled)).then(() => {
           clearTimeout(drainTimer);
+          // Stryker disable next-line BooleanLiteral: accept — return true -> false makes `drained` false on the happy path, entering the abort loop over ALREADY-SETTLED teardowns; abort===duplex.destroy() is a no-op on a closed stream, so unobservable on every reachable (non-timeout) input. Only the 10s drain-bound expiry path (excluded/NoCoverage) gives it teeth.
           return true;
         }),
         new Promise<boolean>((resolve) => {
-          /* v8 ignore next — fires only when a teardown outlives the drain bound */
+          /* v8 ignore start — fires only when a teardown outlives the drain bound */
+          // Stryker disable next-line ArrowFunction,BooleanLiteral: accept — The drain-timer callback fires only after TEARDOWN_DRAIN_MS (10s, unref'd) and only when a teardown outlives the bound; the happy path clearTimeouts it before it fires, so () => resolve(false) -> () => undefined is unobservable in the fast suite (drain-bound path is excluded/defensive).
           drainTimer = setTimeout(() => resolve(false), TEARDOWN_DRAIN_MS);
+          /* v8 ignore stop */
           drainTimer.unref();
         }),
       ]);
       /* v8 ignore start — defensive drain-bound expiry: every reachable teardown settles (its rollback serializes through runExclusive) */
+      // Stryker disable next-line BooleanLiteral,ConditionalExpression,BlockStatement: accept — !drained -> drained flips WHICH `drained` value runs the abort loop; on reachable inputs drained is always true and the loop is a no-op over settled teardowns, so the flip is unobservable. Teeth only on the excluded 10s drain-bound path.
       if (!drained) {
         const reason = new Error(
+          // Stryker disable next-line StringLiteral: accept — NoCoverage: blanks the abort Error's message, produced only on the excluded 10s drain-bound-expiry path. Defensive; out of fast-suite scope.
           'PgBridgePool.end(): a duplex teardown did not settle within the drain bound',
         );
         // Includes handles of connect-failed clients whose duplex is already

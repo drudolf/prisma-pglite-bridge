@@ -7,6 +7,7 @@ import { setupPGlite } from '../__tests__/pglite.ts';
 import { PgBridgeError } from '../errors.ts';
 import { PgBridgePool } from '../pool';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
+import { lockWaitChannel, queryChannel } from '../telemetry/diagnostics.ts';
 import { SessionLock } from '../utils/session-lock.ts';
 import { PGliteDuplex } from './index.ts';
 
@@ -1230,6 +1231,347 @@ describe('PGliteDuplex error paths', () => {
 
     duplex.destroy();
   });
+
+  describe('mutation-hardening', () => {
+    it('does not run protocol cleanup for a small raw-byte total under the 8 MiB cap', async () => {
+      // 703/704 collapse PROTOCOL_CLEANUP_RAW_BYTES from 8 MiB to 8 bytes. A
+      // single response of ~100 bytes then trips the (broken) cap even though
+      // fewer than 32 calls have happened. Pin the real 8 MiB threshold.
+      const execProtocolStream = vi.fn().mockResolvedValue([]);
+      // A single, well-formed 100-byte DataRow ('D') frame: 1 type byte + a
+      // 4-byte length of 99 + 95 payload bytes. 100 raw bytes is far under the
+      // real 8 MiB cap (no cleanup) yet trips the mutants' collapsed 8-byte cap.
+      const hundredByteFrame = Buffer.alloc(100);
+      hundredByteFrame[0] = 0x44; // 'D'
+      hundredByteFrame.writeUInt32BE(99, 1); // declared length (4 + 95 payload)
+      const pglite = createMockPGlite({
+        execProtocolRawStream: vi.fn(async (_message, options) => {
+          options.onRawData(hundredByteFrame);
+        }),
+        execProtocolStream,
+      });
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+
+      // One startup call: 100 accumulated bytes, 1 call — both far below the
+      // real 8 MiB / 32-call thresholds, so cleanup must NOT fire.
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      expect(execProtocolStream).not.toHaveBeenCalled();
+
+      duplex.destroy();
+    });
+
+    it('reports no suspended portal on a freshly constructed duplex', () => {
+      // 710 flips the initial portalSuspended to true, which hasSuspendedPortal()
+      // surfaces before any RFQ has cleared it.
+      const duplex = new PGliteDuplex(createMockPGlite());
+      duplex.on('error', () => {});
+      expect(duplex.hasSuspendedPortal()).toBe(false);
+      duplex.destroy();
+    });
+
+    it('passes syncToFs:true to execProtocolRawStream when the option is omitted', async () => {
+      // 717 (?? true → && true) yields undefined; 718 (?? true → ?? false) yields
+      // false. Either way execOptions.syncToFs !== true.
+      const execProtocolRawStream = vi.fn(async (_message, options) => {
+        options.onRawData(RFQ_IDLE_MESSAGE);
+      });
+      const pglite = createMockPGlite({ execProtocolRawStream });
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      expect(execProtocolRawStream.mock.calls[0]?.[1]?.syncToFs).toBe(true);
+
+      duplex.destroy();
+    });
+
+    it('drops a _write after Terminate without buffering it', async () => {
+      // 781/783/784 defeat the phase==='terminated' guard, so _write falls
+      // through to input.push and the bytes linger (drain cannot consume them
+      // while phase is terminated). Pin that input stays empty.
+      const pglite = createMockPGlite({
+        execProtocolRawStream: vi.fn(async () => {}),
+        runExclusive: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+      });
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await expect(
+        writeAndAwait(duplex, Buffer.from([0x58, 0x00, 0x00, 0x00, 0x04])),
+      ).resolves.toBeUndefined();
+      expect((duplex as unknown as { phase: string }).phase).toBe('terminated');
+
+      type WriteInternal = (
+        chunk: Buffer,
+        encoding: BufferEncoding,
+        callback: (error?: Error | null) => void,
+      ) => void;
+      const rawWrite = (duplex as unknown as { _write: WriteInternal })._write.bind(duplex);
+      await new Promise<void>((resolve) =>
+        rawWrite(simpleQuery('SELECT after_term'), 'utf-8', () => resolve()),
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect((duplex as unknown as { input: { length: number } }).input.length).toBe(0);
+
+      duplex.destroy();
+    });
+
+    it('drops a _writev after Terminate without buffering it', async () => {
+      // 787/789/790 defeat the phase==='terminated' guard in _writev.
+      const pglite = createMockPGlite({
+        execProtocolRawStream: vi.fn(async () => {}),
+        runExclusive: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+      });
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await expect(
+        writeAndAwait(duplex, Buffer.from([0x58, 0x00, 0x00, 0x00, 0x04])),
+      ).resolves.toBeUndefined();
+      expect((duplex as unknown as { phase: string }).phase).toBe('terminated');
+
+      type WritevInternal = (
+        chunks: Array<{ chunk: Buffer; encoding: BufferEncoding }>,
+        callback: (error?: Error | null) => void,
+      ) => void;
+      const rawWritev = (duplex as unknown as { _writev: WritevInternal })._writev.bind(duplex);
+      await new Promise<void>((resolve) =>
+        rawWritev([{ chunk: simpleQuery('SELECT after_term'), encoding: 'utf8' }], () => resolve()),
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect((duplex as unknown as { input: { length: number } }).input.length).toBe(0);
+
+      duplex.destroy();
+    });
+
+    it('_final releases the session lock and emits EOF when not yet terminated', async () => {
+      // 795 (phase!=='terminated' → false) and 798 (block → {}) skip the _final
+      // release + push(null). With a held lock and a queued waiter, that is
+      // observable: the waiter is never granted and no 'end' fires.
+      const pglite = createMockPGlite({ execProtocolRawStream: vi.fn(async () => {}) });
+      const lock = new SessionLock();
+      const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
+      duplex.on('error', () => {});
+      duplex.resume();
+      const ended = new Promise<void>((resolve) => duplex.once('end', resolve));
+
+      // Startup emits no RFQ (default mock), so the duplex still owns the lock.
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+
+      const waiter = Symbol('waiter');
+      let granted = false;
+      void lock.acquire(waiter).then(() => {
+        granted = true;
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(granted).toBe(false);
+
+      const finished = new Promise<void>((resolve) => duplex.once('finish', resolve));
+      duplex.end();
+      await finished;
+      await ended;
+
+      expect(granted).toBe(true);
+      expect(duplex.readableEnded).toBe(true);
+
+      duplex.destroy();
+    });
+
+    it('_final emits EOF for a standalone (lockless) duplex without throwing', async () => {
+      // 799 removes the optional chaining on sessionLock?.release. For a
+      // standalone duplex (no lock) that throws inside _final BEFORE push(null),
+      // so EOF is never emitted.
+      const pglite = createMockPGlite({ execProtocolRawStream: vi.fn(async () => {}) });
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+      duplex.resume();
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+
+      const finished = new Promise<void>((resolve) => duplex.once('finish', resolve));
+      duplex.end();
+      await finished;
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(duplex.readableEnded).toBe(true);
+
+      duplex.destroy();
+    });
+
+    it('fails queued write callbacks with a Bridge-destroyed error on argless destroy', async () => {
+      // 803 blanks the default destroy error message. destroy() with no argument
+      // must surface new Error('Bridge destroyed') to queued write callbacks.
+      const pglite = createMockPGlite({ runExclusive: vi.fn(() => new Promise<void>(() => {})) });
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+
+      const writeResult = writeAndAwait(duplex, startupBytes());
+      await new Promise((resolve) => setImmediate(resolve));
+
+      duplex.destroy();
+      const err = await writeResult;
+      expect(err).toBeInstanceOf(Error);
+      expect(err?.message).toBe('Bridge destroyed');
+    });
+
+    it('empties the drain queue on _destroy', async () => {
+      // 804 replaces this.drainQueue=[] with ['Stryker was here']. With a hanging
+      // runExclusive no later drain resets it, so the poisoned array persists.
+      const pglite = createMockPGlite({ runExclusive: vi.fn(() => new Promise<void>(() => {})) });
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+
+      const writeResult = writeAndAwait(duplex, startupBytes());
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const destroyErr = new Error('boom');
+      duplex.destroy(destroyErr);
+      await expect(writeResult).resolves.toBe(destroyErr);
+
+      expect((duplex as unknown as { drainQueue: unknown[] }).drainQueue).toHaveLength(0);
+    });
+
+    it('does not run processMessages while the startup message is still incomplete', async () => {
+      // 829 (phase==='ready' → true) runs processMessages during pre_startup. A
+      // partial startup declaring 16 MiB, whose offset-1 int32 is 0 (<4), makes
+      // the mutant throw 'Malformed frontend message length' instead of quietly
+      // waiting for the rest of the startup.
+      const pglite = createMockPGlite({
+        runExclusive: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+        execProtocolRawStream: vi.fn(async () => {}),
+      });
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+
+      // Declared startup length 0x01000000 (16 MiB): valid, still incomplete at
+      // 5 bytes. Bytes 1..4 are 0x00000000, so processMessages would read
+      // msgLen 0 (< 4) and throw.
+      const partialStartup = Buffer.from([0x01, 0x00, 0x00, 0x00, 0x00]);
+      await expect(writeAndAwait(duplex, partialStartup)).resolves.toBeUndefined();
+
+      duplex.destroy();
+    });
+
+    it('waits (does not reject) when a startup frame declares exactly the sanity cap', async () => {
+      // 876 (len>MAX → len>=MAX) rejects a startup whose declared length equals
+      // MAX_MESSAGE_LENGTH. The original treats it as merely incomplete.
+      const duplex = new PGliteDuplex(createMockPGlite());
+      duplex.on('error', () => {});
+
+      const header = Buffer.alloc(4);
+      header.writeUInt32BE(1_073_741_824, 0); // MAX_MESSAGE_LENGTH exactly
+      await expect(writeAndAwait(duplex, header)).resolves.toBeUndefined();
+
+      duplex.destroy();
+    });
+
+    it('runUnderRunExclusive does not run op when phase is terminated', async () => {
+      // 892 (cond → false) / 894 ('terminated' → '') defeat the terminated skip
+      // in runUnderRunExclusive. Force phase and invoke it directly.
+      const duplex = new PGliteDuplex(createMockPGlite());
+      duplex.on('error', () => {});
+      (duplex as unknown as { phase: string }).phase = 'terminated';
+
+      let opRan = false;
+      await (
+        duplex as unknown as { runUnderRunExclusive: (op: () => Promise<void>) => Promise<void> }
+      ).runUnderRunExclusive(async () => {
+        opRan = true;
+      });
+      expect(opRan).toBe(false);
+
+      duplex.destroy();
+    });
+
+    it('clears currentPGliteCall in the runExclusive finally', async () => {
+      // 896 empties the finally, so currentPGliteCall keeps the resolved op
+      // promise. Pin that it is undefined after a completed query.
+      const pglite = createMockPGlite({
+        runExclusive: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+        execProtocolRawStream: vi.fn(async (_message, options) => {
+          options.onRawData(RFQ_IDLE_MESSAGE);
+        }),
+      });
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
+
+      expect(
+        (duplex as unknown as { currentPGliteCall?: unknown }).currentPGliteCall,
+      ).toBeUndefined();
+
+      duplex.destroy();
+    });
+
+    it('waits (does not reject) when a post-startup frame declares exactly the sanity cap', async () => {
+      // 916 (msgLen>MAX → msgLen>=MAX) rejects a frame whose declared length
+      // equals MAX_MESSAGE_LENGTH; the original treats it as incomplete.
+      const duplex = new PGliteDuplex(createMockPGlite());
+      duplex.on('error', () => {});
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+
+      const capFrame = Buffer.alloc(5);
+      capFrame[0] = 0x51; // 'Q'
+      capFrame.writeUInt32BE(1_073_741_824, 1); // MAX_MESSAGE_LENGTH exactly
+      await expect(writeAndAwait(duplex, capFrame)).resolves.toBeUndefined();
+
+      duplex.destroy();
+    });
+
+    it('clears the suspended-portal flag on Terminate', async () => {
+      // 931 (portalSuspended=false → true) leaves the flag set after Terminate.
+      const pglite = createMockPGlite({
+        execProtocolRawStream: vi.fn(async () => {}),
+        runExclusive: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+      });
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await expect(
+        writeAndAwait(duplex, Buffer.from([0x58, 0x00, 0x00, 0x00, 0x04])),
+      ).resolves.toBeUndefined();
+
+      expect(duplex.hasSuspendedPortal()).toBe(false);
+
+      duplex.destroy();
+    });
+
+    it('does not sniff COPY on a non-Query standalone frame', async () => {
+      // 974 (msgType===QUERY → true) runs sniffCopyIn on every standalone frame.
+      // A non-Query frame ('F', 0x46) whose payload reads 'COPY t FROM STDIN'
+      // would then wrongly start a capture (synthetic 'G', frame withheld).
+      const execProtocolRawStream = vi.fn(async (_message: Uint8Array, options) => {
+        options.onRawData(RFQ_IDLE_MESSAGE);
+      });
+      const duplex = new PGliteDuplex(createMockPGlite({ execProtocolRawStream }));
+      duplex.on('error', () => {});
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      const startupCalls = execProtocolRawStream.mock.calls.length;
+
+      const text = Buffer.from('COPY t FROM STDIN\0');
+      const nonQuery = Buffer.alloc(5 + text.length);
+      nonQuery[0] = 0x46; // 'F' — not a Query, not EQP, not copy/sync/flush/terminate
+      nonQuery.writeUInt32BE(4 + text.length, 1);
+      text.copy(nonQuery, 5);
+      await expect(writeAndAwait(duplex, nonQuery)).resolves.toBeUndefined();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Forwarded to PGlite, no capture started, no synthetic CopyInResponse.
+      expect(execProtocolRawStream.mock.calls.length).toBe(startupCalls + 1);
+      expect((duplex as unknown as { copyCapture?: unknown }).copyCapture).toBeUndefined();
+
+      duplex.destroy();
+    });
+  });
 });
 
 describe('PGliteDuplex RowDescription rewrite option', () => {
@@ -2029,7 +2371,6 @@ describe('PGliteDuplex flush portal boundary', () => {
           options.onRawData(PORTAL_SUSPENDED_MESSAGE);
           return;
         }
-        // biome-ignore lint/style/useThrowOnlyError: the non-Error throw IS the case under test
         throw 'recovery delivery string boom';
       },
     );
@@ -2079,6 +2420,170 @@ describe('PGliteDuplex flush portal boundary', () => {
     await duplex.onClose;
 
     expect(queryCalls).toContain('ROLLBACK');
+  });
+
+  describe('mutation-hardening', () => {
+    it('clears the deferred recovery request after delivering the recovery Sync', async () => {
+      // 854 (portalRecoveryRequested=false → true) leaves the deferred request
+      // latched after the drain finally consumes it and delivers. Pin that the
+      // request flag is cleared.
+      let releaseGate!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      let call = 0;
+      const execProtocolRawStream = vi.fn(
+        async (_message: Uint8Array, options: { onRawData: (chunk: Uint8Array) => void }) => {
+          call += 1;
+          if (call === 1) {
+            options.onRawData(RFQ_IDLE_MESSAGE); // startup
+            return;
+          }
+          if (call === 2) {
+            await gate; // flush batch held in-flight
+            options.onRawData(frame(0x44)); // DataRow 'D'
+            options.onRawData(frame(0x73)); // PortalSuspended 's' — no RFQ
+            return;
+          }
+          options.onRawData(RFQ_IDLE_MESSAGE); // delivered recovery Sync response
+        },
+      );
+      const duplex = new PGliteDuplex(createMockPGlite({ execProtocolRawStream }));
+      duplex.on('error', () => {});
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      const flushWrite = writeAndAwait(duplex, flushBatch());
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Mid-flight (draining, portal not yet suspended): defer the recovery.
+      duplex.releaseAbandonedPortalHold();
+      expect(
+        (duplex as unknown as { portalRecoveryRequested: boolean }).portalRecoveryRequested,
+      ).toBe(true);
+
+      releaseGate();
+      await flushWrite;
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(
+        (duplex as unknown as { portalRecoveryRequested: boolean }).portalRecoveryRequested,
+      ).toBe(false);
+
+      duplex.destroy();
+      await duplex.onClose;
+    });
+
+    it('does not deliver a recovery Sync when a deferred request resolves with no suspended portal', async () => {
+      // 855 (cond → true) and 857 (&& → ||) deliver a recovery Sync even though
+      // the portal was left idle (a plain passthrough query, portalSuspended
+      // false). Pin that no bare-Sync reaches PGlite.
+      let releaseGate!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      let bareSyncCalls = 0;
+      let call = 0;
+      const execProtocolRawStream = vi.fn(
+        async (message: Uint8Array, options: { onRawData: (chunk: Uint8Array) => void }) => {
+          if (message.length === 5 && message[0] === 0x53) {
+            bareSyncCalls += 1;
+            options.onRawData(RFQ_IDLE_MESSAGE);
+            return;
+          }
+          call += 1;
+          if (call === 1) {
+            options.onRawData(RFQ_IDLE_MESSAGE); // startup
+            return;
+          }
+          await gate; // passthrough query held in-flight
+          options.onRawData(RFQ_IDLE_MESSAGE); // idle RFQ → portal NOT suspended
+        },
+      );
+      const duplex = new PGliteDuplex(createMockPGlite({ execProtocolRawStream }));
+      duplex.on('error', () => {});
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      const queryWrite = writeAndAwait(duplex, simpleQuery('SELECT 1'));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Mid-flight defer: draining, portalSuspended still false.
+      duplex.releaseAbandonedPortalHold();
+
+      releaseGate();
+      await queryWrite;
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(bareSyncCalls).toBe(0);
+
+      duplex.destroy();
+      await duplex.onClose;
+    });
+
+    it('does not deliver a recovery Sync when the deferred drain errors', async () => {
+      // 858 (error===null → true) delivers a recovery Sync during an errored,
+      // tearing-down drain that left the portal suspended with a deferred
+      // request pending. The errored drain owns teardown; no Sync must be issued.
+      let releaseGate!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      let bareSyncCalls = 0;
+      let call = 0;
+      const execProtocolRawStream = vi.fn(
+        async (message: Uint8Array, options: { onRawData: (chunk: Uint8Array) => void }) => {
+          if (message.length === 5 && message[0] === 0x53) {
+            bareSyncCalls += 1;
+            options.onRawData(RFQ_IDLE_MESSAGE);
+            return;
+          }
+          call += 1;
+          if (call === 1) {
+            options.onRawData(RFQ_IDLE_MESSAGE); // startup
+            return;
+          }
+          if (call === 2) {
+            await gate; // flush batch held in-flight
+            options.onRawData(frame(0x44)); // DataRow
+            options.onRawData(frame(0x73)); // PortalSuspended — no RFQ → suspended
+            return;
+          }
+          throw new Error('drain boom'); // the trailing simple query fails the drain
+        },
+      );
+      const duplex = new PGliteDuplex(createMockPGlite({ execProtocolRawStream }));
+      duplex.on('error', () => {});
+
+      // Direct pin on the errored-drain guard: the drain's finally must not even
+      // reach deliverRecoverySync when error !== null. bareSyncCalls stays 0 for
+      // the wrong reason under the mutant (the destroy-set tornDown makes
+      // runUnderRunExclusive early-return), so spy the delivery entry point.
+      const deliverSpy = vi.spyOn(
+        duplex as unknown as { deliverRecoverySync: () => void },
+        'deliverRecoverySync',
+      );
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+
+      // One coalesced write: flush batch (suspends) followed by a query that
+      // throws — both processed within one drain.
+      const combined = Buffer.concat([flushBatch(), simpleQuery('SELECT boom')]);
+      const combinedWrite = writeAndAwait(duplex, combined);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Mid-flight defer while the flush is gated and the portal is not yet suspended.
+      duplex.releaseAbandonedPortalHold();
+
+      releaseGate();
+      const err = await combinedWrite;
+      expect(err).toBeInstanceOf(Error);
+      await duplex.onClose;
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(deliverSpy).not.toHaveBeenCalled();
+      expect(bareSyncCalls).toBe(0);
+    });
   });
 });
 
@@ -2920,6 +3425,83 @@ describe('PGliteDuplex COPY FROM STDIN capture (raw frames)', () => {
     duplex.destroy();
     await duplex.onClose;
   });
+
+  describe('mutation-hardening', () => {
+    it('answers a copy cap breach with SQLSTATE 54000', async () => {
+      // 953 blanks the '54000' code of the cap-breach ErrorResponse. Read the
+      // 'C' (code) field of the emitted error frame.
+      const errorCodeField = (payload: Buffer): string => {
+        let p = 0;
+        while (p < payload.length) {
+          const fieldType = payload[p];
+          if (fieldType === undefined || fieldType === 0) break;
+          const end = payload.indexOf(0, p + 1);
+          if (fieldType === 0x43) return payload.subarray(p + 1, end).toString('utf8'); // 'C'
+          p = end + 1;
+        }
+        return '';
+      };
+
+      const capQuery = simpleQuery('COPY t FROM STDIN');
+      const { pglite } = createScriptedCopyPGlite([[RFQ_IDLE_MESSAGE], [RFQ_IDLE_MESSAGE]]);
+      const duplex = new PGliteDuplex(pglite, { copyAggregateCapBytes: capQuery.length - 1 });
+      duplex.on('error', () => {});
+      const received = collect(duplex);
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await settle();
+      const startupLen = Buffer.concat(received).length;
+
+      await expect(writeAndAwait(duplex, capQuery)).resolves.toBeUndefined();
+      await expect(writeAndAwait(duplex, frame(COPY_DONE))).resolves.toBeUndefined();
+      await settle();
+
+      const frames = framesAfter(received, startupLen);
+      const error = frames.find((f) => f.type === ERROR_RESPONSE);
+      expect(error).toBeDefined();
+      expect(errorCodeField(error?.payload ?? Buffer.alloc(0))).toBe('54000');
+
+      duplex.destroy();
+      await duplex.onClose;
+    });
+
+    it('rejects a multi-statement COPY with SQLSTATE 0A000', async () => {
+      // 991 blanks the '0A000' code of the multi-statement rejection.
+      const errorCodeField = (payload: Buffer): string => {
+        let p = 0;
+        while (p < payload.length) {
+          const fieldType = payload[p];
+          if (fieldType === undefined || fieldType === 0) break;
+          const end = payload.indexOf(0, p + 1);
+          if (fieldType === 0x43) return payload.subarray(p + 1, end).toString('utf8'); // 'C'
+          p = end + 1;
+        }
+        return '';
+      };
+
+      const { pglite } = createScriptedCopyPGlite([[RFQ_IDLE_MESSAGE], [RFQ_IDLE_MESSAGE]]);
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+      const received = collect(duplex);
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await settle();
+      const startupLen = Buffer.concat(received).length;
+
+      await expect(
+        writeAndAwait(duplex, simpleQuery('COPY t (n) FROM STDIN; SELECT 1')),
+      ).resolves.toBeUndefined();
+      await settle();
+
+      const frames = framesAfter(received, startupLen);
+      const error = frames.find((f) => f.type === ERROR_RESPONSE);
+      expect(error).toBeDefined();
+      expect(errorCodeField(error?.payload ?? Buffer.alloc(0))).toBe('0A000');
+
+      duplex.destroy();
+      await duplex.onClose;
+    });
+  });
 });
 
 // ————— Tier A site pins: utils/wait-pglite-ready.ts —————
@@ -2980,5 +3562,816 @@ describe('waitPGliteReady Tier A site pins (PgBridgeError)', () => {
     expect((caught as PgBridgeError).code).toBe('PGLITE_NOT_READY');
     expect((caught as PgBridgeError).name).toBe('PgBridgeError');
     expect((caught as PgBridgeError).message).toBe('PGlite instance not ready: startup failed');
+  });
+});
+
+describe('PGliteDuplex telemetry & recovery mutation-hardening', () => {
+  it('records and publishes accurate durations and a successful query event when telemetry, a bridgeId, and channel subscribers are all present', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const simpleQuery = (sql: string): Buffer => {
+      const payload = Buffer.from(`${sql}\0`);
+      const len = 4 + payload.length;
+      const buf = Buffer.alloc(1 + len);
+      buf[0] = 0x51;
+      buf.writeUInt32BE(len, 1);
+      payload.copy(buf, 5);
+      return buf;
+    };
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+
+    let call = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      call += 1;
+      if (call <= 2) options.onRawData(RFQ_IDLE); // startup + query both succeed idle
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const telemetry = createMockTelemetry();
+    const bridgeId = Symbol('bridge');
+    const duplex = new PGliteDuplex(pglite, { bridgeId, telemetry });
+    duplex.on('error', () => {});
+
+    const queryEvents: Array<{ bridgeId: symbol; durationMs: number; succeeded: boolean }> = [];
+    const lockWaitEvents: Array<{ bridgeId: symbol; durationMs: number }> = [];
+    const onQuery = (msg: unknown) => queryEvents.push(msg as never);
+    const onLockWait = (msg: unknown) => lockWaitEvents.push(msg as never);
+    queryChannel.subscribe(onQuery);
+    lockWaitChannel.subscribe(onLockWait);
+
+    try {
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
+      // A fresh hrtime-in-ms: the real per-query delta is a tiny fraction of it,
+      // while the (queryStart + lockStart) arithmetic mutant is ~2x it.
+      const nowMs = Number(process.hrtime.bigint()) / 1_000_000;
+
+      expect(telemetry.recordLockWait).toHaveBeenCalled();
+      const lockWaitMs = vi.mocked(telemetry.recordLockWait).mock.calls.at(-1)?.[0] as number;
+      expect(lockWaitMs).toBeGreaterThanOrEqual(0);
+      expect(lockWaitMs).toBeLessThan(nowMs);
+
+      expect(telemetry.recordQuery).toHaveBeenCalled();
+      const [queryMs, succeeded] = vi.mocked(telemetry.recordQuery).mock.calls.at(-1) as [
+        number,
+        boolean,
+      ];
+      expect(queryMs).toBeGreaterThanOrEqual(0);
+      expect(queryMs).toBeLessThan(nowMs);
+      expect(succeeded).toBe(true);
+
+      const lockWaitEvent = lockWaitEvents.at(-1);
+      expect(lockWaitEvent).toBeDefined();
+      expect(lockWaitEvent?.bridgeId).toBe(bridgeId);
+      expect(typeof lockWaitEvent?.durationMs).toBe('number');
+
+      const queryEvent = queryEvents.at(-1);
+      expect(queryEvent).toBeDefined();
+      expect(queryEvent?.bridgeId).toBe(bridgeId);
+      expect(typeof queryEvent?.durationMs).toBe('number');
+      expect(queryEvent?.succeeded).toBe(true);
+    } finally {
+      queryChannel.unsubscribe(onQuery);
+      lockWaitChannel.unsubscribe(onLockWait);
+      duplex.destroy();
+    }
+  });
+
+  it('never publishes to the query or lock-wait channels when no bridgeId is set, even while subscribers are attached', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const simpleQuery = (sql: string): Buffer => {
+      const payload = Buffer.from(`${sql}\0`);
+      const len = 4 + payload.length;
+      const buf = Buffer.alloc(1 + len);
+      buf[0] = 0x51;
+      buf.writeUInt32BE(len, 1);
+      payload.copy(buf, 5);
+      return buf;
+    };
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+
+    let call = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      call += 1;
+      if (call <= 2) options.onRawData(RFQ_IDLE);
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    // Telemetry present (so the timed path runs) but NO bridgeId → both publish
+    // flags must stay false regardless of subscribers.
+    const telemetry = createMockTelemetry();
+    const duplex = new PGliteDuplex(pglite, { telemetry });
+    duplex.on('error', () => {});
+
+    let queryEventCount = 0;
+    let lockWaitEventCount = 0;
+    const onQuery = () => {
+      queryEventCount += 1;
+    };
+    const onLockWait = () => {
+      lockWaitEventCount += 1;
+    };
+    queryChannel.subscribe(onQuery);
+    lockWaitChannel.subscribe(onLockWait);
+
+    try {
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
+
+      // Timing still recorded to the internal sink (telemetry present)…
+      expect(telemetry.recordQuery).toHaveBeenCalled();
+      // …but the public channels must see nothing: publishQuery/publishLockWait
+      // require a bridgeId, which is absent.
+      expect(queryEventCount).toBe(0);
+      expect(lockWaitEventCount).toBe(0);
+    } finally {
+      queryChannel.unsubscribe(onQuery);
+      lockWaitChannel.unsubscribe(onLockWait);
+      duplex.destroy();
+    }
+  });
+
+  it('records a succeeded=true query when the exclusive callback never runs (op skipped)', async () => {
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const simpleQuery = (sql: string): Buffer => {
+      const payload = Buffer.from(`${sql}\0`);
+      const len = 4 + payload.length;
+      const buf = Buffer.alloc(1 + len);
+      buf[0] = 0x51;
+      buf.writeUInt32BE(len, 1);
+      payload.copy(buf, 5);
+      return buf;
+    };
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+
+    // runExclusive resolves WITHOUT invoking its callback — mirrors a PGlite
+    // queue where the duplex's op is skipped. `succeeded` then keeps its
+    // initializer and is recorded from the finally block.
+    const pglite = createMockPGlite({ runExclusive: vi.fn(async () => {}) });
+    const telemetry = createMockTelemetry();
+    const duplex = new PGliteDuplex(pglite, { telemetry });
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
+
+    // No op ran, yet the query is recorded — its succeeded flag must be the
+    // `true` initializer, not `false`.
+    expect(telemetry.recordQuery).toHaveBeenCalled();
+    const [, succeeded] = vi.mocked(telemetry.recordQuery).mock.calls.at(-1) as [number, boolean];
+    expect(succeeded).toBe(true);
+
+    duplex.destroy();
+  });
+
+  it('forwards every ReadyForQuery in a passthrough response (does not suppress intermediate RFQs)', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const simpleQuery = (sql: string): Buffer => {
+      const payload = Buffer.from(`${sql}\0`);
+      const len = 4 + payload.length;
+      const buf = Buffer.alloc(1 + len);
+      buf[0] = 0x51;
+      buf.writeUInt32BE(len, 1);
+      payload.copy(buf, 5);
+      return buf;
+    };
+    const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+
+    let call = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      call += 1;
+      if (call === 1)
+        options.onRawData(RFQ_IDLE); // startup
+      else if (call === 2) {
+        options.onRawData(RFQ_IDLE);
+        options.onRawData(RFQ_IDLE);
+      } // TWO RFQs
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+    const received: Buffer[] = [];
+    duplex.on('data', (chunk: Buffer) => received.push(chunk));
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await settle();
+    const startupLen = Buffer.concat(received).length;
+
+    await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
+    await settle();
+
+    // Passthrough keeps BOTH RFQs (12 bytes). Suppressing (the mutant) keeps
+    // only the last one (6 bytes).
+    const response = Buffer.concat(received).subarray(startupLen);
+    expect(response.length).toBe(RFQ_IDLE.length * 2);
+    expect(response.equals(Buffer.concat([RFQ_IDLE, RFQ_IDLE]))).toBe(true);
+
+    duplex.destroy();
+  });
+
+  it('keeps a backend CopyInResponse in a passthrough response (does not arm the copy-in drop)', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const COPY_IN_RESPONSE_FRAME = Buffer.from([0x47, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00]);
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const simpleQuery = (sql: string): Buffer => {
+      const payload = Buffer.from(`${sql}\0`);
+      const len = 4 + payload.length;
+      const buf = Buffer.alloc(1 + len);
+      buf[0] = 0x51;
+      buf.writeUInt32BE(len, 1);
+      payload.copy(buf, 5);
+      return buf;
+    };
+    const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+
+    let call = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      call += 1;
+      if (call === 1)
+        options.onRawData(RFQ_IDLE); // startup
+      else if (call === 2) {
+        options.onRawData(COPY_IN_RESPONSE_FRAME);
+        options.onRawData(RFQ_IDLE);
+      }
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+    const received: Buffer[] = [];
+    duplex.on('data', (chunk: Buffer) => received.push(chunk));
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await settle();
+    const startupLen = Buffer.concat(received).length;
+
+    await expect(writeAndAwait(duplex, simpleQuery('SELECT 1'))).resolves.toBeUndefined();
+    await settle();
+
+    // Passthrough forwards the 'G' frame; the copy-in-drop mutant would strip it,
+    // leaving only the RFQ.
+    const response = Buffer.concat(received).subarray(startupLen);
+    expect(response[0]).toBe(0x47);
+    expect(response.length).toBe(COPY_IN_RESPONSE_FRAME.length + RFQ_IDLE.length);
+    expect(response.subarray(0, COPY_IN_RESPONSE_FRAME.length).equals(COPY_IN_RESPONSE_FRAME)).toBe(
+      true,
+    );
+
+    duplex.destroy();
+  });
+
+  it('does not reset the pending-call counter at the threshold when protocol cleanup is not needed', async () => {
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+
+    const execProtocolStream = vi.fn().mockResolvedValue([]);
+    const pglite = createMockPGlite({ execProtocolStream });
+    const duplex = new PGliteDuplex(pglite, { protocolCleanupNeeded: false });
+    duplex.on('error', () => {});
+
+    const internals = duplex as unknown as { pendingProtocolCleanupCalls: number };
+    internals.pendingProtocolCleanupCalls = 31; // one more streamProtocol call hits the threshold
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+
+    // The guard is protocolCleanupNeeded && !unsupported && (threshold): with
+    // needed=false the whole cleanup block (and its counter reset) must be
+    // skipped, so the incremented counter (32) survives. The mutant forces the
+    // outer guard true, enters the block, and resets the counter to 0.
+    expect(execProtocolStream).not.toHaveBeenCalled();
+    expect(internals.pendingProtocolCleanupCalls).toBe(32);
+
+    duplex.destroy();
+  });
+
+  it('does not issue a recovery Sync for an errored Sync-terminated (suppress) batch', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const ERROR_RESPONSE = Buffer.from([0x45, 0x00, 0x00, 0x00, 0x04]);
+    const wireFrame = (type: number): Buffer => {
+      const buf = Buffer.alloc(5);
+      buf[0] = type;
+      buf.writeUInt32BE(4, 1);
+      return buf;
+    };
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+    // P,B,D,E,S — a Sync-terminated EQP batch (suppress mode).
+    const syncBatch = Buffer.concat([
+      wireFrame(0x50),
+      wireFrame(0x42),
+      wireFrame(0x44),
+      wireFrame(0x45),
+      wireFrame(0x53),
+    ]);
+
+    let call = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      call += 1;
+      if (call === 1)
+        options.onRawData(RFQ_IDLE); // startup
+      else if (call === 2) {
+        options.onRawData(ERROR_RESPONSE);
+        options.onRawData(RFQ_IDLE);
+      }
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, syncBatch)).resolves.toBeUndefined();
+    await settle();
+
+    // Recovery Syncs are only for flush-boundary errors. A suppress batch must
+    // NOT trigger one — exactly two protocol calls (startup + batch).
+    expect(execProtocolRawStream).toHaveBeenCalledTimes(2);
+    const bareSync = Buffer.from([0x53, 0x00, 0x00, 0x00, 0x04]);
+    const sawRecoverySync = execProtocolRawStream.mock.calls.some(([message]) =>
+      Buffer.from(message as Uint8Array).equals(bareSync),
+    );
+    expect(sawRecoverySync).toBe(false);
+
+    duplex.destroy();
+  });
+
+  it('keeps session ownership when an errored no-RFQ flush batch runs with a failed (E) pre-batch status', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const RFQ_FAILED = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x45]); // status 'E'
+    const ERROR_RESPONSE = Buffer.from([0x45, 0x00, 0x00, 0x00, 0x04]);
+    const wireFrame = (type: number): Buffer => {
+      const buf = Buffer.alloc(5);
+      buf[0] = type;
+      buf.writeUInt32BE(4, 1);
+      return buf;
+    };
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+    const flushBatch = Buffer.concat([
+      wireFrame(0x50),
+      wireFrame(0x42),
+      wireFrame(0x44),
+      wireFrame(0x45),
+      wireFrame(0x48),
+    ]);
+
+    let call = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      call += 1;
+      if (call === 1)
+        options.onRawData(RFQ_IDLE); // startup → 'I'
+      else if (call === 2)
+        options.onRawData(RFQ_FAILED); // set lastSeenRfqStatus = 'E'
+      else if (call === 3) options.onRawData(ERROR_RESPONSE); // flush batch: error, NO RFQ
+      // call 4 (recovery Sync) → discarded by recoverySync's own onRawData
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const lock = new SessionLock();
+    const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    // A plain query whose RFQ reports 'E' — leaves lastSeenRfqStatus = failed.
+    await expect(writeAndAwait(duplex, wireFrame(0x51))).resolves.toBeUndefined();
+
+    const other = Symbol('other-bridge');
+    let otherResolved = false;
+    void lock.acquire(other).then(() => {
+      otherResolved = true;
+    });
+    await settle();
+    expect(otherResolved).toBe(false);
+
+    // Errored flush batch, no RFQ, pre-batch status 'E': the wedged-portal guard
+    // must NOT release — status FAILED still needs its ROLLBACK. The mutant
+    // (lastSeenRfqStatus !== FAILED forced true) would release and grant the waiter.
+    await expect(writeAndAwait(duplex, flushBatch)).resolves.toBeUndefined();
+    await settle();
+    expect(otherResolved).toBe(false);
+
+    duplex.destroy();
+    await duplex.onClose;
+  });
+
+  it('issues the recovery Sync with syncToFs:false', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const ERROR_RESPONSE = Buffer.from([0x45, 0x00, 0x00, 0x00, 0x04]);
+    const bareSync = Buffer.from([0x53, 0x00, 0x00, 0x00, 0x04]);
+    const wireFrame = (type: number): Buffer => {
+      const buf = Buffer.alloc(5);
+      buf[0] = type;
+      buf.writeUInt32BE(4, 1);
+      return buf;
+    };
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+    const flushBatch = Buffer.concat([
+      wireFrame(0x50),
+      wireFrame(0x42),
+      wireFrame(0x44),
+      wireFrame(0x45),
+      wireFrame(0x48),
+    ]);
+
+    let call = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      call += 1;
+      if (call === 1)
+        options.onRawData(RFQ_IDLE); // startup
+      else if (call === 2) {
+        options.onRawData(ERROR_RESPONSE);
+        options.onRawData(RFQ_IDLE);
+      } // error flush
+      // call 3 = recovery Sync
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    await expect(writeAndAwait(duplex, flushBatch)).resolves.toBeUndefined();
+    await settle();
+
+    const recoveryCall = execProtocolRawStream.mock.calls.find(([message]) =>
+      Buffer.from(message as Uint8Array).equals(bareSync),
+    );
+    expect(recoveryCall).toBeDefined();
+    const [, recoveryOpts] = recoveryCall as [unknown, { syncToFs: boolean }];
+    expect(recoveryOpts.syncToFs).toBe(false);
+
+    duplex.destroy();
+  });
+
+  it("destroys with a wrapped 'PGlite recovery Sync failed' error when the recovery Sync throws", async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const ERROR_RESPONSE = Buffer.from([0x45, 0x00, 0x00, 0x00, 0x04]);
+    const wireFrame = (type: number): Buffer => {
+      const buf = Buffer.alloc(5);
+      buf[0] = type;
+      buf.writeUInt32BE(4, 1);
+      return buf;
+    };
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+    const flushBatch = Buffer.concat([
+      wireFrame(0x50),
+      wireFrame(0x42),
+      wireFrame(0x44),
+      wireFrame(0x45),
+      wireFrame(0x48),
+    ]);
+
+    const recoveryCause = new Error('recovery boom');
+    let call = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      call += 1;
+      if (call === 1) {
+        options.onRawData(RFQ_IDLE);
+        return;
+      } // startup
+      if (call === 2) {
+        options.onRawData(ERROR_RESPONSE);
+        options.onRawData(RFQ_IDLE);
+        return;
+      } // error flush
+      throw recoveryCause; // recovery Sync fails
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    const err = await writeAndAwait(duplex, flushBatch);
+    await duplex.onClose;
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toBe('PGlite recovery Sync failed');
+    expect((err as unknown as { cause?: unknown }).cause).toBeInstanceOf(Error);
+    expect(duplex.destroyed).toBe(true);
+  });
+
+  it('does not request deferred recovery when releaseAbandonedPortalHold runs idle (no suspended portal, no buffered input)', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      options.onRawData(RFQ_IDLE);
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    // Ready, no suspended portal, drain idle, input empty.
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+
+    const internals = duplex as unknown as {
+      portalSuspended: boolean;
+      draining: boolean;
+      portalRecoveryRequested: boolean;
+    };
+    expect(internals.portalSuspended).toBe(false);
+    expect(internals.draining).toBe(false);
+
+    duplex.releaseAbandonedPortalHold();
+
+    // With `draining || input.length > 0` both false, no deferred judgment is
+    // requested. The mutants (force true / >=0 / <=0) would set it.
+    expect(internals.portalRecoveryRequested).toBe(false);
+
+    duplex.destroy();
+  });
+
+  it('requests deferred recovery when releaseAbandonedPortalHold runs with buffered input (drain not running)', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      options.onRawData(RFQ_IDLE);
+    });
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+
+    const internals = duplex as unknown as {
+      portalSuspended: boolean;
+      draining: boolean;
+      portalRecoveryRequested: boolean;
+      input: { push(chunk: Uint8Array): void; length: number };
+    };
+    // Buffer bytes directly (bypassing _write's enqueue) so input.length > 0
+    // while draining stays false — the input-branch of the deferred-judgment guard.
+    internals.input.push(Buffer.from([0x53, 0x00, 0x00, 0x00, 0x04]));
+    expect(internals.draining).toBe(false);
+    expect(internals.input.length).toBeGreaterThan(0);
+    expect(internals.portalSuspended).toBe(false);
+
+    duplex.releaseAbandonedPortalHold();
+
+    // `draining || input.length > 0` is true via the input term; the mutant
+    // (input.length > 0 → false) would leave the request unset.
+    expect(internals.portalRecoveryRequested).toBe(true);
+
+    duplex.destroy();
+  });
+
+  it('does not enter runExclusive when deliverRecoverySync is called on a terminated duplex', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+
+    const runExclusive = vi.fn(async (fn: () => Promise<unknown>) => fn());
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      options.onRawData(RFQ_IDLE);
+    });
+    const pglite = createMockPGlite({ runExclusive, execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    // Terminate ('X') — phase becomes 'terminated'.
+    await expect(
+      writeAndAwait(duplex, Buffer.from([0x58, 0x00, 0x00, 0x00, 0x04])),
+    ).resolves.toBeUndefined();
+    expect((duplex as unknown as { phase: string }).phase).toBe('terminated');
+    runExclusive.mockClear();
+
+    // The terminated guard in deliverRecoverySync must short-circuit BEFORE
+    // runUnderRunExclusive; the mutant (phase==='terminated' defeated) would
+    // proceed and invoke pglite.runExclusive.
+    (duplex as unknown as { deliverRecoverySync(): void }).deliverRecoverySync();
+    await settle();
+    await settle();
+    expect(runExclusive).not.toHaveBeenCalled();
+
+    duplex.destroy();
+  });
+
+  it('resets the recovery in-flight latch so a second abandoned-portal release delivers again', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const DATA_ROW = Buffer.from([0x44, 0x00, 0x00, 0x00, 0x04]);
+    const PORTAL_SUSPENDED = Buffer.from([0x73, 0x00, 0x00, 0x00, 0x04]);
+    const bareSync = Buffer.from([0x53, 0x00, 0x00, 0x00, 0x04]);
+    const wireFrame = (type: number): Buffer => {
+      const buf = Buffer.alloc(5);
+      buf[0] = type;
+      buf.writeUInt32BE(4, 1);
+      return buf;
+    };
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+    const flushBatch = Buffer.concat([
+      wireFrame(0x50),
+      wireFrame(0x42),
+      wireFrame(0x44),
+      wireFrame(0x45),
+      wireFrame(0x48),
+    ]);
+
+    let recoveryCalls = 0;
+    const execProtocolRawStream = vi.fn(
+      async (message: Uint8Array, options: { onRawData: (chunk: Uint8Array) => void }) => {
+        if (Buffer.from(message).equals(bareSync)) {
+          recoveryCalls += 1;
+          options.onRawData(RFQ_IDLE);
+          return;
+        }
+        if (message.length === 8) {
+          options.onRawData(RFQ_IDLE);
+          return;
+        } // startup
+        // Flush-boundary batch, no RFQ → portal suspended.
+        options.onRawData(DATA_ROW);
+        options.onRawData(PORTAL_SUSPENDED);
+      },
+    );
+    const pglite = createMockPGlite({ execProtocolRawStream });
+    const lock = new SessionLock();
+    const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+
+    // First suspended portal → first delivery.
+    await expect(writeAndAwait(duplex, flushBatch)).resolves.toBeUndefined();
+    duplex.releaseAbandonedPortalHold();
+    await settle();
+    await settle();
+    expect(recoveryCalls).toBe(1);
+
+    // Second suspended portal → the latch must have reset to allow a 2nd delivery.
+    await expect(writeAndAwait(duplex, flushBatch)).resolves.toBeUndefined();
+    duplex.releaseAbandonedPortalHold();
+    await settle();
+    await settle();
+    expect(recoveryCalls).toBe(2);
+
+    duplex.destroy();
+    await duplex.onClose;
+  });
+
+  it('issues no ROLLBACK when the last status is idle', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+
+    const query = vi.fn().mockResolvedValue({ fields: [], rows: [] });
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      options.onRawData(RFQ_IDLE);
+    });
+    const pglite = createMockPGlite({ query, execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    expect(duplex.inTransaction).toBe(false);
+
+    await duplex.rollbackIfInTransaction();
+
+    // Idle status: the guard returns before pglite.query('ROLLBACK'). The mutants
+    // (guard→false, or !==FAILED→===FAILED) would issue a spurious ROLLBACK.
+    expect(query).not.toHaveBeenCalledWith('ROLLBACK');
+
+    duplex.destroy();
+  });
+
+  it('rolls back when the last status is a failed transaction block (E)', async () => {
+    const RFQ_IDLE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x49]);
+    const RFQ_FAILED = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x45]); // status 'E'
+    const wireFrame = (type: number): Buffer => {
+      const buf = Buffer.alloc(5);
+      buf[0] = type;
+      buf.writeUInt32BE(4, 1);
+      return buf;
+    };
+    const startupBytes = (): Buffer => {
+      const buf = Buffer.alloc(8);
+      buf.writeUInt32BE(8, 0);
+      buf.writeUInt32BE(0x00030000, 4);
+      return buf;
+    };
+    const writeAndAwait = (duplex: PGliteDuplex, chunk: Buffer): Promise<Error | undefined> =>
+      new Promise((resolve) => duplex.write(chunk, (err) => resolve(err ?? undefined)));
+
+    const query = vi.fn().mockResolvedValue({ fields: [], rows: [] });
+    let call = 0;
+    const execProtocolRawStream = vi.fn(async (_message, options) => {
+      call += 1;
+      options.onRawData(call === 1 ? RFQ_IDLE : RFQ_FAILED);
+    });
+    const pglite = createMockPGlite({ query, execProtocolRawStream });
+    const duplex = new PGliteDuplex(pglite);
+    duplex.on('error', () => {});
+
+    await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+    // A query whose RFQ reports 'E' → lastSeenRfqStatus = failed.
+    await expect(writeAndAwait(duplex, wireFrame(0x51))).resolves.toBeUndefined();
+    expect(duplex.inTransaction).toBe(true);
+
+    await duplex.rollbackIfInTransaction();
+
+    // A failed transaction block still needs ROLLBACK. The mutants (status!==FAILED
+    // forced true, or ===FAILED) would early-return and skip it.
+    expect(query).toHaveBeenCalledWith('ROLLBACK');
+
+    duplex.destroy();
   });
 });

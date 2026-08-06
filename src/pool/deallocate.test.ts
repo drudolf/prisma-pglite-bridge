@@ -216,3 +216,34 @@ describe('decodeStatementCacheInvalidation — parse_ident oracle (real PGlite)'
     },
   );
 });
+
+describe('mutation-hardening: survivor kills', () => {
+  it.each<[sql: string, expected: { name: string } | null]>([
+    // Just past the A-Z upper bound: '^' (0x5e) is NOT an identifier start,
+    // so this is not a valid target and the decoder fails closed. Widening
+    // the A-Z check (c <= 0x5a) to accept 0x5b-0x60 would wrongly evict '^'.
+    ['DEALLOCATE ^', null],
+    // Just past the a-z upper bound: '{' (0x7b) is NOT an identifier start.
+    // Widening the a-z check (c <= 0x7a) would wrongly decode '{x' as a name.
+    ['DEALLOCATE {x', null],
+    // U+0080 is the exact lower bound of the >= 0x80 non-ASCII identifier
+    // range and IS a valid regular-identifier start; narrowing to > 0x80
+    // would drop it and fail closed on a live name.
+    ['DEALLOCATE \u0080', { name: '\u0080' }],
+    // '0' (0x30) is the exact lower bound of the digit continuation range;
+    // narrowing to > 0x30 stops the scan at 'a', leaving '0' as trailing
+    // junk that fails the trailer, so 'a0' would no longer decode.
+    ['DEALLOCATE a0', { name: 'a0' }],
+  ])('decodes %j at an exact identifier-class boundary', (sql, expected) => {
+    expect(decodeStatementCacheInvalidation(sql)).toEqual(expected);
+  });
+
+  it('does not treat a too-short DISCARD prefix as a matched keyword', () => {
+    // 'D ALL' is 5 chars; matchKeyword(text, 0, 'DISCARD') must bail because
+    // DISCARD (7) overruns the text and return the sentinel -1. If that bail
+    // returned +1 instead, index 1 would be read as a matched DISCARD end,
+    // ALL would match at index 2, and the decoder would wrongly report a
+    // session-wide reset. It must fail closed to null.
+    expect(decodeStatementCacheInvalidation('D ALL')).toBeNull();
+  });
+});

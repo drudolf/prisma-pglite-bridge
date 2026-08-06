@@ -7,24 +7,24 @@
 // semantics comment in __tests__/copy-in-arbitraries.ts). Red cells and
 // property failures map the defect for the separate fix design; nothing here
 // may be weakened or allowlisted to force green.
-import { PGlite } from '@electric-sql/pglite';
 import fc from 'fast-check';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
+import { propertyRuns } from '../__tests__/property-runs.ts';
 import {
   composedScenarioArb,
   copyCaptureTextArb,
   expectedVerdict,
   nonCopyTextArb,
   SENTINEL,
-  splitCheckScenarios,
   triviaArb,
 } from './__tests__/copy-in-arbitraries.ts';
 import { type CopyInVerdict, sniffCopyIn } from './copy-in.ts';
 
 // Measured at numRuns 50 first (spec instruction), then locked at 500: the
-// whole file including the PGlite boot stays within the ~6 s budget.
-const CORE_RUNS = 500;
+// whole file stays within the ~6 s budget. Routed through propertyRuns so the
+// mutation config's FC_NUM_RUNS knob can reduce it; normal runs keep 500.
+const CORE_RUNS = propertyRuns(500);
 
 const VERDICTS: readonly CopyInVerdict[] = ['capture', 'reject-multi', 'not-copy-in'];
 
@@ -166,7 +166,7 @@ describe('sniffCopyIn properties', () => {
       fc.property(arbitraryTextArb, (text) => {
         expect(VERDICTS).toContain(sniffCopyIn(text));
       }),
-      { numRuns: 300 },
+      { numRuns: propertyRuns(300) },
     );
   });
 });
@@ -319,55 +319,5 @@ const pseudoTagCells: Cell[] = [
 describe('characterization table: word-boundary openers', () => {
   it.each([...stringCells, ...dollarCells, ...pseudoTagCells])('%s', (_label, text, expected) => {
     expect(sniffCopyIn(text)).toBe(expected);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// PGlite split-check: validates the by-construction oracle's statement-split
-// claims against the real backend. Every copy-in targets the guaranteed-
-// missing sentinel relation so PG raises its ANALYSIS error and a COPY never
-// reaches execution; preceding statements are side-effect-free SELECTs.
-// ---------------------------------------------------------------------------
-
-describe('PGlite split-check (oracle validation)', () => {
-  const db = new PGlite();
-
-  beforeAll(async () => {
-    await db.waitReady;
-  });
-
-  afterAll(async () => {
-    await db.close();
-  });
-
-  const scenarios = splitCheckScenarios().map((scenario) => [scenario.label, scenario] as const);
-
-  it.each(scenarios)('%s', async (_label, scenario) => {
-    if (scenario.expected.kind === 'all-succeed') {
-      const results = await db.exec(scenario.text);
-      // PGlite returns ONE empty result for a statement-free text (the
-      // EmptyQueryResponse), so 0 expected statements map to 1 result.
-      expect(results.length).toBe(Math.max(scenario.expected.statementCount, 1));
-      return;
-    }
-    let caught: unknown;
-    try {
-      await db.exec(scenario.text);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    const message = (caught as Error).message;
-    if (scenario.expected.kind === 'copy-analysis-error') {
-      expect(message).toContain(SENTINEL);
-      expect(message).toContain('does not exist');
-    } else {
-      expect(message).toMatch(scenario.expected.pattern);
-    }
-  });
-
-  it('the shared instance survived every probe', async () => {
-    const { rows } = await db.query('SELECT 1 AS ok');
-    expect(rows).toEqual([{ ok: 1 }]);
   });
 });

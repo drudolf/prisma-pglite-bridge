@@ -141,4 +141,33 @@ describe('FrontendMessageBuffer', () => {
     expect(buffer.consume(0)).toEqual(new Uint8Array(0));
     expect(buffer.length).toBe(1);
   });
+
+  describe('mutation-hardening: survivor kills', () => {
+    it('ignores an empty push so the following full message still consumes as a zero-copy view', () => {
+      const buffer = new FrontendMessageBuffer();
+      const message = frontendMessage(0x53, new Uint8Array(0));
+      buffer.push(new Uint8Array(0));
+      buffer.push(message);
+      const consumed = buffer.consume(message.length);
+      expect(consumed).toEqual(message);
+      expect(consumed.buffer).toBe(message.buffer);
+      expect(buffer.length).toBe(0);
+    });
+
+    it('advances the head after an exact drain so a later message consumes as a zero-copy view', () => {
+      const buffer = new FrontendMessageBuffer();
+      const first = frontendMessage(0x53, new Uint8Array(0));
+      buffer.push(first);
+      // Two fast-path consumes drain the head chunk exactly: the first ends mid-chunk,
+      // the second lands on head.length and must advance headIndex + compact.
+      expect(buffer.consume(1)).toEqual(first.subarray(0, 1));
+      expect(buffer.consume(first.length - 1)).toEqual(first.subarray(1));
+      expect(buffer.length).toBe(0);
+      const next = frontendMessage(0x58, new Uint8Array(0));
+      buffer.push(next);
+      const consumed = buffer.consume(next.length);
+      expect(consumed).toEqual(next);
+      expect(consumed.buffer).toBe(next.buffer);
+    });
+  });
 });

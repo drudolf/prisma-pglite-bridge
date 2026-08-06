@@ -376,8 +376,10 @@ export class BackendMessageFramer {
 
   private emitChunkSlice(chunk: Uint8Array, start: number, end: number): void {
     const length = end - start;
-    /* c8 ignore next — callers pass end > start */
+    /* c8 ignore start — callers pass end > start */
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: accept — Defensive `length<=0` early return on a `/* c8 ignore next */` line; callers always pass end>start so the guarded branch is unreachable and forcing `false` changes nothing observable.
     if (length <= 0) return;
+    /* c8 ignore stop */
 
     // Always copy. No shape check on the incoming view can prove the producer
     // won't reuse the underlying memory, and pg parses pushed chunks on a
@@ -392,6 +394,7 @@ export class BackendMessageFramer {
     this.messageType = undefined;
     this.headerBytesRead = 0;
     this.payloadBytesRemaining = 0;
+    // Stryker disable next-line BooleanLiteral: accept — finishMessage's `rfqFrame = false` is a hygiene clear (per the field's own doc comment: `clears in reset() and finishMessage() are hygiene, not correctness`); rfqFrame is unconditionally rewritten at line 227 before any read (lines 233/260), so setting it true here is unobservable.
     this.rfqFrame = false;
     this.droppingMessage = false;
     if (!this.suppressIntermediateReadyForQuery) {

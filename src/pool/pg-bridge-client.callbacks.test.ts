@@ -346,6 +346,49 @@ describe('config-embedded callback form', () => {
       expect(res.rows[0]?.one).toBe(1);
     });
   });
+
+  describe('mutation-hardening', () => {
+    it('omits the callback field from the config-callback re-entry snapshot', async () => {
+      // Kills 2259/2260 (line 767 `{ omit: true }` → `{}` / `omit:true` → false): the
+      // callback re-entry snapshot must OMIT the callback field. With omit falsy,
+      // snapshotQueryConfig injects `callback: undefined` onto the re-entry record; pg
+      // then carries a `callback` property on the config it runs. We observe the
+      // re-entry config via a spy on the recursive query() call: the re-entered first
+      // argument must have NO own 'callback' key.
+      await withPooledClient(async (client) => {
+        const { calls, callback, settled } = recordCallback();
+        const config: CallbackConfig = { text: 'SELECT 1 AS one', callback };
+
+        // Spy the recursive promise-form re-entry: capture the snapshot passed on.
+        const seen: Array<Record<string, unknown>> = [];
+        const spied = client as unknown as { query: (...a: unknown[]) => unknown };
+        const orig = spied.query.bind(client);
+        let depth = 0;
+        spied.query = (...a: unknown[]) => {
+          // The re-entry call has a snapshot object as its first arg and NO callback.
+          if (depth > 0 && typeof a[0] === 'object' && a[0] !== null) {
+            seen.push(a[0] as Record<string, unknown>);
+          }
+          depth++;
+          try {
+            return orig(...a);
+          } finally {
+            depth--;
+          }
+        };
+
+        const ret = (spied.query as (...a: unknown[]) => unknown)(config);
+        expect(ret).toBeUndefined();
+        await settled;
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.err).toBeNull();
+        // The re-entry snapshot must not carry a callback field.
+        const reentry = seen[0];
+        expect(reentry).toBeDefined();
+        expect(Object.hasOwn(reentry ?? {}, 'callback')).toBe(false);
+      });
+    });
+  });
 });
 
 type CallbackThrowProbe = {

@@ -110,3 +110,53 @@ describe('sniffCopyIn', () => {
     });
   });
 });
+
+describe('mutation-hardening: survivor kills', () => {
+  it('a high-bit (U+0080) char glued before $tag$ keeps the identifier and splits the ; (reject-multi)', () => {
+    expect(sniffCopyIn('SELECT 1 AS a\u0080$tag$; COPY t FROM STDIN')).toBe('reject-multi');
+  });
+
+  it('a lone hyphen is not a line comment: the following COPY still counts (reject-multi)', () => {
+    expect(sniffCopyIn('SELECT 1-1; COPY t FROM STDIN')).toBe('reject-multi');
+  });
+
+  it('a line comment with no trailing newline still terminates (not-copy-in)', () => {
+    expect(sniffCopyIn('-- COPY t FROM STDIN')).toBe('not-copy-in');
+  }, 2000);
+
+  it('a lone slash is not a block-comment opener: the following COPY still counts (reject-multi)', () => {
+    expect(sniffCopyIn('SELECT 1/2; COPY t FROM STDIN')).toBe('reject-multi');
+  });
+
+  it('an unterminated block comment still terminates (not-copy-in)', () => {
+    expect(sniffCopyIn('/* COPY t FROM STDIN')).toBe('not-copy-in');
+  }, 2000);
+
+  it('a stray slash inside a block comment does not over-nest and swallow the COPY (capture)', () => {
+    expect(sniffCopyIn('/* /; */ COPY t FROM STDIN')).toBe('capture');
+  });
+
+  it('a stray asterisk inside a block comment does not close it early (capture)', () => {
+    expect(sniffCopyIn('/* a * b */ COPY t FROM STDIN')).toBe('capture');
+  });
+
+  it('a block comment is replaced by a space so it cannot glue tokens into COPY (not-copy-in)', () => {
+    expect(sniffCopyIn('COP/* */Y t FROM STDIN')).toBe('not-copy-in');
+  });
+
+  it('scanning resumes AFTER a dollar-quote closer, so the trailing COPY still counts (reject-multi)', () => {
+    expect(sniffCopyIn('SELECT $$;$$; COPY t FROM STDIN')).toBe('reject-multi');
+  });
+
+  it('COPY t FROM foo (a relation/file, no STDIN) is not copy-in', () => {
+    expect(sniffCopyIn('COPY t FROM foo')).toBe('not-copy-in');
+  });
+
+  it('COPY t x STDIN (stdin not preceded by FROM) is not copy-in', () => {
+    expect(sniffCopyIn('COPY t x STDIN')).toBe('not-copy-in');
+  });
+
+  it('COPY t FROM bar (from not followed by stdin) is not copy-in', () => {
+    expect(sniffCopyIn('COPY t FROM bar')).toBe('not-copy-in');
+  });
+});
