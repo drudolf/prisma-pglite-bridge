@@ -466,3 +466,49 @@ describe('session lock integration', async () => {
     expect(rows[0]?.n).toBe(0);
   });
 });
+
+describe('mutation-hardening: return-value contracts', () => {
+  it('updateStatus returns true when the owner releases on idle', async () => {
+    const lock = new SessionLock();
+    const a = Symbol('a');
+    await lock.acquire(a);
+    expect(lock.updateStatus(a, 0x49)).toBe(true); // 0x49 = 'I' (idle RFQ)
+  });
+
+  it('updateStatus returns false for a non-owner or a non-idle status', async () => {
+    const lock = new SessionLock();
+    const a = Symbol('a');
+    const b = Symbol('b');
+    await lock.acquire(a);
+    expect(lock.updateStatus(b, 0x49)).toBe(false); // not the owner
+    expect(lock.updateStatus(a, 0x54)).toBe(false); // 0x54 = 'T' (in transaction, not idle)
+  });
+
+  it('cancel returns true when it rejects a queued waiter', async () => {
+    const lock = new SessionLock();
+    const a = Symbol('a');
+    const b = Symbol('b');
+    await lock.acquire(a);
+    const waiting = lock.acquire(b);
+    expect(lock.cancel(b)).toBe(true);
+    await expect(waiting).rejects.toThrow();
+  });
+
+  it('cancel returns false when the id owns nothing and has no waiter', async () => {
+    const lock = new SessionLock();
+    const a = Symbol('a');
+    const z = Symbol('z');
+    await lock.acquire(a);
+    expect(lock.cancel(z)).toBe(false);
+  });
+
+  it('cancel rejects a waiter with the default message when none is passed', async () => {
+    const lock = new SessionLock();
+    const a = Symbol('a');
+    const b = Symbol('b');
+    await lock.acquire(a);
+    const waiting = lock.acquire(b);
+    lock.cancel(b);
+    await expect(waiting).rejects.toThrow('Session lock acquire cancelled');
+  });
+});

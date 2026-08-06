@@ -139,3 +139,54 @@ Corrected grand totals: **187 kill / 189 equivalent / 39 accept / 1
 false-survivor** (416 triaged; +2290 & +2336 lifted from spurious
 baseline Timeouts). 2336's inline disable takes effect on the next run
 (moves it Survived → Ignored).
+
+## Tier-1 extension (utils + schema helpers)
+
+A second, focused wave over the trust-boundary helpers the duplex/pool
+core depends on: `utils/session-lock.ts`, `utils/statement-names.ts`,
+`utils/quote-ident.ts`, `schema/pg18-not-null.ts`. Run with a
+Tier-1-only killing suite (each file judged by its OWN unit tests, so
+the score isolates unit-test strength). 159 mutants; initial run
+**93.71%** (130 killed · 19 timeout · 10 survived).
+
+Unlike duplex/pool — where the property-hardened suites left survivors
+that were almost all equivalents — **8 of the 10 Tier-1 survivors were
+real test gaps**: these helpers had untested contracts.
+
+| file | survivors | kill | equivalent |
+| ---- | --------- | ---- | ---------- |
+| utils/session-lock.ts | 5 | 5 | 0 |
+| utils/statement-names.ts | 3 | 1 | 2 |
+| schema/pg18-not-null.ts | 2 | 2 | 0 |
+| utils/quote-ident.ts | 0 | 0 | 0 |
+| **total** | **10** | **8** | **2** |
+
+Kills (all arbiter-verified RED under mutant):
+
+- **session-lock** (5): the `updateStatus` / `cancel` boolean return
+  contracts and the default cancel-error message. The suite exercised
+  the state changes (ownership, waiter rejection) but never asserted the
+  documented return values or the cancel-of-waiter / cancel-of-nothing
+  paths.
+- **statement-names** (1): the `^` anchor in `CACHEABLE_SQL` — a
+  statement that merely *contains* a cacheable keyword (e.g.
+  `EXPLAIN SELECT 1`) must not be named/cached.
+- **pg18-not-null** (2): the *adapter* Proxy's method-binding (`this`
+  bound to the target). The *factory* Proxy's binding was already
+  tested; the adapter Proxy's was not.
+- **quote-ident** had no dedicated test (covered only transitively). A
+  new `quote-ident.test.ts` pins the `""` escape, the template quotes,
+  and the global replace — killing all its mutants (0 survivors).
+
+Equivalents (ledger-only, proven — both on `statement-names.ts:23`):
+
+- `typeof raw === 'number' → true`: redundant with the adjacent
+  `Number.isInteger(raw)`, which already rejects every non-number, so
+  the overall guard is false either way and the `: 0` self-heal fires
+  identically. No input distinguishes them.
+- `raw >= 0 → raw > 0`: differs only at `raw === 0`, where both the
+  `raw` and the `: 0` branch yield `0`.
+
+Zero production bugs. Confirmatory re-run (Tier-1 killing suite, cold):
+**98.74%** — only the 2 equivalents survive (138 killed · 19 timeout · 2
+survived).

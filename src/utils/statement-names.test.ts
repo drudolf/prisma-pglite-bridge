@@ -375,3 +375,13 @@ describe('createStatementNameGenerator', () => {
     });
   });
 });
+
+describe('mutation-hardening', () => {
+  it('does not cache a statement that only CONTAINS a cacheable keyword (the ^ anchor)', () => {
+    const generate = createStatementNameGenerator();
+    // EXPLAIN leads the statement — not cacheable, even though it contains SELECT.
+    // Without the `^` anchor the sniff would match the embedded keyword and cache it.
+    expect(generate('EXPLAIN SELECT 1')).toBeUndefined();
+    expect(generate('EXPLAIN SELECT 1')).toBeUndefined();
+  });
+});

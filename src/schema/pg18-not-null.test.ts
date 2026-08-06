@@ -224,4 +224,18 @@ describe('wrapFactoryForPg18', () => {
     expect(wrapped.describe()).toBe('described');
     expect(observed).toBe(factory);
   });
+
+  it('delegates other ADAPTER methods with this bound to the underlying adapter', async () => {
+    const { factory, main } = createFakeFactory();
+    let observed: unknown;
+    (main.adapter as unknown as Record<string, unknown>).describe = function (this: unknown) {
+      observed = this;
+      return 'described';
+    };
+
+    const adapter = await wrapFactoryForPg18(factory).connect();
+    (adapter as unknown as { describe: () => string }).describe();
+
+    expect(observed).toBe(main.adapter);
+  });
 });

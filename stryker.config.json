@@ -6,6 +6,10 @@
   "mutate": [
     "src/duplex/**/*.ts",
     "src/pool/**/*.ts",
+    "src/utils/session-lock.ts",
+    "src/utils/statement-names.ts",
+    "src/utils/quote-ident.ts",
+    "src/schema/pg18-not-null.ts",
     "!src/**/*.test.ts",
     "!src/**/__tests__/**",
     "!src/**/*.d.ts"
