@@ -190,3 +190,59 @@ Equivalents (ledger-only, proven — both on `statement-names.ts:23`):
 Zero production bugs. Confirmatory re-run (Tier-1 killing suite, cold):
 **98.74%** — only the 2 equivalents survive (138 killed · 19 timeout · 2
 survived).
+
+## Tier-2 extension (telemetry + schema + snapshot)
+
+A third wave over the next-highest-value files: `telemetry/bridge-stats.ts`,
+`schema/migrations.ts`, `pglite-bridge/snapshot-manager.ts` (Tier-2-only
+killing suite). 295 mutants; initial run **84.75%** (245 killed · 5
+timeout · 44 survived · 1 no-coverage).
+
+45 survivors triaged in parallel (one agent per file), **every disposition
+independently arbiter-verified** — 21 kills RED-under-mutant, 24
+equivalents/accepts GREEN:
+
+| file | survivors | kill | equivalent | accept |
+| ---- | --------- | ---- | ---------- | ------ |
+| telemetry/bridge-stats.ts | 18 | 2 | 13 | 3 |
+| schema/migrations.ts | 14 | 9 | 4 | 1 |
+| pglite-bridge/snapshot-manager.ts | 13 | 10 | 2 | 1 |
+| **total** | **45** | **21** | **19** | **5** |
+
+15 kill tests added (some kill multiple mutants). Zero production bugs.
+
+Notable kills: migrations' `MIGRATIONS_UNAVAILABLE` error codes, the
+empty-vs-`undefined` return when no migrations are found, and the
+`isDirectory` filter (a broken symlink at the migrations root is the
+deterministic distinguisher); snapshot-manager's `SNAPSHOT_INVALID` code,
+the `#hasSnapshot` self-heal (a snapshot marked present whose schema is
+gone must flip to false — the branch had **no coverage**), and the
+`SET session_replication_role = replica/DEFAULT` restore guards (killable
+via FK-ordered restore + the error path where the trailing `RESET ALL`
+never runs); bridge-stats' uptime hrtime subtraction and the exact
+`pg_database_size` SQL text.
+
+Notable equivalents (proven): the whole **bridge-stats trim/percentile
+cluster (12 mutants)** — `recordQuery` trims `queryDurations` only to
+bound memory, but the sole reader re-slices `.slice(-WINDOW_SIZE)` before
+every percentile, so no trim variant changes observable output;
+`rows[0]?.x` on scalar `SELECT … AS x` queries (always exactly one row →
+the `?.` never short-circuits); migrations' `readFileSync(p, 'utf8') → ''`
+(`Array.join` coerces the resulting Buffer via utf8 to a byte-identical
+string).
+
+Accepts (inline-disabled, except migrations' filesystem-order `.sort()`,
+which is ledger-only because a `next-line` disable would also mask the
+killed filter mutant on the same line): bridge-stats level-gating at
+non-`'full'`, the caught-and-mapped timeout message, and `timer.unref?.()`;
+snapshot-manager's discarded `!!exists` return. (bridge-stats' `finally`
+`clearTimeout` is a ledger-only **equivalent** — dropping it leaves an
+unref'd timer whose promise has already settled, so it is unobservable
+anywhere; a `next-line` disable also can't cleanly target a `finally`
+block, whose leading comment attaches to the preceding `catch`.)
+
+Confirmatory re-run (Tier-2 killing suite, cold): **93.43%** — 265 killed ·
+5 timeout · 6 ignored · 19 survived. All 21 kills verified killed
+(arbiter RED-under-mutant, independently confirmed here); the 19 survivors
+are the 18 surviving equivalents + migrations' one ledger-only
+filesystem-order accept, every one mapped to a ledger entry.

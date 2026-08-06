@@ -643,3 +643,181 @@ describe('SnapshotManager restore Tier A site pin — SNAPSHOT_INVALID (table dr
     }
   });
 });
+
+// ————— Mutation kill tests (StrykerJS survivors) —————
+describe('SnapshotManager mutation survivors', () => {
+  // Kills #snapshotSchemaExists self-heal survivors:
+  //   L176 `if (this.#hasSnapshot) await this.#snapshotSchemaExists()` -> `if (false)`
+  //   L308 method body -> `{}`
+  //   L313 `if (!exists) this.#hasSnapshot = false` -> `if (false)` / -> `= true`
+  // External SQL drops the snapshot schema while #hasSnapshot is still true.
+  // Clean source re-probes, clears the flag, and truncates to empty; every
+  // survivor leaves the flag set so #restorePlan queries the missing
+  // `_pglite_snapshot.__tables` and resetDb rejects.
+  it('self-heals when the snapshot schema was dropped out from under it', async () => {
+    const iso = new PGlite();
+    try {
+      await iso.exec(
+        `CREATE TABLE selfheal_t (id serial PRIMARY KEY, v text);
+         INSERT INTO selfheal_t (v) VALUES ('a')`,
+      );
+
+      const snapshot = new SnapshotManager(iso);
+      await snapshot.snapshotDb();
+
+      await iso.exec(`INSERT INTO selfheal_t (v) VALUES ('b')`);
+      // Simulate a caller's raw DROP SCHEMA / `prisma migrate reset`.
+      await iso.exec('DROP SCHEMA "_pglite_snapshot" CASCADE');
+
+      // Must not throw: the missing schema is detected and #hasSnapshot cleared,
+      // so resetDb falls back to plain truncation.
+      await snapshot.resetDb();
+
+      const { rows } = await iso.query<{ count: string }>(
+        'SELECT count(*)::text AS count FROM selfheal_t',
+      );
+      expect(rows[0]?.count).toBe('0');
+
+      const { rows: nextRow } = await iso.query<{ id: number }>(
+        `INSERT INTO selfheal_t (v) VALUES ('c') RETURNING id`,
+      );
+      expect(nextRow[0]?.id).toBe(1);
+    } finally {
+      await iso.close();
+    }
+  });
+
+  // Kills L155 `this.#hasSnapshot = false` -> `= true` in #resetSnapshot.
+  // On a real DB the mutant self-heals (the schema is dropped, so the next
+  // resetDb re-probes and clears the flag), masking it. A mock keeps the
+  // schema "present" so the flag survives: with the mutant, resetDb runs the
+  // self-heal probe and the restore-plan query; clean source runs neither.
+  it('clears #hasSnapshot in resetSnapshot so the next resetDb skips the restore path', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
+      if (sql.includes('to_regnamespace')) return { rows: [{ exists: true }] };
+      return { rows: [] };
+    });
+    const pglite = createMockPGlite({ query });
+    const snapshot = new SnapshotManager(pglite);
+
+    await snapshot.resetSnapshot();
+    query.mockClear();
+    await snapshot.resetDb();
+
+    const sqls = query.mock.calls.map((call) => String(call[0]));
+    expect(sqls.some((sql) => sql.includes('to_regnamespace'))).toBe(false);
+    expect(sqls.some((sql) => sql.includes('__tables'))).toBe(false);
+  });
+
+  // Kills L299 `rows.map((row) => row.qualified).join(', ')` -> `.join('')`.
+  // The empty separator fuses the two qualified names into invalid SQL
+  // (`public.join_apublic.join_b`), so the TRUNCATE rejects. Clean source
+  // comma-joins them and truncates both tables to empty.
+  it('comma-joins every user table into a single TRUNCATE', async () => {
+    const iso = new PGlite();
+    try {
+      await iso.exec(
+        `CREATE TABLE join_a (id int); CREATE TABLE join_b (id int);
+         INSERT INTO join_a VALUES (1); INSERT INTO join_b VALUES (1)`,
+      );
+
+      const snapshot = new SnapshotManager(iso);
+      await snapshot.resetDb();
+
+      const { rows } = await iso.query<{ a: string; b: string }>(
+        `SELECT (SELECT count(*)::text FROM join_a) AS a,
+                (SELECT count(*)::text FROM join_b) AS b`,
+      );
+      expect(rows[0]).toEqual({ a: '0', b: '0' });
+    } finally {
+      await iso.close();
+    }
+  });
+
+  // Kills L281 `'SNAPSHOT_INVALID'` (missing-columns branch) -> `''`. The
+  // existing column-drop test asserts only the message; this pins the code.
+  it('tags the dropped-column drift error with code SNAPSHOT_INVALID', async () => {
+    const iso = new PGlite();
+    try {
+      await iso.exec(
+        `CREATE TABLE code_col_dropped (a int, b text);
+         INSERT INTO code_col_dropped VALUES (1, 'x')`,
+      );
+
+      const snapshot = new SnapshotManager(iso);
+      await snapshot.snapshotDb();
+
+      await iso.exec('ALTER TABLE code_col_dropped DROP COLUMN b');
+
+      const error = await snapshot.resetDb().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(PgBridgeError);
+      expect((error as PgBridgeError).code).toBe('SNAPSHOT_INVALID');
+      expect((error as PgBridgeError).message).toContain(
+        'Snapshot columns b of public.code_col_dropped',
+      );
+    } finally {
+      await iso.close();
+    }
+  });
+
+  // Kills L319 `SET session_replication_role = replica` -> `''`. The restore
+  // inserts run in catalog order, not FK-dependency order, so the child
+  // (`achild`) is inserted before its parent (`zparent`). `replica` disables
+  // FK triggers during the restore; without it the insert violates the FK.
+  it('disables FK enforcement so the restore ignores insert order', async () => {
+    const iso = new PGlite();
+    try {
+      await iso.exec(
+        `CREATE TABLE zparent (id int PRIMARY KEY);
+         CREATE TABLE achild (id int PRIMARY KEY, pid int REFERENCES zparent(id));
+         INSERT INTO zparent VALUES (1);
+         INSERT INTO achild VALUES (10, 1)`,
+      );
+
+      const snapshot = new SnapshotManager(iso);
+      await snapshot.snapshotDb();
+
+      await iso.exec('INSERT INTO zparent VALUES (2); INSERT INTO achild VALUES (20, 2)');
+      await snapshot.resetDb();
+
+      const { rows } = await iso.query<{ c: string; p: string }>(
+        `SELECT (SELECT count(*)::text FROM achild) AS c,
+                (SELECT count(*)::text FROM zparent) AS p`,
+      );
+      expect(rows[0]).toEqual({ c: '1', p: '1' });
+    } finally {
+      await iso.close();
+    }
+  });
+
+  // Kills the finally-block survivors:
+  //   L321 finally body -> `{}`
+  //   L322 `SET session_replication_role = DEFAULT` -> `''`
+  // On the success path the trailing `RESET ALL` masks the reset; on the error
+  // path (a failing TRUNCATE) resetDb rejects before `RESET ALL`, so the
+  // finally is the only thing that restores the role. The mutants skip it.
+  it('restores the replication role via the finally even when the truncate fails', async () => {
+    const boom = new Error('truncate boom');
+    const exec = vi.fn(async (sql: string) => {
+      if (sql.includes('TRUNCATE')) throw boom;
+    });
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
+      return { rows: [] };
+    });
+    const pglite = createMockPGlite({ exec, query });
+    const snapshot = new SnapshotManager(pglite);
+
+    await expect(snapshot.resetDb()).rejects.toThrow('truncate boom');
+
+    const execCalls = exec.mock.calls.map((call) => String(call[0]));
+    expect(execCalls).toContain('SET session_replication_role = replica');
+    expect(execCalls).toContain('SET session_replication_role = DEFAULT');
+    // The throw propagates past the trailing session reset, so it never runs.
+    expect(execCalls.some((sql) => sql.includes('RESET ALL'))).toBe(false);
+  });
+});

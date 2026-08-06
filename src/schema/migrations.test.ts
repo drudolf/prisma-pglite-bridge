@@ -1,3 +1,5 @@
+import { symlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -472,5 +474,153 @@ describe('pushMigrations Tier A site pin — MIGRATIONS_APPLY_FAILED', () => {
     );
     // { cause } must be populated (the PGlite exec error)
     expect((caught as PgBridgeError).cause).toBeInstanceOf(Error);
+  });
+});
+
+// ————— Mutation-kill pins: schema/migrations.ts —————
+
+// getMigrationsPath branch mutants (:48 error-guard, :53 schemaPath-guard).
+// These use the fresh-module-graph config mock so loadConfigFromFile is fully
+// controllable; the return value of getMigrationsPath is the observable.
+describe('getMigrationsPath mutation-kill pins', () => {
+  // :48 — `if (error) return undefined` -> `if (false) ...`. With a truthy
+  // error AND a config that would otherwise resolve a path, the clean guard
+  // short-circuits to undefined while the mutant proceeds and returns the path.
+  it('returns undefined when config load reports an error even if a migrations path is present', async () => {
+    const { getMigrationsPath } = await importMigrationsWithConfig(
+      vi.fn().mockResolvedValue({
+        config: { migrations: { path: '/repo/prisma/migrations' } },
+        error: new Error('load failed'),
+      }),
+    );
+
+    await expect(getMigrationsPath('/repo')).resolves.toBeUndefined();
+  });
+
+  // :53 — `if (schemaPath) return join(...)` -> `if (true) return join(...)`.
+  // With a falsy-but-present schema ('' — no throw from dirname('')), the clean
+  // guard skips and returns undefined; the mutant takes the branch and returns
+  // join(dirname(''), 'migrations') === 'migrations'.
+  it('returns undefined when the resolved schema path is an empty string', async () => {
+    const { getMigrationsPath } = await importMigrationsWithConfig(
+      vi.fn().mockResolvedValue({
+        config: { schema: '' },
+        error: undefined,
+      }),
+    );
+
+    await expect(getMigrationsPath('/repo')).resolves.toBeUndefined();
+  });
+});
+
+describe('readMigrationFiles mutation-kill pins', () => {
+  // :69 filter-drop — `.filter(isDirectory)` removed. The filter's presence is
+  // observable via a broken symlink at the migrations root: with the filter,
+  // statSync(brokenlink) throws (ENOENT) inside the callback and the read fails;
+  // without the filter, the non-directory entry is never stat'd, its
+  // `<entry>/migration.sql` does not exist, and the real migration still reads,
+  // so the mutant returns SQL instead of throwing.
+  it('throws (does not silently skip) when a non-directory entry cannot be stat-ed', () => {
+    const { path: migrationsPath } = createTempDir('migrations');
+
+    try {
+      createTempFile('migration.sql', 'SELECT 1;', createTempDir('0001_init', migrationsPath).path);
+      // Dangling symlink — a non-directory entry whose statSync throws ENOENT.
+      symlinkSync(join(migrationsPath, 'nonexistent-target'), join(migrationsPath, 'zz_broken'));
+
+      expect(() => readMigrationFiles(migrationsPath)).toThrow();
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+
+  // :81 ConditionalExpression (`... ? ... : undefined` -> `true ? ...`) and
+  // :81 EqualityOperator (`length > 0` -> `length >= 0`) both make an EMPTY
+  // sqlParts return '' (the join of no parts) instead of undefined. A directory
+  // that exists but has no migration.sql anywhere must yield undefined, not ''.
+  it('returns undefined (not an empty string) when an existing dir has no migration.sql', () => {
+    const { path: migrationsPath } = createTempDir('migrations');
+
+    try {
+      createTempDir('0001_no_sql', migrationsPath);
+
+      const result = readMigrationFiles(migrationsPath);
+      expect(result).toBeUndefined();
+      expect(result).not.toBe('');
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+});
+
+// :109 (auto-discovered path) and :118 (configRoot resolves nothing):
+// `'MIGRATIONS_UNAVAILABLE'` -> `''`. Pin the thrown error's `.code`.
+describe('getMigrationSQL MIGRATIONS_UNAVAILABLE code pins', () => {
+  // :109 — auto-discovered migrations path exists but has no migration files.
+  it('throws with code MIGRATIONS_UNAVAILABLE for an empty auto-discovered path', async () => {
+    const { path: migrationsPath } = createTempDir('auto-empty');
+    try {
+      const { getMigrationSQL: getMigrationSQLWithMock } = await importMigrationsWithConfig(
+        vi.fn().mockResolvedValue({
+          config: { migrations: { path: migrationsPath } },
+          error: undefined,
+        }),
+      );
+
+      const caught = await getMigrationSQLWithMock({}).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as PgBridgeError).code).toBe('MIGRATIONS_UNAVAILABLE');
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+
+  // :118 — config loads under configRoot but resolves no schema or path.
+  it('throws with code MIGRATIONS_UNAVAILABLE for a configRoot that resolves nothing', async () => {
+    const { getMigrationSQL: getMigrationSQLWithMock } = await importMigrationsWithConfig(
+      vi.fn().mockResolvedValue({
+        config: {},
+        error: undefined,
+      }),
+    );
+
+    const caught = await getMigrationSQLWithMock({ configRoot: '/repo' }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as PgBridgeError).code).toBe('MIGRATIONS_UNAVAILABLE');
+  });
+});
+
+// :164 durationMs arithmetic: `(end - start) / 1e6` — the `-`->`+` and `/`->`*`
+// mutants both produce values in the billions of ms (raw hrtime nanoseconds are
+// ~1e15+, and elapsed * 1e6 blows up too), whereas a real trivial exec is a
+// small fraction of a millisecond. An upper bound far below the mutant floor
+// (~6.7e9) yet far above any real timing kills both.
+describe('pushMigrations durationMs mutation-kill pin', () => {
+  it('reports a plausible (bounded) durationMs, not a raw-hrtime blowup', async () => {
+    const timingPglite = new PGlite();
+    await timingPglite.waitReady;
+    const timingBridge = new PGliteBridge({ pglite: timingPglite });
+    try {
+      const result = await pushMigrations(timingPglite, {
+        sql: 'CREATE TABLE "TimingProbe" ("id" TEXT PRIMARY KEY);',
+      });
+
+      expect(result.durationMs).toBeGreaterThanOrEqual(0);
+      // Clean elapsed is sub-millisecond; both arithmetic mutants land in the
+      // billions. 1e6 ms (~16 min) is an impossible real duration yet far under
+      // the mutant floor.
+      expect(result.durationMs).toBeLessThan(1e6);
+    } finally {
+      await timingBridge.close();
+      await timingPglite.close();
+    }
   });
 });

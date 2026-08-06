@@ -389,3 +389,28 @@ describe('BridgeStats — freeze preserves cached state', () => {
     expect(s.totalSessionLockWaitMs).toBe(7);
   });
 });
+
+describe('BridgeStats — uptime computation', () => {
+  it('durationMs is snapshot-time minus creation-time hrtime, in ms (exact)', async () => {
+    const hrtimeSpy = vi.spyOn(process.hrtime, 'bigint');
+    // Creation timestamp read in the constructor.
+    hrtimeSpy.mockReturnValueOnce(1_000_000_000n);
+    const c = new BridgeStats('basic');
+    // Snapshot-time timestamp: 5 ms later. Subtraction => 5 ms; the '+'
+    // mutant would yield (1_000_000_000 + 1_005_000_000) / 1e6 = 2005 ms.
+    hrtimeSpy.mockReturnValueOnce(1_005_000_000n);
+    const s = await c.snapshot(pglite);
+    expect(s.durationMs).toBe(5);
+  });
+});
+
+describe('BridgeStats — queryDbSize SQL', () => {
+  it('queries pg_database_size with the exact expected SQL text', async () => {
+    await withStats('basic', async (c) => {
+      await c.snapshot(pglite);
+      expect(pglite.query).toHaveBeenCalledWith(
+        'SELECT pg_database_size(current_database())::text AS size',
+      );
+    });
+  });
+});

@@ -10,6 +10,9 @@
     "src/utils/statement-names.ts",
     "src/utils/quote-ident.ts",
     "src/schema/pg18-not-null.ts",
+    "src/telemetry/bridge-stats.ts",
+    "src/schema/migrations.ts",
+    "src/pglite-bridge/snapshot-manager.ts",
     "!src/**/*.test.ts",
     "!src/**/__tests__/**",
     "!src/**/*.d.ts"

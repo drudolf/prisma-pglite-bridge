@@ -170,6 +170,7 @@ export class BridgeStats implements TelemetrySink {
 
   recordLockWait(durationMs: number): void {
     if (this.frozen) return;
+    // Stryker disable next-line ConditionalExpression: accept — at 'basic' the snapshot never surfaces session-lock fields, so accumulating them here is unobservable by the fast unit suite.
     if (this.level !== 'full') return;
     this.totalSessionLockWaitMs += durationMs;
     this.sessionLockAcquisitionCount += 1;
@@ -238,9 +239,11 @@ export class BridgeStats implements TelemetrySink {
     try {
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(
+          // Stryker disable next-line StringLiteral: accept — this timeout error is caught by the catch below and mapped to `undefined`; its message never escapes queryDbSize, so it is unobservable by the fast unit suite.
           () => reject(new Error('pg_database_size query timed out')),
           DB_SIZE_QUERY_TIMEOUT_MS,
         );
+        // Stryker disable next-line OptionalChaining: accept — Node timers always expose `unref`; the `?.` guards only non-Node runtimes (Bun/Deno/edge), which the fast unit suite does not exercise.
         timer.unref?.();
       });
       const { rows } = await Promise.race([

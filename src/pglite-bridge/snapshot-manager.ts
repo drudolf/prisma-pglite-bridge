@@ -311,6 +311,10 @@ export class SnapshotManager {
     );
     const exists = rows[0]?.exists;
     if (!exists) this.#hasSnapshot = false;
+    // Stryker disable next-line BooleanLiteral: accept — the returned boolean is
+    // discarded at the sole call site (#resetDb awaits without using it); only
+    // the #hasSnapshot side effect above is observable. `exists` is already a
+    // boolean, so `!!exists === exists` regardless.
     return !!exists;
   }
 
