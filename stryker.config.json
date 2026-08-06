@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "pnpm",
+  "testRunner": "vitest",
+  "plugins": ["@stryker-mutator/vitest-runner"],
+  "mutate": [
+    "src/duplex/**/*.ts",
+    "src/pool/**/*.ts",
+    "!src/**/*.test.ts",
+    "!src/**/__tests__/**",
+    "!src/**/*.d.ts"
+  ],
+  "vitest": {
+    "configFile": "vitest.mutation.config.ts",
+    "related": false
+  },
+  "concurrency": 1,
+  "timeoutMS": 10000,
+  "timeoutFactor": 2,
+  "reporters": ["html", "json", "progress", "clear-text"],
+  "dryRunTimeoutMinutes": 10
+}

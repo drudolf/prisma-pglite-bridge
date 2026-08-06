@@ -1,5 +1,8 @@
 {
   "ignoreBinaries": ["wasm-bindgen", "numfmt", "psql", "pgrep"],
   "ignoreUnresolved": ["./build.sh"],
-  "ignore": ["benchmark/compat/fixtures/**"]
+  "ignore": ["benchmark/compat/fixtures/**"],
+  "vitest": {
+    "config": ["vitest.config.ts", "vitest.mutation.config.ts"]
+  }
 }

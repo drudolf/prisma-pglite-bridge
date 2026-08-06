@@ -8,3 +8,5 @@ CLAUDE.md
 coverage/
 vendor/
 benchmark/results/
+reports/
+.stryker-tmp/
