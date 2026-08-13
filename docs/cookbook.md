@@ -11,6 +11,7 @@ For the underlying API, see the [API reference](./api.md).
   - [Choosing an isolation model](#choosing-an-isolation-model)
   - [Wiring the bridge into your app](#wiring-the-bridge-into-your-app)
   - [Schema and seed](#schema-and-seed)
+  - [On-failure query trail](#on-failure-query-trail)
 - [Other ORMs](#other-orms)
   - [Wiring recipes](#wiring-recipes)
   - [Testing with any ORM](#testing-with-any-orm)
@@ -413,6 +414,86 @@ beforeEach(() => resetDb()); // restores the snapshot — no re-seed needed
 To re-seed every test (when seed data varies per spec), drop
 `snapshotDb()` and re-invoke `seed(prisma)` inside `beforeEach` after
 `resetDb()`.
+
+### On-failure query trail
+
+The `vitest` and `pool/vitest` fixture helpers capture the SQL each test
+runs and, when a test fails, print the failing test's trail to stderr —
+on by default, scoped to that test, with no configuration. It answers the
+question an assertion diff leaves open: *what did the test actually do to
+the database?*
+
+**The failure walkthrough.** Given a test that inserts a row whose email
+collides with the seeded one:
+
+```text
+pglite-bridge query trail — 3 queries — test "creates a user with a unique email"
+#0 c0 0.28ms BEGIN · BEGIN
+#1 c0 0.67ms QUERY · INSERT INTO users (email, name) VALUES ($1, $2) · [grace@example.com, Grace]
+#2 c0 1.58ms QUERY · INSERT INTO users (email, name) VALUES ($1, $2) · [ada@example.com, Ada II]
+    ↳ error 23505: duplicate key value violates unique constraint "users_email_key"
+```
+
+Each entry is `#<seq> c<clientId> <duration> <KIND> · <sql> · [params]`:
+the sequence number orders submissions across all pool clients, `c0` is
+the client ordinal, the kind labels transaction boundaries (`BEGIN`,
+`COMMIT`, `SAVEPOINT`, `ROLLBACK`, …) as flat entries and everything else
+as `QUERY`, and a failed query carries its error — code and message —
+on the following `↳` line. A query still in flight when the failure hook
+fires renders `pending` instead of a duration. There is no `COMMIT` line
+above because the second `INSERT` threw first; the pool then rolled the
+open transaction back — the trail shows exactly the statements that ran,
+in order.
+
+**Jest and standalone (accessor path).** The failure printout is a
+vitest feature (it hooks `onTestFailed`), but the capture is not. Enable
+`queryTrail` on the bridge or pool and read the structured entries
+yourself — under Jest, in a `catch`, or anywhere you want them:
+
+```typescript
+import { PGliteBridge, formatQueryTrail } from 'prisma-pglite-bridge';
+
+const bridge = new PGliteBridge({ queryTrail: true });
+// ... run the queries under test ...
+
+// on failure (or wherever you want to inspect):
+const entries = bridge.queryTrail();
+const meta = bridge.queryTrailMeta();
+console.error(formatQueryTrail(entries, meta, { testName: 'my failing case' }));
+```
+
+`PgBridgePool` exposes the same trio — `pool.queryTrail()`,
+`pool.queryTrailMeta()`, `pool.clearQueryTrail()` — for non-Prisma
+stacks. `clearQueryTrail()` resets the trail between cases; the fixture
+helpers call it for you at the start of each test.
+
+**JSONL for agents.** Set `PGLITE_BRIDGE_TRAIL_FORMAT=json` and the
+failure printout switches to JSONL: the first line is a `trail-header`
+event (`formatVersion`, `testName`, `droppedCount`, `disabled`), then one
+JSON object per entry — machine-readable without parsing prose. The same
+shape comes out of `formatQueryTrail(entries, meta, { format: 'json' })`.
+
+**Redaction for CI.** Params are previews of your fixture data, printed to
+the same console your assertion failures already use — but CI logs are
+durable and widely shared. Pass `queryTrail: { redactParams: true }` (on
+the pool/bridge option, or via the helper's `queryTrail` when you build
+your own effective options) to render every param as `<redacted>`; the
+SQL and errors still print.
+
+**The kill switch.** `PGLITE_BRIDGE_QUERY_TRAIL=0` disables both capture
+and printing suite-wide, regardless of any option. It can only ever
+disable — it never forces capture on.
+
+**Deliberately excluded.** The trail shows what *your* code did, so the
+bridge's own internal recovery statements (the duplex teardown
+`ROLLBACK`s) never appear, and per-test reset/seed traffic is cleared
+before each test so a failure prints only that test's own queries.
+
+Want more than a trail — "give me the database state at step k" for
+replay or bisection? That is a deliberate non-goal for now, gated on
+measured demand: open an issue on the
+[issue tracker](https://github.com/drudolf/prisma-pglite-bridge/issues)
+and say so.
 
 ## Other ORMs
 

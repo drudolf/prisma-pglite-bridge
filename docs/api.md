@@ -18,6 +18,7 @@ For known limits and runtime warnings see
 - [`hasSchema(pglite)`](#hasschemapglite)
 - [`PgBridgePool`](#pgbridgepool)
 - [The `/pool` entry and pool testing helpers](#the-pool-entry-and-pool-testing-helpers)
+- [Query trail](#query-trail)
 - [`PGliteServer`](#pgliteserver)
 - [`PGliteDuplex`](#pgliteduplex)
 - [`SessionLock`](#sessionlock)
@@ -517,6 +518,107 @@ Options (`SetupPGlitePoolOptions<TClient>`):
 bridge methods. On any failure after the pool is created, `dispose` is
 attempted when the client exists, and the pool — plus an internally
 created PGlite — is closed before the error propagates.
+
+## Query trail
+
+An opt-in ring buffer of the SQL each pool client issued at the SQL
+boundary, captured with `text` and `params` in cleartext (never decoded
+from wire bytes). The `vitest` / `pool/vitest` fixture helpers turn it on
+by default and print the failing test's trail on `onTestFailed`; see the
+[cookbook](./cookbook.md#on-failure-query-trail) for the walkthrough. This
+section covers the surface.
+
+### Options
+
+`PgBridgePool` and `PGliteBridge` accept `queryTrail?: boolean |
+QueryTrailOptions` (**default off** at this raw layer — a long-running dev
+server gains nothing from rendering params forever). `true` enables with
+defaults; an object overrides them:
+
+| `QueryTrailOptions` field | Default | Meaning |
+| --- | --- | --- |
+| `maxEntries` | `500` | Ring capacity. Overflow drops the *oldest* entries, counts them in `queryTrailMeta().droppedCount`, and warns once on stderr on the first overflow. |
+| `maxParamChars` | `200` | Per-param preview cap in characters. |
+| `redactParams` | `false` | Render every param as `<redacted>` — the switch for CI environments with durable, shared logs. SQL and errors still print. |
+
+The `vitest` and `pool/vitest` helpers (`createBridgeTest`,
+`createPoolTest`) instead take `queryTrail?: boolean`, **default `true`**:
+the failure hook lives there, and the per-query cost is a few string
+renders (see [Overhead](#overhead)). Setting it `false` disables both
+capture and the printout for that helper.
+
+### Accessors
+
+Both `PgBridgePool` and `PGliteBridge` expose the same trio (no-ops
+returning empty values when the trail is off):
+
+- `queryTrail(): readonly QueryTrailEntry[]` — the captured entries.
+- `queryTrailMeta(): QueryTrailMeta` — `{ droppedCount, disabledAfterSeq? }`;
+  `disabledAfterSeq` is set only if an internal capture error disabled the
+  trail mid-run.
+- `clearQueryTrail(): void` — empty the ring and reset `seq` to `0`. The
+  fixture helpers call this at the start of each test.
+
+An entry is `{ seq, atMs, clientId, sql, params, kind, status, durationMs?,
+rowCount?, error? }`; `kind` is one of `'query' | 'begin' | 'commit' |
+'rollback' | 'rollback-to' | 'savepoint' | 'release'` (DDL is `'query'`)
+and `status` is `'pending' | 'settled'`. All of `QueryTrailEntry`,
+`QueryTrailMeta`, `QueryTrailError`, `QueryTrailKind`, `QueryTrailOptions`,
+and `QueryTrailHandle` are exported from both entries.
+
+### `formatQueryTrail(entries, meta, options?)`
+
+Renders entries + meta to a string. Exported from the root and `/pool`
+entries alongside `TRAIL_FORMAT_VERSION` and `FormatQueryTrailOptions`.
+
+```typescript
+formatQueryTrail(
+  entries: readonly QueryTrailEntry[],
+  meta: QueryTrailMeta,
+  options?: { testName?: string; format?: 'human' | 'json' },
+): string
+```
+
+`format: 'human'` (default) produces the header + one line per entry shown
+in the cookbook. `format: 'json'` produces JSONL: the first line is a
+`{ type: 'trail-header', formatVersion, testName, droppedCount, disabled }`
+event (`formatVersion` is `TRAIL_FORMAT_VERSION`, currently `1`), then one
+entry object per line.
+
+### Option precedence
+
+Highest wins; the env kill switch can only ever *disable*:
+
+| Precedence | Source | Effect |
+| --- | --- | --- |
+| 1 (highest) | `PGLITE_BRIDGE_QUERY_TRAIL=0` env var | Disables capture and printing suite-wide. Never forces capture on. |
+| 2 | Helper option `queryTrail` (`createBridgeTest` / `createPoolTest`) | Default `true`. `false` opts the helper out. |
+| 3 | Pool/bridge option `queryTrail` (`PgBridgePool` / `PGliteBridge`) | Default `false` at the raw layer. |
+| 4 (lowest) | Layer default | Off raw, on in the helpers. |
+
+### Environment variables
+
+- `PGLITE_BRIDGE_QUERY_TRAIL=0` — the kill switch above.
+- `PGLITE_BRIDGE_TRAIL_FORMAT=json` — switches the helper's failure
+  printout to JSONL (first line the `trail-header` event, `formatVersion`
+  `1`).
+
+### Exclusions
+
+Two classes of traffic never appear, by design: the bridge's own internal
+recovery statements (the duplex teardown `ROLLBACK`s, issued below the
+capture point) and per-test reset/seed traffic (the fixture clears the
+trail before each test). The trail is what *your* code did.
+
+### Overhead
+
+The trail renders a few bounded strings per query. Measured (`pnpm
+bench:trail`, node v24.14.1, 5 reps × 5000 ops), capture overhead is below
+run-to-run measurement noise — the ON runs measured marginally faster than
+OFF on both scenarios (read p50 0.2747 ms → 0.2658 ms; write p50
+0.0860 ms → 0.0807 ms), so the deltas are noise, comfortably inside the
+`<2%` p50 / `<0.05 ms` absolute budget. That is why the test helpers
+default the trail on.
 
 ## `PGliteServer`
 

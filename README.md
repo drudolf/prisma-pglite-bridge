@@ -79,6 +79,35 @@ Running the Prisma CLI against this bridge (shadow DB for
 `migrate dev`, `psql`, SQL GUIs)? See
 [`PGliteServer`](./docs/server.md) for the TCP/Unix-socket front.
 
+## When a test fails, see what it did to the database
+
+The `vitest` / `jest` helpers capture an on-failure query trail. A
+failing test that shows only an assertion diff now also prints the SQL
+it ran — every query, its params, its error — scoped to exactly that
+test, to stderr, on by default, zero config:
+
+```text
+pglite-bridge query trail — 3 queries — test "creates a user with a unique email"
+#0 c0 0.28ms BEGIN · BEGIN
+#1 c0 0.67ms QUERY · INSERT INTO users (email, name) VALUES ($1, $2) · [grace@example.com, Grace]
+#2 c0 1.58ms QUERY · INSERT INTO users (email, name) VALUES ($1, $2) · [ada@example.com, Ada II]
+    ↳ error 23505: duplicate key value violates unique constraint "users_email_key"
+```
+
+Each line is one query: sequence number, client tag, duration, kind,
+SQL, params; the failing query carries its error inline. The trail is
+in-memory, printed only for the failing test, and never written to
+disk — nothing to gitignore. Passing tests print nothing.
+
+Params are previews of your test-fixture data, printed to the same
+console your assertion failures already use. Where CI logs are durable
+and shared, pass `queryTrail: { redactParams: true }` to render every
+param as `<redacted>`, or set `PGLITE_BRIDGE_QUERY_TRAIL=0` to turn
+capture off entirely. Structured access (Jest, standalone, agents) and
+the JSONL format are in the
+[cookbook](./docs/cookbook.md#on-failure-query-trail); options and
+precedence are in the [API reference](./docs/api.md#query-trail).
+
 ## Performance
 
 On reads, the wire-protocol path is roughly 2x faster than going
