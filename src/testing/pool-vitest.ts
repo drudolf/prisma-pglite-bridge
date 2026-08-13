@@ -38,6 +38,7 @@ import {
   type PGlitePoolTestContext,
   type SetupPGlitePoolOptions,
 } from './pool-core.ts';
+import { registerTrailFailureHook, trailEnabled } from './query-trail-hook.ts';
 
 export type { PGlitePoolTestContext, SetupPGlitePoolOptions } from './pool-core.ts';
 
@@ -75,6 +76,19 @@ export interface CreatePoolTestOptions<TClient>
    * for the trade-off dial. Requires vitest >= 3.2.
    */
   scope?: 'test' | 'file' | 'worker';
+
+  /**
+   * Capture an on-failure query trail and, on a test failure, print the
+   * failing test's trail to stderr. Default `true` in the helpers (the
+   * failure hook only exists here). The fixture clears the trail after
+   * reset/seed so shared-scope trails are per-test, registers
+   * `onTestFailed`, and reads the entries synchronously on failure — before
+   * any fixture teardown runs. Set `false` to disable both capture and the
+   * printout. The `PGLITE_BRIDGE_QUERY_TRAIL=0` env var wins over this
+   * option and can only ever disable. See
+   * `.claude/plans/query-trail-design.md` §5.
+   */
+  queryTrail?: boolean;
 }
 
 /** Fixtures provided by {@link createPoolTest}. */
@@ -109,12 +123,13 @@ const takeContext = <TClient>(
 const createSharedPoolTest = <TClient>(
   options: CreatePoolTestOptions<TClient>,
   scope: 'file' | 'worker',
+  trailOn: boolean,
 ): TestAPI<PoolTestFixtures<TClient>> => {
   // The pool fixture hands the full context to the client fixture out of
   // band; vitest owns both lifetimes, the map just avoids a second fixture.
   const contexts = new WeakMap<PgBridgePool, PGlitePoolTestContext<TClient>>();
 
-  return baseTest.extend<PoolTestFixtures<TClient>>({
+  return baseTest.extend<PoolTestFixtures<TClient> & { _trail: undefined }>({
     pool: [
       // biome-ignore lint/correctness/noEmptyPattern: vitest parses the destructure to compute fixture dependencies — `{}` declares "none".
       async ({}, use) => {
@@ -128,6 +143,18 @@ const createSharedPoolTest = <TClient>(
       },
       { scope },
     ],
+    // Auto per-test trail fixture: runs for EVERY test (tests may take only
+    // `pool`, never `client`), so the clear + failure hook cannot hinge on the
+    // client fixture. Reset traffic bypasses the pool (SnapshotManager execs
+    // PGlite directly), so ordering vs the client's resetDb is irrelevant —
+    // only the setup-time seed must be cleared, which this does.
+    _trail: [
+      async ({ pool }: { pool: PgBridgePool }, use: (value: undefined) => Promise<void>) => {
+        installPerTestTrail(pool, trailOn);
+        await use(undefined);
+      },
+      { auto: true },
+    ],
     client: async ({ pool }: { pool: PgBridgePool }, use: (value: TClient) => Promise<void>) => {
       const context = takeContext(contexts, pool);
       // The context is shared across the scope, so restore the seeded
@@ -137,7 +164,7 @@ const createSharedPoolTest = <TClient>(
       await context.resetDb();
       await use(context.client);
     },
-  });
+  }) as unknown as TestAPI<PoolTestFixtures<TClient>>;
 };
 
 /**
@@ -149,6 +176,7 @@ const createSharedPoolTest = <TClient>(
  */
 const createTestScopedPoolTest = <TClient>(
   options: CreatePoolTestOptions<TClient>,
+  trailOn: boolean,
 ): TestAPI<PoolTestFixtures<TClient>> => {
   const contexts = new WeakMap<PgBridgePool, PGlitePoolTestContext<TClient>>();
 
@@ -158,7 +186,7 @@ const createTestScopedPoolTest = <TClient>(
   // fixtures API down to the public one cannot be expressed by assignment —
   // the `as unknown as` below is the minimal honest encoding, and the
   // public shape it asserts is pinned by a type test in pool-vitest.test.ts.
-  return baseTest.extend<PoolTestFixtures<TClient> & { template: Blob | File }>({
+  return baseTest.extend<PoolTestFixtures<TClient> & { template: Blob | File; _trail: undefined }>({
     template: [
       // biome-ignore lint/correctness/noEmptyPattern: vitest parses the destructure to compute fixture dependencies — `{}` declares "none".
       async ({}, use) => {
@@ -181,11 +209,31 @@ const createTestScopedPoolTest = <TClient>(
       },
       { scope: 'test' },
     ],
+    // Auto per-test trail fixture — see the shared-scope note. Freshly loaded
+    // from the template (already seeded, no reset), so this only starts the
+    // per-test trail empty and arms the printout.
+    _trail: [
+      async ({ pool }: { pool: PgBridgePool }, use: (value: undefined) => Promise<void>) => {
+        installPerTestTrail(pool, trailOn);
+        await use(undefined);
+      },
+      { auto: true },
+    ],
     client: async ({ pool }: { pool: PgBridgePool }, use: (value: TClient) => Promise<void>) => {
       // Freshly loaded from the template — already at seeded state, no reset.
       await use(takeContext(contexts, pool).client);
     },
   }) as unknown as TestAPI<PoolTestFixtures<TClient>>;
+};
+
+/** Per-test trail wiring, shared by both pool scopes: clear the (post-reset)
+ *  trail so it starts empty for this test, then register the failure printout.
+ *  A no-op when the trail is off. */
+const installPerTestTrail = (pool: PgBridgePool, trailOn: boolean): void => {
+  /* v8 ignore next — the trail defaults ON, so the fast in-process helper tests never take the disabled arm; `queryTrail: false` is driven only by the hermetic child-vitest opt-out run, whose separate-process coverage the parent does not collect */
+  if (!trailOn) return;
+  pool.clearQueryTrail();
+  registerTrailFailureHook(pool);
 };
 
 /**
@@ -212,7 +260,16 @@ export const createPoolTest = <TClient>(
   options: CreatePoolTestOptions<TClient>,
 ): TestAPI<PoolTestFixtures<TClient>> => {
   const scope = options.scope ?? 'file';
+  // Trail default ON in the helper: capture unless the option is `false` or the
+  // env kill switch is set (env > helper option). When on, force the pool's
+  // `queryTrail` on so the failure hook has entries to print; when off, force
+  // it off so an ambient pool option cannot leak capture past the opt-out.
+  const enabled = trailEnabled(options.queryTrail);
+  const effective: CreatePoolTestOptions<TClient> = {
+    ...options,
+    pool: { ...options.pool, queryTrail: enabled },
+  };
   return scope === 'test'
-    ? createTestScopedPoolTest(options)
-    : createSharedPoolTest(options, scope);
+    ? createTestScopedPoolTest(effective, enabled)
+    : createSharedPoolTest(effective, scope, enabled);
 };

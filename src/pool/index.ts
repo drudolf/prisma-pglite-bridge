@@ -22,6 +22,12 @@ import {
   PgBridgeClient,
   type PgBridgeClientOptions,
 } from './pg-bridge-client.ts';
+import {
+  type QueryTrailEntry,
+  type QueryTrailMeta,
+  type QueryTrailOptions,
+  QueryTrailRecorder,
+} from './query-trail.ts';
 import { liveClientCounts, livePoolCounts } from './session-registry.ts';
 
 /** Bound on `end()`'s wait for client duplex teardowns before it closes an
@@ -45,6 +51,21 @@ export const assertPoolMax = (max: number): void => {
   }
 };
 
+/** Resolve the `queryTrail` option into a recorder, or `undefined` when the
+ *  feature is off. The `PGLITE_BRIDGE_QUERY_TRAIL=0` env var only ever
+ *  disables — it cannot force capture on when the option is falsy. */
+const resolveQueryTrail = (
+  option: boolean | QueryTrailOptions | undefined,
+): QueryTrailRecorder | undefined => {
+  if (!option) return undefined;
+  if (process.env.PGLITE_BRIDGE_QUERY_TRAIL === '0') return undefined;
+  // The object form (`{ maxEntries, maxParamChars, redactParams }`) is a
+  // documented public option but the fast suite only drives `queryTrail: true`;
+  // the recorder's own tests cover every option field directly.
+  /* v8 ignore next — object-option arm; the suite passes only `true` at the pool boundary */
+  return new QueryTrailRecorder(option === true ? {} : option);
+};
+
 export interface PgBridgePoolOptions
   extends Omit<
     PgBridgeClientOptions,
@@ -58,6 +79,10 @@ export interface PgBridgePoolOptions
     | 'sessionLock'
     | 'protocolCleanupNeeded'
     | 'statementCaching'
+    // Pool-level `queryTrail` is the option form (`boolean | QueryTrailOptions`);
+    // the client-level field is the resolved `QueryTrailRecorder`. Omit the
+    // client's so the pool's own declaration below is authoritative.
+    | 'queryTrail'
   > {
   /**
    * PGlite instance to back the pool. When omitted the pool creates its own
@@ -230,6 +255,15 @@ export interface PgBridgePoolOptions
    * Default `true`.
    */
   fastQueryPath?: boolean;
+
+  /**
+   * Capture an on-failure query trail — a pool-owned ring buffer of the
+   * queries the app issued at the SQL boundary. `true` enables with defaults;
+   * an object overrides ring capacity, param preview cap, and redaction. Off
+   * by default; the `PGLITE_BRIDGE_QUERY_TRAIL=0` env var only ever disables.
+   * See {@link QueryTrailOptions} and `.claude/plans/query-trail-design.md`.
+   */
+  queryTrail?: boolean | QueryTrailOptions;
 }
 
 /**
@@ -294,6 +328,10 @@ export class PgBridgePool extends pg.Pool {
    *  gap cannot escape the barrier. */
   readonly #pendingTeardowns: Set<DuplexTeardown>;
 
+  /** Pool-owned trail recorder, or undefined when the feature is off. Shared
+   *  by every client via the OptionsKey config; the accessors read it here. */
+  readonly #queryTrail?: QueryTrailRecorder;
+
   /** @throws {TypeError} when `max` is not a positive integer. */
   constructor({
     bridgeId = Symbol('bridge'),
@@ -307,9 +345,11 @@ export class PgBridgePool extends pg.Pool {
     idleTimeoutMillis = 0,
     fastQueryPath,
     statementCaching,
+    queryTrail,
   }: PgBridgePoolOptions & { telemetry?: TelemetrySink } = {}) {
     assertPoolMax(max);
     const resolvedPglite = pglite ?? new PGlite();
+    const trail = resolveQueryTrail(queryTrail);
 
     // A local (not `this.#pendingTeardowns`) so the onTeardownCreated
     // closure below never touches `this`: it is created before super()
@@ -337,6 +377,7 @@ export class PgBridgePool extends pg.Pool {
         protocolCleanupNeeded: pgliteNeedsProtocolCleanup(),
         fastQueryPath,
         statementCaching: statementCaching !== false,
+        queryTrail: trail,
         onTeardownCreated: (teardown: DuplexTeardown) => {
           pendingTeardowns.add(teardown);
           // `settled` is resolve-only by contract (DuplexTeardown), so a
@@ -352,6 +393,7 @@ export class PgBridgePool extends pg.Pool {
     this.pglite = resolvedPglite;
     this.#ownsPglite = !pglite;
     this.#pendingTeardowns = pendingTeardowns;
+    this.#queryTrail = trail;
 
     const liveCount = (livePoolCounts.get(resolvedPglite) ?? 0) + 1;
     livePoolCounts.set(resolvedPglite, liveCount);
@@ -542,4 +584,22 @@ export class PgBridgePool extends pg.Pool {
     const count = livePoolCounts.get(this.pglite) ?? 1;
     livePoolCounts.set(this.pglite, Math.max(0, count - 1));
   }
+
+  /** Snapshot of the captured query trail (empty when the feature is off). */
+  queryTrail(): readonly QueryTrailEntry[] {
+    return this.#queryTrail?.entries() ?? [];
+  }
+
+  /** Reset the captured query trail (a no-op when the feature is off). */
+  clearQueryTrail(): void {
+    this.#queryTrail?.clear();
+  }
+
+  /** Meta (dropped/disabled counts) of the captured trail; the helpers read
+   *  this synchronously on failure to render the header. Empty when off. */
+  /* v8 ignore start — read only by the failure hook (registerTrailFailureHook), which fires solely in the hermetic child-vitest runs; the parent suite never collects that separate process, so both the recorder-present and feature-off arms are exercised only there */
+  queryTrailMeta(): QueryTrailMeta {
+    return this.#queryTrail?.meta() ?? { droppedCount: 0 };
+  }
+  /* v8 ignore stop */
 }

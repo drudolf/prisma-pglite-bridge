@@ -46,6 +46,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 
 import { PgBridgeError } from '../errors.ts';
 import { assertPoolMax, PgBridgePool } from '../pool';
+import type { QueryTrailEntry, QueryTrailMeta, QueryTrailOptions } from '../pool/query-trail.ts';
 import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
 import { assertPoolIdle } from '../utils/assert-pool-idle.ts';
 import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
@@ -193,6 +194,13 @@ export interface PGliteBridgeOptions {
    * Omit to use `public`.
    */
   schema?: string;
+
+  /**
+   * Capture an on-failure query trail for traffic through this bridge.
+   * Forwarded to the pool unchanged; read via {@link PGliteBridge.queryTrail}.
+   * See `PgBridgePoolOptions.queryTrail`.
+   */
+  queryTrail?: boolean | QueryTrailOptions;
 }
 
 export class PGliteBridge {
@@ -391,4 +399,18 @@ export class PGliteBridge {
   stats = async (): Promise<Stats | undefined> => {
     return this.#stats ? this.#stats.snapshot(this.pglite) : undefined;
   };
+
+  /** Snapshot of the captured query trail (empty when the feature is off).
+   *  Delegates to the internal pool. */
+  queryTrail = (): readonly QueryTrailEntry[] => this.#pool.queryTrail();
+
+  /** Reset the captured query trail (a no-op when the feature is off).
+   *  Delegates to the internal pool. */
+  clearQueryTrail = (): void => this.#pool.clearQueryTrail();
+
+  /** Meta (dropped/disabled) of the captured trail; the helpers read this
+   *  synchronously on failure. Delegates to the internal pool. */
+  /* v8 ignore start — read only by the failure hook, which fires solely in the hermetic child-vitest runs (uncollected separate process); delegates to the pool accessor */
+  queryTrailMeta = (): QueryTrailMeta => this.#pool.queryTrailMeta();
+  /* v8 ignore stop */
 }

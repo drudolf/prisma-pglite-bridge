@@ -38,6 +38,7 @@ import {
   type PGliteTestContext,
   type SetupPGliteBridgeOptions,
 } from './core.ts';
+import { registerTrailFailureHook, trailEnabled } from './query-trail-hook.ts';
 
 export type { PGliteTestContext, SetupPGliteBridgeOptions } from './core.ts';
 
@@ -84,6 +85,19 @@ export interface CreateBridgeTestOptions<TClient>
    * `threads`/`forks` pools.
    */
   scope?: 'test' | 'file' | 'worker';
+
+  /**
+   * Capture an on-failure query trail and, on a test failure, print the
+   * failing test's trail to stderr. Default `true` in the helpers (the
+   * failure hook only exists here). The fixture clears the trail after
+   * reset/seed so shared-scope trails are per-test, registers
+   * `onTestFailed`, and reads the entries synchronously on failure — before
+   * any fixture teardown runs. Set `false` to disable both capture and the
+   * printout. The `PGLITE_BRIDGE_QUERY_TRAIL=0` env var wins over this
+   * option and can only ever disable. See
+   * `.claude/plans/query-trail-design.md` §5.
+   */
+  queryTrail?: boolean;
 }
 
 /** Fixtures provided by {@link createBridgeTest}. */
@@ -118,12 +132,13 @@ const takeClient = <TClient>(
 const createSharedBridgeTest = <TClient>(
   options: CreateBridgeTestOptions<TClient>,
   scope: 'file' | 'worker',
+  trailOn: boolean,
 ): TestAPI<BridgeTestFixtures<TClient>> => {
   // The bridge fixture hands the client to the prisma fixture out of band;
   // vitest owns both lifetimes, the map just avoids a second fixture.
   const clients = new WeakMap<PGliteBridge, TClient>();
 
-  return baseTest.extend<BridgeTestFixtures<TClient>>({
+  return baseTest.extend<BridgeTestFixtures<TClient> & { _trail: undefined }>({
     bridge: [
       // biome-ignore lint/correctness/noEmptyPattern: vitest parses the destructure to compute fixture dependencies — `{}` declares "none".
       async ({}, use) => {
@@ -137,6 +152,18 @@ const createSharedBridgeTest = <TClient>(
       },
       { scope },
     ],
+    // Auto per-test trail fixture: runs for EVERY test, so the clear + failure
+    // hook cannot hinge on the prisma fixture. Reset traffic bypasses the pool
+    // (SnapshotManager execs PGlite directly), so ordering vs the prisma
+    // fixture's resetDb is irrelevant — only the setup-time seed must be
+    // cleared, which this does.
+    _trail: [
+      async ({ bridge }: { bridge: PGliteBridge }, use: (value: undefined) => Promise<void>) => {
+        installPerTestTrail(bridge, trailOn);
+        await use(undefined);
+      },
+      { auto: true },
+    ],
     prisma: async (
       { bridge }: { bridge: PGliteBridge },
       use: (value: TClient) => Promise<void>,
@@ -148,7 +175,7 @@ const createSharedBridgeTest = <TClient>(
       // The bridge fixture always populates the map before `use` resolves.
       await use(takeClient(clients, bridge));
     },
-  });
+  }) as unknown as TestAPI<BridgeTestFixtures<TClient>>;
 };
 
 /**
@@ -159,6 +186,7 @@ const createSharedBridgeTest = <TClient>(
  */
 const createTestScopedBridgeTest = <TClient>(
   options: CreateBridgeTestOptions<TClient>,
+  trailOn: boolean,
 ): TestAPI<BridgeTestFixtures<TClient>> => {
   const clients = new WeakMap<PGliteBridge, TClient>();
 
@@ -168,7 +196,9 @@ const createTestScopedBridgeTest = <TClient>(
   // API down to the public one cannot be expressed by assignment — the
   // `as unknown as` below is the minimal honest encoding, and the public shape
   // it asserts is pinned by a type test in vitest.test.ts.
-  return baseTest.extend<BridgeTestFixtures<TClient> & { template: Blob | File }>({
+  return baseTest.extend<
+    BridgeTestFixtures<TClient> & { template: Blob | File; _trail: undefined }
+  >({
     template: [
       // biome-ignore lint/correctness/noEmptyPattern: vitest parses the destructure to compute fixture dependencies — `{}` declares "none".
       async ({}, use) => {
@@ -191,6 +221,16 @@ const createTestScopedBridgeTest = <TClient>(
       },
       { scope: 'test' },
     ],
+    // Auto per-test trail fixture — see the shared-scope note. Freshly loaded
+    // from the template (already seeded, no reset), so this only starts the
+    // per-test trail empty and arms the printout.
+    _trail: [
+      async ({ bridge }: { bridge: PGliteBridge }, use: (value: undefined) => Promise<void>) => {
+        installPerTestTrail(bridge, trailOn);
+        await use(undefined);
+      },
+      { auto: true },
+    ],
     prisma: async (
       { bridge }: { bridge: PGliteBridge },
       use: (value: TClient) => Promise<void>,
@@ -199,6 +239,16 @@ const createTestScopedBridgeTest = <TClient>(
       await use(takeClient(clients, bridge));
     },
   }) as unknown as TestAPI<BridgeTestFixtures<TClient>>;
+};
+
+/** Per-test trail wiring, shared by both bridge scopes: clear the (post-reset)
+ *  trail so it starts empty for this test, then register the failure printout.
+ *  A no-op when the trail is off. */
+const installPerTestTrail = (bridge: PGliteBridge, trailOn: boolean): void => {
+  /* v8 ignore next — the trail defaults ON, so the fast in-process helper tests never take the disabled arm; `queryTrail: false` is driven only by the hermetic child-vitest opt-out run, whose separate-process coverage the parent does not collect */
+  if (!trailOn) return;
+  bridge.clearQueryTrail();
+  registerTrailFailureHook(bridge);
 };
 
 /**
@@ -232,7 +282,15 @@ export const createBridgeTest = <TClient>(
 ): TestAPI<BridgeTestFixtures<TClient>> => {
   assertExactlyOneSchemaSource('createBridgeTest', options);
   const scope = options.scope ?? 'file';
+  // Trail default ON (env > helper option). When on, force the bridge's
+  // `queryTrail` on so the failure hook has entries; when off, force it off so
+  // an ambient bridge option cannot leak capture past the opt-out.
+  const enabled = trailEnabled(options.queryTrail);
+  const effective: CreateBridgeTestOptions<TClient> = {
+    ...options,
+    bridge: { ...options.bridge, queryTrail: enabled },
+  };
   return scope === 'test'
-    ? createTestScopedBridgeTest(options)
-    : createSharedBridgeTest(options, scope);
+    ? createTestScopedBridgeTest(effective, enabled)
+    : createSharedBridgeTest(effective, scope, enabled);
 };

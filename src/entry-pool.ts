@@ -27,6 +27,19 @@
 export { PGliteDuplex, type PGliteDuplexOptions } from './duplex';
 export { PgBridgeError, type PgBridgeErrorCode } from './errors.ts';
 export { PgBridgePool, type PgBridgePoolOptions } from './pool';
+export type {
+  QueryTrailEntry,
+  QueryTrailError,
+  QueryTrailHandle,
+  QueryTrailKind,
+  QueryTrailMeta,
+  QueryTrailOptions,
+} from './pool/query-trail.ts';
+export {
+  type FormatQueryTrailOptions,
+  formatQueryTrail,
+  TRAIL_FORMAT_VERSION,
+} from './pool/query-trail-format.ts';
 export type { Stats, StatsBasic, StatsFull, StatsLevel } from './telemetry/bridge-stats.ts';
 export {
   LOCK_WAIT_CHANNEL,

@@ -21,6 +21,19 @@ export { PGliteBridge, type PGliteBridgeOptions } from './pglite-bridge';
 export type { PGliteServerOptions } from './pglite-server';
 export { PGliteServer } from './pglite-server';
 export { PgBridgePool, type PgBridgePoolOptions } from './pool';
+export type {
+  QueryTrailEntry,
+  QueryTrailError,
+  QueryTrailHandle,
+  QueryTrailKind,
+  QueryTrailMeta,
+  QueryTrailOptions,
+} from './pool/query-trail.ts';
+export {
+  type FormatQueryTrailOptions,
+  formatQueryTrail,
+  TRAIL_FORMAT_VERSION,
+} from './pool/query-trail-format.ts';
 export type { PushSchemaOptions, PushSchemaResult, SchemaEngineModule } from './schema';
 export { pushSchema, resetSchema } from './schema';
 export type { PushMigrationsOptions, PushMigrationsResult } from './schema/migrations.ts';

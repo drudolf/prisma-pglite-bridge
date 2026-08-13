@@ -10,6 +10,7 @@ import { decodeStatementCacheInvalidation, type StatementCacheInvalidation } fro
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 import { FastQuery, type FastQueryField, type FastQueryResult } from './fast-query.ts';
 import { assertPgInternals, getPgActiveQuery } from './pg-internals.ts';
+import type { QueryTrailHandle, QueryTrailRecorder } from './query-trail.ts';
 import { liveClients } from './session-registry.ts';
 
 export interface PgBridgeClientOptions {
@@ -45,6 +46,15 @@ export interface PgBridgeClientOptions {
    * Connection constructor, where a throw would leak the created duplex.
    */
   onTeardownCreated?: (teardown: DuplexTeardown) => void;
+
+  /**
+   * Pool-owned on-failure query trail. When present, this client registers a
+   * stable ordinal at construction and captures every `query()` submission at
+   * the SQL boundary (design: .claude/plans/query-trail-design.md §4). Absent
+   * when the `queryTrail` option is off or the env kill switch disabled it —
+   * capture then costs nothing.
+   */
+  queryTrail?: QueryTrailRecorder;
 }
 
 /** Duplex-teardown handle: `settled` is the duplex's resolve-only `onClose`
@@ -221,6 +231,12 @@ export class PgBridgeClient extends pg.Client {
    *  not yet accessible. */
   readonly #duplexBox: { current?: PGliteDuplex };
 
+  /** The pool-owned trail recorder, or undefined when the feature is off. */
+  readonly #trail?: QueryTrailRecorder;
+  /** This client's stable trail ordinal, assigned at construction when the
+   *  trail is on. */
+  readonly #trailClientId: number;
+
   static readonly OptionsKey: unique symbol = Symbol('PgBridgeClientOptions');
 
   constructor(config?: PgBridgeClientConfig) {
@@ -262,6 +278,9 @@ export class PgBridgeClient extends pg.Client {
     this.#duplexBox = duplexBox;
     this.#fastQueryPath = features.fastQueryPath;
     this.#pglite = bridge.pglite;
+    this.#trail = bridge.queryTrail;
+    // registerClient() only when the trail is on; -1 is never read otherwise.
+    this.#trailClientId = bridge.queryTrail?.registerClient() ?? -1;
     this.#stmtNameGen = features.statementCaching
       ? createStatementNameGenerator({
           ...(typeof caching === 'object' ? caching : undefined),
@@ -471,6 +490,10 @@ export class PgBridgeClient extends pg.Client {
     // Submittable + promise forms on one client may still trip the pg queue
     // deprecation.
     if (isSubmittable(first)) {
+      // Capture passively: read the Submittable's `.text` (a text-bearing
+      // pg.Query) or tag an opaque one `<submittable:ClassName>`, and settle
+      // off its own `end`/`error` channels — never altering pg's dispatch.
+      this.#trailBeginSubmittable(first);
       // Forward the FULL argument list: stock pg's submittable arm attaches a
       // trailing positional callback to the query itself (`if (!query.callback)
       // query.callback = ...`), which is how pg-pool's release callback reaches
@@ -524,6 +547,11 @@ export class PgBridgeClient extends pg.Client {
     // Handle every callback form, then return `undefined` like stock pg does
     // in callback mode.
     if (this.#dispatchCallbackForm(args, first, discovery)) return undefined;
+    // Callback forms re-enter this.query() with an owned snapshot, so they are
+    // captured there — only the promise/fast paths capture here. Read the SQL
+    // and values NOW, before the snapshot below rewrites args[0]: a positional
+    // values array wins over a config's own `values`, matching pg's override.
+    const trailHandle = this.#trailBeginOrdinary(first, args[1]);
 
     // From here on, non-Submittable object configs are snapshotted into an
     // owned mutable record (stock pg's call-time `new Query(config)` capture),
@@ -673,6 +701,18 @@ export class PgBridgeClient extends pg.Client {
             this.#evictStatementCachesEverywhere(dealloc);
             return result;
           });
+
+    // Settle the trail entry off the real completion — a passive observer that
+    // never touches what the caller receives (publicPromise, possibly a
+    // timeout race). Off executionPromise, not the raced promise, so rowCount
+    // reflects the actual result.
+    if (trailHandle !== undefined) {
+      void executionPromise.then(
+        (result: unknown) =>
+          trailHandle.settle({ rowCount: (result as { rowCount?: number | null })?.rowCount }),
+        (error: unknown) => trailHandle.settle({ error }),
+      );
+    }
 
     if (timeout !== undefined) {
       void executionPromise.then(timeout.clear, timeout.clear);
@@ -956,6 +996,57 @@ export class PgBridgeClient extends pg.Client {
       delete connection.parsedStatements[name];
       this.#fieldsCache.delete(name);
     }
+  }
+
+  /** Begin a trail entry for the ordinary/fast promise path, reading the SQL
+   *  and values from the pre-snapshot arguments — a positional values array
+   *  (pg's override) wins over a config's own `values`. Returns undefined when
+   *  the trail is off, when there is no readable text, or (harmless) when
+   *  neither shape applies. */
+  #trailBeginOrdinary(first: unknown, positional: unknown): QueryTrailHandle | undefined {
+    if (this.#trail === undefined) return undefined;
+    // Text: the string form itself, or an object config's string `text`. The
+    // dispatch above already routed Submittables, callbacks and null/undefined,
+    // so a first arg without readable text is a malformed object we skip.
+    const text = typeof first === 'string' ? first : this.#configText(first);
+    /* v8 ignore next — text is undefined only via #configText's defensive no-text arm (itself ignored); every query the suite drives has readable text */
+    if (text === undefined) return undefined;
+    // A positional array (pg's precedence over a config's own `values`) is the
+    // authoritative params; otherwise an object config's own `values`.
+    const configValues = isObject(first) && Array.isArray(first.values) ? first.values : undefined;
+    const values = Array.isArray(positional) ? positional : configValues;
+    return this.#trail.begin(this.#trailClientId, text, values);
+  }
+
+  /** An object config's string `text`, or undefined for a non-object / no-text
+   *  first argument. */
+  #configText(first: unknown): string | undefined {
+    /* v8 ignore next — every object config reaching #trailBeginOrdinary in the suite carries a string `text`; the no-text arm is defensive against a malformed config the fast suite does not construct */
+    return isObject(first) && typeof first.text === 'string' ? first.text : undefined;
+  }
+
+  /** Begin a trail entry for a Submittable and settle it off the object's own
+   *  `end`/`error` channels (passive listeners, never altering pg's dispatch).
+   *  A text-bearing pg.Query records its `.text`; an opaque one without text
+   *  records a `<submittable:ClassName>` tag rather than being dropped. */
+  #trailBeginSubmittable(submittable: pg.Submittable): void {
+    if (this.#trail === undefined) return;
+    const text = (submittable as { text?: unknown }).text;
+    const sql = typeof text === 'string' ? text : `<submittable:${submittable.constructor.name}>`;
+    const handle = this.#trail.begin(this.#trailClientId, sql);
+    const on = (submittable as { on?: unknown }).on;
+    // A Submittable without an `on` is not a pg-shaped event emitter; the trail
+    // entry simply stays pending (never settled) — a benign, unpinned
+    // degradation of a fallback shape. isSubmittable only requires `submit`.
+    // Stryker disable next-line ConditionalExpression: accept — same defensive guard; a Submittable without `on` leaves the entry pending, unobservable in the fast suite.
+    /* v8 ignore next — every Submittable the suite drives (pg.Query and the opaque test double) exposes `on`; the missing-`on` guard is defensive */
+    if (typeof on !== 'function') return;
+    const listen = on as (event: string, listener: (...a: unknown[]) => void) => void;
+    listen.call(submittable, 'end', (result: unknown) =>
+      handle.settle({ rowCount: (result as { rowCount?: number | null })?.rowCount }),
+    );
+    /* v8 ignore next — the in-process suite drives only succeeding Submittables (they emit 'end'); an erroring Submittable's 'error' settle is a passive-observer symmetry the fast suite does not construct */
+    listen.call(submittable, 'error', (error: unknown) => handle.settle({ error }));
   }
 
   /**
