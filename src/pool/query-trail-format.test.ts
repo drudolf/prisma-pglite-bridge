@@ -195,6 +195,26 @@ describe('formatQueryTrail — human format entry lines', () => {
     );
     expect(lineAt(out, 2)).toBe('    ↳ error: syntax error at or near "bad"');
   });
+
+  it('renders a settled sentinel-shaped entry cleanly (durationMs 0, never "undefinedms")', () => {
+    // The disabled-sentinel entry the recorder appends: settled, no params,
+    // durationMs 0. It must render as `0ms`, never `undefinedms`.
+    const out = formatQueryTrail(
+      [
+        entry({
+          clientId: -1,
+          sql: '<trail capture disabled>',
+          params: [],
+          status: 'settled',
+          durationMs: 0,
+          rowCount: undefined,
+        }),
+      ],
+      { droppedCount: 0, disabledAfterSeq: 0 },
+    );
+    expect(out).not.toContain('undefinedms');
+    expect(lineAt(out, 1)).toBe('#0 c-1 0ms QUERY · <trail capture disabled>');
+  });
 });
 
 describe('formatQueryTrail — flat transaction boundaries ([tribunal])', () => {

@@ -598,7 +598,8 @@ Highest wins; the env kill switch can only ever *disable*:
 
 ### Environment variables
 
-- `PGLITE_BRIDGE_QUERY_TRAIL=0` — the kill switch above.
+- `PGLITE_BRIDGE_QUERY_TRAIL=0` — the kill switch above; only the exact
+  value `0` disables (any other value is ignored).
 - `PGLITE_BRIDGE_TRAIL_FORMAT=json` — switches the helper's failure
   printout to JSONL (first line the `trail-header` event, `formatVersion`
   `1`).

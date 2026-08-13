@@ -419,6 +419,23 @@ describe('QueryTrailRecorder', () => {
     });
   });
 
+  describe('entries() snapshot', () => {
+    it('returns a snapshot copy — a retained reference is not mutated by later captures', () => {
+      const recorder = new QueryTrailRecorder();
+      const clientId = recorder.registerClient();
+
+      recorder.begin(clientId, 'SELECT 1');
+      const captured = recorder.entries();
+      expect(captured).toHaveLength(1);
+
+      // Record another query AFTER capturing the reference — the retained array
+      // must not grow underneath the caller.
+      recorder.begin(clientId, 'SELECT 2');
+      expect(captured).toHaveLength(1);
+      expect(captured.map((e) => e.sql)).toEqual(['SELECT 1']);
+    });
+  });
+
   describe('registerClient', () => {
     it('returns stable ordinals 0, 1, 2 …', () => {
       const recorder = new QueryTrailRecorder();
@@ -481,6 +498,20 @@ describe('QueryTrailRecorder', () => {
       expect(sentinel).toBeDefined();
       expect(sentinel?.kind).toBe('query');
       expect(sentinel?.seq).toBe(meta.disabledAfterSeq);
+    });
+
+    it('gives the settled sentinel a durationMs of 0 (never undefined)', () => {
+      spyStderr();
+      const recorder = new QueryTrailRecorder();
+      const clientId = recorder.registerClient();
+
+      recorder.begin(clientId, 'SELECT $1', [explosiveValue()]); // disables
+
+      const sentinel = recorder.entries().find((e) => e.sql === '<trail capture disabled>');
+      expect(sentinel?.status).toBe('settled');
+      // The human formatter renders `${durationMs}ms`; undefined would read
+      // `undefinedms`, so the settled sentinel must carry a concrete 0.
+      expect(sentinel?.durationMs).toBe(0);
     });
 
     it('is inert after disablement — subsequent begin() adds no new entries', () => {

@@ -227,8 +227,10 @@ export class QueryTrailRecorder {
     }
   }
 
+  /** Snapshot of the current entries — a copy of the internal ring, so a
+   *  retained reference is not mutated by later captures. */
   entries(): readonly QueryTrailEntry[] {
-    return this.#ring;
+    return [...this.#ring];
   }
 
   meta(): QueryTrailMeta {
@@ -288,6 +290,9 @@ export class QueryTrailRecorder {
       params: [],
       kind: 'query',
       status: 'settled',
+      // Settled entries carry a durationMs; the sentinel had no timed run, so 0
+      // keeps the human formatter from rendering `undefinedms`.
+      durationMs: 0,
     });
     process.stderr.write(
       '[prisma-pglite-bridge] query trail capture failed; trail disabled for this run.\n',

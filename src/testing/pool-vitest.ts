@@ -38,7 +38,7 @@ import {
   type PGlitePoolTestContext,
   type SetupPGlitePoolOptions,
 } from './pool-core.ts';
-import { registerTrailFailureHook, trailEnabled } from './query-trail-hook.ts';
+import { registerTrailFailureHook, resolveHelperTrail } from './query-trail-hook.ts';
 
 export type { PGlitePoolTestContext, SetupPGlitePoolOptions } from './pool-core.ts';
 
@@ -260,14 +260,17 @@ export const createPoolTest = <TClient>(
   options: CreatePoolTestOptions<TClient>,
 ): TestAPI<PoolTestFixtures<TClient>> => {
   const scope = options.scope ?? 'file';
-  // Trail default ON in the helper: capture unless the option is `false` or the
-  // env kill switch is set (env > helper option). When on, force the pool's
-  // `queryTrail` on so the failure hook has entries to print; when off, force
-  // it off so an ambient pool option cannot leak capture past the opt-out.
-  const enabled = trailEnabled(options.queryTrail);
+  // Trail default ON in the helper (env > helper option > pool option). Resolve
+  // the effective pool-level `queryTrail` value WITHOUT clobbering an
+  // object-form option (its `redactParams`/`maxEntries` must survive): an
+  // object passes through unchanged, a bare on/off collapses to a boolean.
+  const { effective: effectiveTrail, on: enabled } = resolveHelperTrail(
+    options.queryTrail,
+    options.pool?.queryTrail,
+  );
   const effective: CreatePoolTestOptions<TClient> = {
     ...options,
-    pool: { ...options.pool, queryTrail: enabled },
+    pool: { ...options.pool, queryTrail: effectiveTrail },
   };
   return scope === 'test'
     ? createTestScopedPoolTest(effective, enabled)

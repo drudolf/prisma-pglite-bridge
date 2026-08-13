@@ -21,7 +21,10 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { formatQueryTrail } from '../pool/query-trail-format.ts';
-import { setupPGliteBridge } from './vitest.ts';
+import { createBridgeTest, setupPGliteBridge } from './vitest.ts';
+
+/** Inline single-model schema reused by the in-process precedence tests. */
+const WIDGET_SCHEMA = 'model Widget {\n  id Int @id @default(autoincrement())\n  label String\n}';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const VITEST_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'vitest');
@@ -176,4 +179,81 @@ describe('query trail (bridge) — accessor path', () => {
     const rendered = formatQueryTrail(entries, { droppedCount: 0 });
     expect(rendered.startsWith(TRAIL_HEADER)).toBe(true);
   });
+});
+
+// ── Object-form option precedence (in-process, CWE-665 regression) ──
+// As in the pool variant: the helper's default-ON must not clobber a user's
+// object-form `queryTrail` on the bridge; its `redactParams` has to survive.
+// These drive `createBridgeTest` in-process and assert via `bridge.queryTrail()`.
+
+// Helper option UNSET + bridge object `{ redactParams: true }` → capture ON,
+// redaction in effect.
+const redactObjectTest = createBridgeTest({
+  bridge: { queryTrail: { redactParams: true } },
+  schema: { schema: WIDGET_SCHEMA },
+  client: (adapter) => ({ conn: adapter.connect() }),
+});
+
+describe('query trail (bridge) — object-form option survives the helper default', () => {
+  redactObjectTest(
+    'redactParams: true on the bridge renders captured params as <redacted>',
+    async ({ bridge, prisma }) => {
+      bridge.clearQueryTrail();
+      const conn = await prisma.conn;
+      await conn.executeRaw({
+        sql: 'INSERT INTO "Widget" (label) VALUES ($1)',
+        args: ['SUPER_SECRET'],
+        argTypes: [{ scalarType: 'string', arity: 'scalar' }],
+      });
+      const entry = bridge.queryTrail().find((e) => e.sql.includes('Widget'));
+      expect(entry).toBeDefined();
+      expect(entry?.params).toEqual(['<redacted>']);
+      expect(bridge.queryTrail().some((e) => e.params.includes('SUPER_SECRET'))).toBe(false);
+    },
+  );
+});
+
+// Explicit helper `false` beats a bridge object → capture OFF.
+const helperFalseBeatsObjectTest = createBridgeTest({
+  queryTrail: false,
+  bridge: { queryTrail: { redactParams: true } },
+  schema: { schema: WIDGET_SCHEMA },
+  client: (adapter) => ({ conn: adapter.connect() }),
+});
+
+describe('query trail (bridge) — explicit helper false beats a bridge object', () => {
+  helperFalseBeatsObjectTest(
+    'queryTrail: false disables capture despite the bridge object',
+    async ({ bridge, prisma }) => {
+      const conn = await prisma.conn;
+      await conn.executeRaw({
+        sql: 'INSERT INTO "Widget" (label) VALUES ($1)',
+        args: ['x'],
+        argTypes: [{ scalarType: 'string', arity: 'scalar' }],
+      });
+      expect(bridge.queryTrail()).toEqual([]);
+    },
+  );
+});
+
+// Helper option UNSET + bridge `false` → the bridge option governs, OFF.
+const bridgeFalseStaysOffTest = createBridgeTest({
+  bridge: { queryTrail: false },
+  schema: { schema: WIDGET_SCHEMA },
+  client: (adapter) => ({ conn: adapter.connect() }),
+});
+
+describe('query trail (bridge) — helper unset honours a bridge false', () => {
+  bridgeFalseStaysOffTest(
+    'bridge queryTrail: false stays off when the helper is unset',
+    async ({ bridge, prisma }) => {
+      const conn = await prisma.conn;
+      await conn.executeRaw({
+        sql: 'INSERT INTO "Widget" (label) VALUES ($1)',
+        args: ['x'],
+        argTypes: [{ scalarType: 'string', arity: 'scalar' }],
+      });
+      expect(bridge.queryTrail()).toEqual([]);
+    },
+  );
 });

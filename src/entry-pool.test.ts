@@ -2,7 +2,7 @@
  * Unit tests for src/entry-pool.ts — the curated Prisma-free subpath entry.
  *
  * These tests are RED until src/entry-pool.ts is created. The entry must
- * re-export exactly six runtime values (identity-equal to the barrel's
+ * re-export exactly eight runtime values (identity-equal to the barrel's
  * exports) plus a fixed set of type-only exports, and nothing else — the
  * point of the subpath is that importing it never pulls @prisma/* code, so
  * any extra runtime key is a surface leak.
@@ -37,10 +37,12 @@ const expectedValueExports = [
   'PgBridgePool',
   'QUERY_CHANNEL',
   'SessionLock',
+  'TRAIL_FORMAT_VERSION',
+  'formatQueryTrail',
 ] as const;
 
 describe('entry-pool runtime export surface', () => {
-  it('exports exactly the six curated runtime values and nothing else', () => {
+  it('exports exactly the eight curated runtime values and nothing else', () => {
     expect(Object.keys(entry).sort()).toEqual([...expectedValueExports]);
   });
 

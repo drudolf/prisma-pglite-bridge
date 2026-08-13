@@ -38,7 +38,7 @@ import {
   type PGliteTestContext,
   type SetupPGliteBridgeOptions,
 } from './core.ts';
-import { registerTrailFailureHook, trailEnabled } from './query-trail-hook.ts';
+import { registerTrailFailureHook, resolveHelperTrail } from './query-trail-hook.ts';
 
 export type { PGliteTestContext, SetupPGliteBridgeOptions } from './core.ts';
 
@@ -282,13 +282,17 @@ export const createBridgeTest = <TClient>(
 ): TestAPI<BridgeTestFixtures<TClient>> => {
   assertExactlyOneSchemaSource('createBridgeTest', options);
   const scope = options.scope ?? 'file';
-  // Trail default ON (env > helper option). When on, force the bridge's
-  // `queryTrail` on so the failure hook has entries; when off, force it off so
-  // an ambient bridge option cannot leak capture past the opt-out.
-  const enabled = trailEnabled(options.queryTrail);
+  // Trail default ON (env > helper option > bridge option). Resolve the
+  // effective bridge-level `queryTrail` value WITHOUT clobbering an object-form
+  // option (its `redactParams`/`maxEntries` must survive): an object is passed
+  // through unchanged, a bare on/off collapses to a boolean.
+  const { effective: effectiveTrail, on: enabled } = resolveHelperTrail(
+    options.queryTrail,
+    options.bridge?.queryTrail,
+  );
   const effective: CreateBridgeTestOptions<TClient> = {
     ...options,
-    bridge: { ...options.bridge, queryTrail: enabled },
+    bridge: { ...options.bridge, queryTrail: effectiveTrail },
   };
   return scope === 'test'
     ? createTestScopedBridgeTest(effective, enabled)

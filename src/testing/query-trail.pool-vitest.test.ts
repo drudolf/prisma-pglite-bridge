@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { formatQueryTrail } from '../pool/query-trail-format.ts';
-import { setupPGlitePool } from './pool-vitest.ts';
+import { createPoolTest, setupPGlitePool } from './pool-vitest.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const VITEST_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'vitest');
@@ -379,4 +379,100 @@ describe('query trail — accessor path (pool.queryTrail + formatQueryTrail)', (
     const rendered = formatQueryTrail(entries, { droppedCount: 0 });
     expect(rendered.startsWith(TRAIL_HEADER)).toBe(true);
   });
+});
+
+// ── Object-form option precedence (in-process, CWE-665 regression) ──
+// The helper defaults the trail ON, but resolving that default must NOT clobber
+// a user's object-form `queryTrail` on the pool — its settings (here
+// `redactParams`) have to survive so the object path documented in the cookbook
+// actually redacts. These drive `createPoolTest` in-process and assert the
+// captured entries via the accessor, no child run needed.
+
+// Helper option UNSET + pool object `{ redactParams: true }`: the object governs
+// (helper default does not override it) → capture ON with redaction in effect.
+const redactObjectTest = createPoolTest({
+  pool: { queryTrail: { redactParams: true } },
+  setup: async ({ pool }) => {
+    await pool.query('CREATE TABLE prec_notes (id serial PRIMARY KEY, body text NOT NULL)');
+  },
+  client: (pool) => ({ pool }),
+});
+
+describe('query trail — pool object-form option survives the helper default', () => {
+  redactObjectTest(
+    'redactParams: true on the pool renders captured params as <redacted>',
+    async ({ pool }) => {
+      pool.clearQueryTrail();
+      await pool.query('INSERT INTO prec_notes (body) VALUES ($1)', ['SUPER_SECRET']);
+      const entry = pool.queryTrail().find((e) => e.sql.includes('prec_notes'));
+      expect(entry).toBeDefined();
+      // The object's redactParams took effect: the secret param is masked,
+      // never leaked into the trail.
+      expect(entry?.params).toEqual(['<redacted>']);
+      expect(pool.queryTrail().some((e) => e.params.includes('SUPER_SECRET'))).toBe(false);
+    },
+  );
+});
+
+// Explicit helper `true` + pool object `{ redactParams: true }`: helper-on wins
+// AND the object's settings are preserved (not collapsed to a bare `true`).
+const helperTrueObjectTest = createPoolTest({
+  queryTrail: true,
+  pool: { queryTrail: { redactParams: true } },
+  setup: async ({ pool }) => {
+    await pool.query('CREATE TABLE prec_notes2 (id serial PRIMARY KEY, body text NOT NULL)');
+  },
+  client: (pool) => ({ pool }),
+});
+
+describe('query trail — helper true preserves the pool object settings', () => {
+  helperTrueObjectTest(
+    'helper queryTrail: true keeps redactParams from the pool object',
+    async ({ pool }) => {
+      pool.clearQueryTrail();
+      await pool.query('INSERT INTO prec_notes2 (body) VALUES ($1)', ['ANOTHER_SECRET']);
+      const entry = pool.queryTrail().find((e) => e.sql.includes('prec_notes2'));
+      expect(entry?.params).toEqual(['<redacted>']);
+    },
+  );
+});
+
+// Explicit helper `false` beats a pool object: capture is OFF regardless.
+const helperFalseBeatsObjectTest = createPoolTest({
+  queryTrail: false,
+  pool: { queryTrail: { redactParams: true } },
+  setup: async ({ pool }) => {
+    await pool.query('CREATE TABLE prec_off (id serial PRIMARY KEY, body text NOT NULL)');
+  },
+  client: (pool) => ({ pool }),
+});
+
+describe('query trail — explicit helper false beats a pool object', () => {
+  helperFalseBeatsObjectTest(
+    'queryTrail: false disables capture despite the pool object',
+    async ({ pool }) => {
+      await pool.query('INSERT INTO prec_off (body) VALUES ($1)', ['x']);
+      // The trail is off: the accessor returns an empty snapshot.
+      expect(pool.queryTrail()).toEqual([]);
+    },
+  );
+});
+
+// Helper option UNSET + pool `false`: the pool option governs → capture OFF.
+const poolFalseStaysOffTest = createPoolTest({
+  pool: { queryTrail: false },
+  setup: async ({ pool }) => {
+    await pool.query('CREATE TABLE prec_pool_off (id serial PRIMARY KEY, body text NOT NULL)');
+  },
+  client: (pool) => ({ pool }),
+});
+
+describe('query trail — helper unset honours a pool false', () => {
+  poolFalseStaysOffTest(
+    'pool queryTrail: false stays off when the helper is unset',
+    async ({ pool }) => {
+      await pool.query('INSERT INTO prec_pool_off (body) VALUES ($1)', ['x']);
+      expect(pool.queryTrail()).toEqual([]);
+    },
+  );
 });
