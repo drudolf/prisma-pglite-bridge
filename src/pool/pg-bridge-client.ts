@@ -118,12 +118,12 @@ const createQueryTimeout = (delay: unknown): QueryTimeout => {
 /**
  * The exact runtime query-config fields pg 8.x consumes, in pg's own
  * consumption order. Sources of truth (verified against the installed
- * pg 8.22.0):
+ * pg 8.23.0):
  *   - `pg/lib/query.js` `Query` constructor reads `text, values, rows, types,
  *     name, queryMode, binary, portal, callback, rowMode` (via `this.text =
  *     config.text` etc.); it reads `config.callback` a second time only when
  *     `process.domain` is set;
- *   - `pg/lib/client.js` (`Client.query`, ~line 660) reads `config.query_timeout`.
+ *   - `pg/lib/client.js` (`Client.query`, ~line 700) reads `config.query_timeout`.
  * `query_timeout` is the sole Client-level addition beyond the Query
  * constructor's fields. Any pg update that starts consuming another config
  * property must be reflected here or the deferred bridge submission would

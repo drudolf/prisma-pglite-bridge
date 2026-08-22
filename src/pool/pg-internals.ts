@@ -15,13 +15,13 @@ import { PgBridgeError } from '../errors.ts';
 
 /**
  * Augment pg's published types with the internal surface the bridge drives.
- * `@types/pg@8.20.0` (the latest DefinitelyTyped ships; runtime is pg@8.22.0)
+ * `@types/pg@8.23.1` (the latest DefinitelyTyped ships; runtime is pg@8.23.0)
  * omits `parsedStatements`, `sendCopyFail`, `_getActiveQuery`,
  * `connectionParameters`, and the legacy `activeQuery`/`queryQueue` fields
  * outright, and types `parse`/`bind`/`describe`/`execute`/`close` only for the
  * two-arg internal caller — mistyping `binary`/`rows` as strings. These are not
  * pg's public contract at any version; the declarations below assert the real
- * pg@8.22.0 runtime shape that the `pg seam contract` tests verify. Overloads
+ * pg@8.23.0 runtime shape that the `pg seam contract` tests verify. Overloads
  * (not replacements) — the stock two-arg signatures stay intact.
  */
 declare module 'pg' {
@@ -112,7 +112,7 @@ export const assertPgInternals = (client: pg.Client, features: PgInternalFeature
       'client._getActiveQuery() (pg >= 8.17) or an own client.queryQueue (pg <= 8.16)',
     ],
     [
-      // Constructor-assigned in both supported layouts (pg 8.22.0
+      // Constructor-assigned in both supported layouts (pg 8.23.0
       // client.js:54, pg 8.16.3 client.js:18; the own query_timeout in
       // connection-parameters.js). The suppression frame in query() mutates
       // this exact field, so its absence must fail construction, not a query.

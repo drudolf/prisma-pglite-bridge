@@ -400,7 +400,7 @@ type CallbackThrowProbe = {
   observed: Array<{ channel: 'uncaughtException' | 'unhandledRejection'; message: string }>;
 };
 
-const CALLBACK_THROW_PG_VERSION = '8.22.0';
+const CALLBACK_THROW_PG_VERSION = '8.23.0';
 const execFileAsync = promisify(execFile);
 const callbackThrowProbe = `
   import { createRequire } from 'node:module';
