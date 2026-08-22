@@ -1,12 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setupPGlite } from '../__tests__/pglite.ts';
 import { PGliteDuplex } from '../duplex/index.ts';
 import { PgBridgeError } from '../errors.ts';
+import { PrismaClient } from '../generated/prisma/client.ts';
 import { SessionLock } from '../utils/session-lock.ts';
 import { FastQuery } from './fast-query.ts';
 import {

@@ -2,11 +2,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
-import { PrismaClient } from '@prisma/client';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTempDir, removeTempDir } from '../__tests__/file-system.ts';
 import { createMockPGlite } from '../__tests__/mocks.ts';
 import { PgBridgeError } from '../errors.ts';
+import { PrismaClient } from '../generated/prisma/client.ts';
 import type { PgBridgePool } from '../pool';
 import { PgBridgeClient } from '../pool/pg-bridge-client.ts';
 import { pushMigrations } from '../schema/migrations.ts';

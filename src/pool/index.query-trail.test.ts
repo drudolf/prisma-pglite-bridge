@@ -1,9 +1,8 @@
 import { PGlite } from '@electric-sql/pglite';
-import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import { setupPGlite } from '../__tests__/pglite.ts';
+import { PrismaClient } from '../generated/prisma/client.ts';
 import { PGliteBridge } from '../pglite-bridge/index.ts';
 import { PgBridgePool } from './index.ts';
 import type { QueryTrailEntry } from './query-trail.ts';

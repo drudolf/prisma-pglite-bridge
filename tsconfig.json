@@ -19,7 +19,7 @@
     "noUncheckedSideEffectImports": true,
     "erasableSyntaxOnly": true,
     "forceConsistentCasingInFileNames": true,
-    "isolatedDeclarations": true,
+    "isolatedDeclarations": false,
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "noEmit": true,

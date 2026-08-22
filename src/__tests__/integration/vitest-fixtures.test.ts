@@ -4,8 +4,9 @@
 // Teardown (the bridge closing when its scope ends) is deliberately not
 // asserted here: file/worker scope teardown runs after every test in this
 // file has finished, so no test position can observe it.
-import { PrismaClient } from '@prisma/client';
+
 import { describe, expect } from 'vitest';
+import { PrismaClient } from '../../generated/prisma/client.ts';
 
 import { PGliteBridge } from '../../index.ts';
 import { createBridgeTest } from '../../testing/vitest.ts';

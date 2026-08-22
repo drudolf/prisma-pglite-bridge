@@ -9,8 +9,9 @@
 // stock path and these parity tests pass trivially. They become
 // discriminating once the fast path is implemented; the red-phase
 // describe-skip spy tests live in src/pool/index.test.ts.
-import { Prisma, PrismaClient } from '@prisma/client';
+
 import { describe, expect, it } from 'vitest';
+import { Prisma, PrismaClient } from '../../generated/prisma/client.ts';
 
 import { PGliteBridge, type PGliteBridgeOptions, pushMigrations } from '../../index.ts';
 

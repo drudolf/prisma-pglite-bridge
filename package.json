@@ -215,7 +215,7 @@
     "tsx": "^4.23.12",
     "typeorm": "^1.1.0",
     "typeorm-pglite": "^0.3.4",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   }
 }

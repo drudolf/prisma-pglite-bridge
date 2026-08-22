@@ -1,4 +1,4 @@
-import type { PrismaClient } from '@prisma/client';
+import type { PrismaClient } from '../../../generated/prisma/client.ts';
 
 export const seed = async (prisma: PrismaClient): Promise<void> => {
   const acme = await prisma.tenant.create({

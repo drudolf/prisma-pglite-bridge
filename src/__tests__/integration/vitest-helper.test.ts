@@ -4,8 +4,9 @@
 // The inline-`schema` variant is intentionally not exercised here: pushSchema
 // loads the WASM schema engine (slow), and the migrations path covers the same
 // helper wiring — pushSchema itself is covered by the src/schema tests.
-import { PrismaClient } from '@prisma/client';
+
 import { afterAll, describe, expect, it } from 'vitest';
+import { PrismaClient } from '../../generated/prisma/client.ts';
 
 import { PGliteBridge } from '../../index.ts';
 import { setupPGliteBridge } from '../../testing/vitest.ts';

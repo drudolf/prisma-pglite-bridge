@@ -10,8 +10,9 @@
 // `preparedStatements: false`. resetDb keeps cached statements alive —
 // tables are truncated, never dropped, so cached statements replan
 // transparently — while still clearing the rest of the session state.
-import { PrismaClient } from '@prisma/client';
+
 import { describe, expect, it } from 'vitest';
+import { PrismaClient } from '../../generated/prisma/client.ts';
 
 import { PGliteBridge, type PGliteBridgeOptions, pushMigrations } from '../../index.ts';
 
