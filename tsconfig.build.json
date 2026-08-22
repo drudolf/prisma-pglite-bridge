@@ -1,0 +1,14 @@
+{
+  // Enforces isolatedDeclarations on the SHIPPED library surface only. The root
+  // tsconfig.json keeps it off because the whole-project typecheck must include
+  // tests + the generated Prisma client (`src/generated`), and neither satisfies
+  // ID. Library source never imports test/generated code, so scoping the program
+  // to non-test, non-generated `src` gives a clean ID-checked graph and preserves
+  // the fast-dts guarantee. Run via `tsc -p tsconfig.build.json --noEmit`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "isolatedDeclarations": true
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts", "src/__tests__", "src/generated"]
+}

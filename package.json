@@ -120,7 +120,7 @@
   "scripts": {
     "build": "tsdown",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.build.json --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:cli-compat": "vitest run --project cli-compat",
@@ -130,7 +130,7 @@
     "test:mutation": "stryker run",
     "lint": "biome lint .",
     "lint:fix": "biome check --write .",
-    "check": "tsc --noEmit && biome check . && markdownlint-cli2 '**/*.md' '#node_modules' '#.claude' '#vendor' && knip",
+    "check": "tsc --noEmit && tsc -p tsconfig.build.json --noEmit && biome check . && markdownlint-cli2 '**/*.md' '#node_modules' '#.claude' '#vendor' && knip",
     "check:exports": "attw --pack --profile strict",
     "check:pool-purity": "tsx scripts/check-pool-purity.ts",
     "changeset": "changeset",
