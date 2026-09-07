@@ -29,8 +29,8 @@
 import { cpus } from 'node:os';
 import { join } from 'node:path';
 import type { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
 import { seed } from '../src/__tests__/integration/utils/seed.ts';
+import { PrismaClient } from '../src/generated/prisma/client.ts';
 import { PGliteBridge, pushMigrations } from '../src/index.ts';
 import { createBridgeContextFromDump, createBridgeTemplate } from '../src/testing/core.ts';
 

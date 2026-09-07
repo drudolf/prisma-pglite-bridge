@@ -9,7 +9,7 @@
  */
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../../src/generated/prisma/client.ts';
 import { PgBridgePool } from '../../src/pool';
 import { stackProbe } from '../attribution.ts';
 import type { AdapterHarness } from './types.ts';

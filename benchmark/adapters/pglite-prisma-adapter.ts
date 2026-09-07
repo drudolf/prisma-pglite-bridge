@@ -6,8 +6,8 @@
  * PGlite is instrumented via `stackProbe` for memory attribution.
  */
 import { PGlite } from '@electric-sql/pglite';
-import { PrismaClient } from '@prisma/client';
 import { PrismaPGlite } from 'pglite-prisma-adapter';
+import { PrismaClient } from '../../src/generated/prisma/client.ts';
 import { stackProbe } from '../attribution.ts';
 import type { AdapterHarness } from './types.ts';
 

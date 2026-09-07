@@ -6,7 +6,7 @@
  * together, aggregates {@link ScenarioResult}s across repeats, and emits
  * table or JSON output.
  */
-import type { PrismaClient } from '@prisma/client';
+import type { PrismaClient } from '../../src/generated/prisma/client.ts';
 
 /**
  * Describes how to sample RSS of an out-of-process database server

@@ -4,7 +4,7 @@
  * Calibrated to test bridge overhead, not PGlite WASM throughput.
  * Each scenario runs once per iteration (the runner handles repeats).
  */
-import type { PrismaClient } from '@prisma/client';
+import type { PrismaClient } from '../../src/generated/prisma/client.ts';
 import type { Scenario, ScenarioResult } from '../adapters/types.ts';
 
 const timeOp = async (fn: () => Promise<unknown>): Promise<number> => {

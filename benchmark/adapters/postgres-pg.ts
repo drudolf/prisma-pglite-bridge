@@ -9,8 +9,8 @@
  * are discovered at sample time. Set those in `.env.test`.
  */
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';
+import { PrismaClient } from '../../src/generated/prisma/client.ts';
 import { stackProbe } from '../attribution.ts';
 import { getBenchEnv } from '../env.ts';
 import type { AdapterHarness, ExternalProcessSampler } from './types.ts';

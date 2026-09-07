@@ -11,7 +11,7 @@
  * against any adapter without schema additions.
  */
 import { performance } from 'node:perf_hooks';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../../src/generated/prisma/client.ts';
 import type { Scenario, ScenarioResult } from '../adapters/types.ts';
 
 const setupTempTable = async (prisma: typeof import('@prisma/client').PrismaClient) => {
