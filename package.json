@@ -167,7 +167,7 @@
   },
   "dependencies": {
     "@prisma/driver-adapter-utils": "^7.10.0",
-    "@prisma/schema-engine-wasm": "7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a",
+    "@prisma/schema-engine-wasm": "7.10.0-4.0edf323efd1d98336f3f0a68684b56f689b900d3",
     "postgres-array": "^3.0.4"
   },
   "devDependencies": {

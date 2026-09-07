@@ -16,8 +16,8 @@ importers:
         specifier: ^7.10.0
         version: 7.10.0
       '@prisma/schema-engine-wasm':
-        specifier: 7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a
-        version: 7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a
+        specifier: 7.10.0-4.0edf323efd1d98336f3f0a68684b56f689b900d3
+        version: 7.10.0-4.0edf323efd1d98336f3f0a68684b56f689b900d3
       postgres-array:
         specifier: ^3.0.4
         version: 3.0.4
@@ -1636,8 +1636,8 @@ packages:
   '@prisma/query-plan-executor@7.2.0':
     resolution: {integrity: sha512-EOZmNzcV8uJ0mae3DhTsiHgoNCuu1J9mULQpGCh62zN3PxPTd+qI9tJvk5jOst8WHKQNwJWR3b39t0XvfBB0WQ==}
 
-  '@prisma/schema-engine-wasm@7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a':
-    resolution: {integrity: sha512-1qyiBr10vgh02ccZyBNMDZGUT6xdl856pKQQNGpcveKb85zFEO8wy+q7kkVrr9t5h88bkahKd/QLXG/9M0YSJg==}
+  '@prisma/schema-engine-wasm@7.10.0-4.0edf323efd1d98336f3f0a68684b56f689b900d3':
+    resolution: {integrity: sha512-wKt56UDR7JoOs9VQjnwht0NaUJgiMn5WRNwqp52vKbnBcRutt8RbHDzr5wUAlm4aHcskFoEcgSw3+Tc7YHRmFg==}
 
   '@prisma/streams-local@0.1.11':
     resolution: {integrity: sha512-0TcebL559MByKqTJ+SsrFIEg228iw8UCVRFckzgfRSiJqczhs+MuAgWOF9lnOIV/IVqvu+KMnFTH0eDeTQMpUg==}
@@ -6200,7 +6200,7 @@ snapshots:
 
   '@prisma/query-plan-executor@7.2.0': {}
 
-  '@prisma/schema-engine-wasm@7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a': {}
+  '@prisma/schema-engine-wasm@7.10.0-4.0edf323efd1d98336f3f0a68684b56f689b900d3': {}
 
   '@prisma/streams-local@0.1.11':
     dependencies:
