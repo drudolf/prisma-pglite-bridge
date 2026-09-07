@@ -6,6 +6,7 @@ allowBuilds:
   "@embedded-postgres/darwin-x64": true
   "@embedded-postgres/linux-arm64": true
   "@embedded-postgres/linux-x64": true
+  "@parcel/watcher": false
   "@prisma/engines": true
   esbuild: true
   prisma: true
