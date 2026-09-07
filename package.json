@@ -211,7 +211,7 @@
     "pg-query-stream": "^4.17.0",
     "pglite-prisma-adapter": "^0.7.2",
     "prisma": "^7.10.0",
-    "tsdown": "^0.22.14",
+    "tsdown": "^0.23.0",
     "tsx": "^4.23.13",
     "typeorm": "^1.1.1",
     "typeorm-pglite": "^0.3.4",
