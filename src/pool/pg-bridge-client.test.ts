@@ -118,7 +118,9 @@ describe('PgBridgeClient', () => {
     );
   });
 
-  it.sequential('destroys the stream-factory duplex when the pg-internals assertion fails', async () => {
+  it('destroys the stream-factory duplex when the pg-internals assertion fails', {
+    concurrent: false,
+  }, async () => {
     const connectionPrototype = Object.getPrototypeOf(
       new pg.Client({ host: 'localhost' }).connection,
     ) as { close?: unknown };
@@ -2738,7 +2740,9 @@ describe('PgBridgeClient — duplex teardown handle', () => {
     }
   });
 
-  it.sequential('invokes onTeardownCreated even when construction fails after the duplex is created', async () => {
+  it('invokes onTeardownCreated even when construction fails after the duplex is created', {
+    concurrent: false,
+  }, async () => {
     // Mirror of the assertPgInternals-failure test above: break a required
     // connection prototype member so the constructor throws AFTER pg has
     // synchronously run the stream factory. The handle must still reach the
