@@ -85,8 +85,8 @@ export interface CreatePoolTestOptions<TClient>
    * `onTestFailed`, and reads the entries synchronously on failure — before
    * any fixture teardown runs. Set `false` to disable both capture and the
    * printout. The `PGLITE_BRIDGE_QUERY_TRAIL=0` env var wins over this
-   * option and can only ever disable. See
-   * `.claude/plans/query-trail-design.md` §5.
+   * option and can only ever disable. Precedence table: docs/api.md,
+   * "Query trail" → "Option precedence".
    */
   queryTrail?: boolean;
 }
