@@ -78,6 +78,10 @@ works in GitHub Actions, GitLab CI, and anywhere Node.js runs.
   `./src/generated/prisma/client.js`) instead of `@prisma/client`.
 - Jest: `setupPGliteBridge` from `prisma-pglite-bridge/jest` takes the
   same options ([cookbook](./docs/cookbook.md#jest-one-call)).
+- Other runners (node:test, ava) or a vitest `globalSetup`:
+  `createBridgeContext`, `createBridgeTemplate` + `loadBridgeTemplate`
+  from `prisma-pglite-bridge/testing` — build once, load per test, cache
+  as a file ([cookbook](./docs/cookbook.md#other-runners-and-cross-process-templates)).
 - `createBridgeTest` needs vitest ≥ 3.2 (fixture scopes). Every option,
   the `scope` dial (`'file'` / `'worker'` / `'test'`), and the fixtures
   are in the
@@ -187,7 +191,8 @@ mikro-orm 1.4–1.9×; spreads in the
 behind the Prisma numbers: PGlite's public `query()` API takes a mutex
 and makes ~6 WASM protocol crossings per call, while the bridge issues
 one buffered raw-stream write. Wiring recipes and driver-agnostic
-testing helpers live in the
+testing helpers (`prisma-pglite-bridge/pool/vitest`, `/pool/jest`, and
+the runner-agnostic `/pool/testing` builders) live in the
 [cookbook](./docs/cookbook.md#other-orms).
 
 Test-setup cost matters as much as query speed for a suite.

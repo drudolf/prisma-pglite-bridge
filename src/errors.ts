@@ -23,7 +23,8 @@ export type PgBridgeErrorCode =
   | 'MIGRATIONS_UNAVAILABLE'
   | 'MIGRATIONS_APPLY_FAILED'
   | 'MIGRATIONS_HISTORY_INVALID'
-  | 'SNAPSHOT_INVALID';
+  | 'SNAPSHOT_INVALID'
+  | 'TEMPLATE_LOAD_FAILED';
 
 /**
  * Package-relative path of the troubleshooting guide, as shipped in the npm

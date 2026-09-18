@@ -6,7 +6,7 @@
  * spin up a real PGlite) is stubbed. The real core is exercised by
  * `./pool-core.test.ts` and the vitest entry's tests, which share it.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 const { beforeEachSpy, afterAllSpy, createPoolContextSpy } = vi.hoisted(() => ({
   beforeEachSpy: vi.fn(),
@@ -20,7 +20,11 @@ vi.mock('./pool-core.ts', async (importOriginal) => ({
   createPoolContext: createPoolContextSpy,
 }));
 
-import { setupPGlitePool } from './pool-jest.ts';
+import {
+  type PGlitePoolTestContext,
+  type SetupPGlitePoolOptions,
+  setupPGlitePool,
+} from './pool-jest.ts';
 
 // The suite's `restoreMocks` resets implementations but not call history, and
 // these hoisted spies are shared across tests — clear their call records so
@@ -79,5 +83,33 @@ describe('jest setupPGlitePool hook registration', () => {
     expect(result).toBe(context);
     expect(beforeEachSpy).not.toHaveBeenCalled();
     expect(afterAllSpy).not.toHaveBeenCalled();
+  });
+});
+
+// Backcompat pin mirroring pool-vitest.test.ts (design D.2): the Jest entry
+// keeps `registerHooks` on `SetupPGlitePoolOptions`. tsc enforces this.
+describe('jest setupPGlitePool public type backcompat', () => {
+  interface FakeClient {
+    readonly tag: 'fake';
+  }
+
+  it('accepts the pre-change option object, registerHooks included', () => {
+    const preChange = {
+      setup: async (): Promise<void> => {},
+      client: (): FakeClient => ({ tag: 'fake' }),
+      seed: async (_client: FakeClient): Promise<void> => {},
+      dispose: async (_client: FakeClient): Promise<void> => {},
+      snapshot: false,
+      registerHooks: false,
+      pool: { max: 2 },
+    };
+    expectTypeOf(preChange).toExtend<SetupPGlitePoolOptions<FakeClient>>();
+  });
+
+  it('PGlitePoolTestContext keeps its full shape', () => {
+    expectTypeOf<keyof PGlitePoolTestContext<FakeClient>>().toEqualTypeOf<
+      'client' | 'pool' | 'pglite' | 'resetDb' | 'snapshotDb' | 'close'
+    >();
+    expectTypeOf<PGlitePoolTestContext<FakeClient>['client']>().toEqualTypeOf<FakeClient>();
   });
 });

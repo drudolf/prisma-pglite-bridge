@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+
+import type { PGliteBridge } from '../pglite-bridge';
 
 // `@jest/globals` throws when imported outside a Jest run, and these tests
 // assert on hook registration — so replace it with spies (and stub the core's
@@ -18,7 +20,11 @@ vi.mock('./core.ts', async (importOriginal) => ({
   createBridgeContext: createBridgeContextSpy,
 }));
 
-import { setupPGliteBridge } from './jest.ts';
+import {
+  type PGliteTestContext,
+  type SetupPGliteBridgeOptions,
+  setupPGliteBridge,
+} from './jest.ts';
 
 // The suite's `restoreMocks` resets implementations but not call history, and
 // these hoisted spies are shared across tests — clear their call records so
@@ -48,6 +54,41 @@ describe('jest setupPGliteBridge option validation', () => {
     await expect(rejection).rejects.toBeInstanceOf(TypeError);
     await expect(rejection).rejects.toThrow('exactly one');
     expect(createBridgeContextSpy).not.toHaveBeenCalled();
+  });
+
+  it('reports its own name, not the core builder it delegates to', async () => {
+    await expect(setupPGliteBridge({ client: () => ({}) })).rejects.toThrow(
+      'setupPGliteBridge requires exactly one of `migrations` or `schema`',
+    );
+  });
+});
+
+// Backcompat pin mirroring vitest.test.ts (design D.2): the Jest entry keeps
+// `registerHooks` on `SetupPGliteBridgeOptions`, and the context gained
+// `close` without losing `prisma`/`bridge`. tsc enforces both.
+describe('jest setupPGliteBridge public type backcompat', () => {
+  interface FakeClient {
+    readonly tag: 'fake';
+  }
+
+  it('accepts the pre-change option object, registerHooks included', () => {
+    const preChange = {
+      client: (): FakeClient => ({ tag: 'fake' }),
+      migrations: true as const,
+      seed: async (_client: FakeClient): Promise<void> => {},
+      snapshot: false,
+      registerHooks: false,
+      bridge: { statsLevel: 'basic' as const },
+    };
+    expectTypeOf(preChange).toExtend<SetupPGliteBridgeOptions<FakeClient>>();
+  });
+
+  it('PGliteTestContext exposes exactly prisma, bridge and close', () => {
+    expectTypeOf<keyof PGliteTestContext<FakeClient>>().toEqualTypeOf<
+      'prisma' | 'bridge' | 'close'
+    >();
+    expectTypeOf<PGliteTestContext<FakeClient>['bridge']>().toEqualTypeOf<PGliteBridge>();
+    expectTypeOf<PGliteTestContext<FakeClient>['close']>().toEqualTypeOf<() => Promise<void>>();
   });
 });
 

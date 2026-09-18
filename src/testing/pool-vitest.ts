@@ -33,12 +33,13 @@ import { afterAll, test as baseTest, beforeEach, type TestAPI } from 'vitest';
 import type { PgBridgePool } from '../pool';
 import {
   createPoolContext,
-  createPoolContextFromDump,
   createPoolTemplate,
+  loadPoolTemplate,
   type PGlitePoolTestContext,
   type SetupPGlitePoolOptions,
 } from './pool-core.ts';
 import { registerTrailFailureHook, resolveHelperTrail } from './query-trail-hook.ts';
+import { rejectPglite } from './template.ts';
 
 export type { PGlitePoolTestContext, SetupPGlitePoolOptions } from './pool-core.ts';
 
@@ -199,7 +200,7 @@ const createTestScopedPoolTest = <TClient>(
         { template }: { template: Blob | File },
         use: (value: PgBridgePool) => Promise<void>,
       ) => {
-        const context = await createPoolContextFromDump(template, options);
+        const context = await loadPoolTemplate(template, options);
         contexts.set(context.pool, context);
         try {
           await use(context.pool);
@@ -260,6 +261,9 @@ export const createPoolTest = <TClient>(
   options: CreatePoolTestOptions<TClient>,
 ): TestAPI<PoolTestFixtures<TClient>> => {
   const scope = options.scope ?? 'file';
+  // 'test' scope dumps a template per file, and a template must own the
+  // instance it dumps — reject a supplied pglite here, synchronously.
+  if (scope === 'test') rejectPglite('createPoolTest', 'template', options.pool);
   // Trail default ON in the helper (env > helper option > pool option). Resolve
   // the effective pool-level `queryTrail` value WITHOUT clobbering an
   // object-form option (its `redactParams`/`maxEntries` must survive): an

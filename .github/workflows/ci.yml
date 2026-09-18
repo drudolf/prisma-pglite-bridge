@@ -57,5 +57,14 @@ jobs:
             const { rows } = await pool.query("SELECT 1 AS ok");
             if (rows[0].ok !== 1) throw new Error("query failed");
             await pool.end();
+            const { createPoolTemplate, loadPoolTemplate } = await import("prisma-pglite-bridge/pool/testing");
+            const template = await createPoolTemplate({
+              setup: async ({ pool }) => { await pool.query("CREATE TABLE t (id int)"); },
+              client: (pool) => pool,
+            });
+            const loaded = await loadPoolTemplate(template, { client: (pool) => pool });
+            const { rows: loadedRows } = await loaded.client.query("SELECT count(*)::int AS n FROM t");
+            if (loadedRows[0].n !== 0) throw new Error("template load failed");
+            await loaded.close();
             console.log("pool smoke OK");
           '

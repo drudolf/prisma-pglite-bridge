@@ -18,8 +18,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-// This import fails (module missing) until the checker is created — expected.
-import { findPrismaViolations, type PurityViolation } from '../../scripts/check-pool-purity.ts';
+import {
+  findPrismaTypeMentions,
+  findPrismaViolations,
+  type PurityViolation,
+} from '../../scripts/check-pool-purity.ts';
 
 const tempDirs: string[] = [];
 
@@ -240,6 +243,178 @@ export { pg };
     expect(bySpecifier(findPrismaViolations([entryOne, entryTwo]))).toEqual([
       { file: expect.stringContaining('entry-one.mjs'), specifier: '@prisma/adapter-pg' },
       { file: expect.stringContaining('entry-two.mjs'), specifier: '@prisma/client' },
+    ]);
+  });
+});
+
+// The `pool/testing` declaration surface: tsdown's `.d.mts` chunks import
+// each other with a runtime-looking `.mjs` specifier, and their jsdoc
+// legitimately mentions Prisma types — only a real type reference outside a
+// comment may trip the gate.
+describe('findPrismaTypeMentions', () => {
+  it('returns zero mentions for a clean declaration graph', () => {
+    const dir = makeFixtureDir();
+    writeModule(
+      dir,
+      'chunk.d.mts',
+      `import type { Pool } from 'pg';
+export interface Ctx { pool: Pool; }
+`,
+    );
+    const entry = writeModule(
+      dir,
+      'entry.d.mts',
+      `export type { Ctx } from './chunk.mjs';
+`,
+    );
+
+    expect(findPrismaTypeMentions([entry])).toEqual([]);
+  });
+
+  it('resolves a .mjs specifier to the sibling .d.mts and reports a real import type there', () => {
+    const dir = makeFixtureDir();
+    writeModule(
+      dir,
+      'chunk.d.mts',
+      `import type { PrismaPg } from '@prisma/adapter-pg';
+export interface Opts { client: (adapter: PrismaPg) => unknown; }
+`,
+    );
+    const entry = writeModule(
+      dir,
+      'entry.d.mts',
+      `export type { Opts } from './chunk.mjs';
+`,
+    );
+
+    // Reaching chunk.d.mts at all proves the `.mjs` → `.d.mts` rewrite; the
+    // import line yields the identifier and the scope specifier, the field
+    // type the identifier again — every occurrence is reported.
+    expect(bySpecifier(findPrismaTypeMentions([entry]))).toEqual([
+      { file: expect.stringContaining('chunk.d.mts'), specifier: '@prisma/' },
+      { file: expect.stringContaining('chunk.d.mts'), specifier: 'PrismaPg' },
+      { file: expect.stringContaining('chunk.d.mts'), specifier: 'PrismaPg' },
+    ]);
+    expect(findPrismaTypeMentions([entry]).every((v) => !v.file.includes('entry.d.mts'))).toBe(
+      true,
+    );
+  });
+
+  it('ignores Prisma identifiers inside block and line comments', () => {
+    const dir = makeFixtureDir();
+    const entry = writeModule(
+      dir,
+      'entry.d.mts',
+      `/**
+ * Build the client: \`(adapter: PrismaPg) => new PrismaClient({ adapter })\`.
+ * Not a {@link PushSchemaOptions} — see '@prisma/adapter-pg'.
+ */
+// import type { PrismaPg } from '@prisma/adapter-pg'; PushMigrationsOptions
+/* PrismaClient */ export interface Opts { client: (pool: unknown) => unknown; }
+`,
+    );
+
+    expect(findPrismaTypeMentions([entry])).toEqual([]);
+  });
+
+  it('reports a PushSchemaOptions field', () => {
+    const dir = makeFixtureDir();
+    const entry = writeModule(
+      dir,
+      'entry.d.mts',
+      `export interface Opts { schema?: PushSchemaOptions; }
+`,
+    );
+
+    expect(findPrismaTypeMentions([entry])).toEqual([
+      { file: expect.stringContaining('entry.d.mts'), specifier: 'PushSchemaOptions' },
+    ]);
+  });
+
+  it('reports a PushMigrationsOptions field', () => {
+    const dir = makeFixtureDir();
+    const entry = writeModule(
+      dir,
+      'entry.d.mts',
+      `export interface Opts { migrations?: PushMigrationsOptions | true; }
+`,
+    );
+
+    expect(findPrismaTypeMentions([entry])).toEqual([
+      { file: expect.stringContaining('entry.d.mts'), specifier: 'PushMigrationsOptions' },
+    ]);
+  });
+
+  it('reports an @prisma/ scope in a specifier even when no Prisma identifier is imported', () => {
+    const dir = makeFixtureDir();
+    const entry = writeModule(
+      dir,
+      'entry.d.mts',
+      `import type { ColumnType } from '@prisma/driver-adapter-utils';
+export type Col = ColumnType;
+`,
+    );
+
+    expect(findPrismaTypeMentions([entry])).toEqual([
+      { file: expect.stringContaining('entry.d.mts'), specifier: '@prisma/' },
+    ]);
+  });
+
+  it('does not follow non-relative specifiers', () => {
+    const dir = makeFixtureDir();
+    const entry = writeModule(
+      dir,
+      'entry.d.mts',
+      `import type { PGlite } from '@electric-sql/pglite';
+export type Db = PGlite;
+`,
+    );
+
+    expect(findPrismaTypeMentions([entry])).toEqual([]);
+  });
+
+  it('throws when a relative declaration chunk cannot be resolved', () => {
+    const dir = makeFixtureDir();
+    const entry = writeModule(
+      dir,
+      'entry.d.mts',
+      `export type { Gone } from './missing-chunk.mjs';
+`,
+    );
+
+    expect(() => findPrismaTypeMentions([entry])).toThrow(/missing-chunk\.d\.mts/);
+  });
+
+  it('visits each declaration chunk once across a diamond graph', () => {
+    const dir = makeFixtureDir();
+    writeModule(
+      dir,
+      'shared.d.mts',
+      `export interface Opts { schema?: PushSchemaOptions; }
+`,
+    );
+    writeModule(
+      dir,
+      'left.d.mts',
+      `export type { Opts } from './shared.mjs';
+`,
+    );
+    writeModule(
+      dir,
+      'right.d.mts',
+      `export type { Opts as Other } from './shared.mjs';
+`,
+    );
+    const entry = writeModule(
+      dir,
+      'entry.d.mts',
+      `export type { Opts } from './left.mjs';
+export type { Other } from './right.mjs';
+`,
+    );
+
+    expect(findPrismaTypeMentions([entry])).toEqual([
+      { file: expect.stringContaining('shared.d.mts'), specifier: 'PushSchemaOptions' },
     ]);
   });
 });

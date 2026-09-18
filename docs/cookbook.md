@@ -8,6 +8,7 @@ For the underlying API, see the [API reference](./api.md).
 - [Testing](#testing)
   - [Vitest: one call or fixtures](#vitest-one-call-or-fixtures)
   - [Jest: one call](#jest-one-call)
+  - [Other runners and cross-process templates](#other-runners-and-cross-process-templates)
   - [Choosing an isolation model](#choosing-an-isolation-model)
   - [Wiring the bridge into your app](#wiring-the-bridge-into-your-app)
   - [Schema and seed](#schema-and-seed)
@@ -119,6 +120,181 @@ mode](https://jestjs.io/docs/ecmascript-modules): run Jest with
 equivalent, so there is no `createBridgeTest` on this entry; to swap a
 shared production singleton, see [Wiring the bridge into your
 app](#wiring-the-bridge-into-your-app).
+
+### Other runners and cross-process templates
+
+`prisma-pglite-bridge/testing` is the hook-free core under the vitest
+and Jest helpers, for runners without a fixture layer — node:test, ava,
+a vitest `globalSetup` — and for reusing one seeded database across
+processes. `createBridgeContext` is `setupPGliteBridge` without the
+hooks; `createBridgeTemplate` dumps a migrated + seeded data directory
+once, and `loadBridgeTemplate` boots a fresh, independent PGlite from it
+per test in a fraction of the cold-start cost (the mechanism behind
+`scope: 'test'`). Every context has a `close()` that ends the pool and
+closes the PGlite the context created; it never calls
+`prisma.$disconnect()`, so add that yourself if your runner waits on
+open handles. Surface: [API
+reference](./api.md#the-testing-and-pooltesting-entries-runner-agnostic-builders).
+
+**node:test.** Build the template once per file, load it per test:
+
+```typescript
+// tests/users.test.ts — run with `node --test` (tsx or --experimental-strip-types)
+import assert from 'node:assert/strict';
+import { before, test } from 'node:test';
+import type { PrismaPg } from '@prisma/adapter-pg';
+import { PrismaClient } from '@prisma/client';
+import {
+  type BridgeTemplate,
+  createBridgeTemplate,
+  loadBridgeTemplate,
+} from 'prisma-pglite-bridge/testing';
+
+const client = (adapter: PrismaPg) => new PrismaClient({ adapter });
+let template: BridgeTemplate;
+
+before(async () => {
+  template = await createBridgeTemplate({
+    client,
+    migrations: true,
+    seed: async (prisma) => {
+      await prisma.user.create({ data: { email: 'ada@example.com', name: 'Ada' } });
+    },
+  });
+});
+
+test('starts from the seeded template', async () => {
+  const { prisma, close } = await loadBridgeTemplate(template, { client });
+  try {
+    assert.equal(await prisma.user.count(), 1);
+  } finally {
+    await close();
+  }
+});
+```
+
+A template is a `Blob`; nothing to tear down after the file. Prefer one
+shared database per file with a reset between tests? Use the context
+builder and the runner's hooks:
+
+```typescript
+import { after, beforeEach } from 'node:test';
+import { createBridgeContext } from 'prisma-pglite-bridge/testing';
+
+const ctx = await createBridgeContext({ client, migrations: true, seed });
+beforeEach(() => ctx.bridge.resetDb()); // back to the seeded snapshot
+after(() => ctx.close());
+```
+
+**vitest `globalSetup` → file → per-worker load.** Build the template
+once in the main process, write it to disk, and let every worker load
+it. A dump is a raw PGlite data directory — locked to the PGlite version
+that wrote it, the migrations, and the seed, and the bridge validates
+none of that — so the cache filename carries all three:
+
+```typescript
+// tests/global-setup.ts — vitest.config: test.globalSetup = ['./tests/global-setup.ts']
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PrismaClient } from '@prisma/client';
+import { createBridgeTemplate } from 'prisma-pglite-bridge/testing';
+import type { TestProject } from 'vitest/node';
+import { seed } from './seed.js';
+
+const require = createRequire(import.meta.url);
+const migrationsPath = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
+
+const pgliteVersion = (): string => {
+  let dir = dirname(require.resolve('@electric-sql/pglite'));
+  while (!existsSync(join(dir, 'package.json'))) dir = dirname(dir);
+  return JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version;
+};
+
+const templateKey = (): string => {
+  const hash = createHash('sha256').update(pgliteVersion());
+  const files = readdirSync(migrationsPath, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name))
+    .sort();
+  for (const file of files) {
+    hash.update(relative(migrationsPath, file)).update(readFileSync(file));
+  }
+  hash.update(readFileSync(new URL('./seed.ts', import.meta.url)));
+  return hash.digest('hex').slice(0, 16);
+};
+
+export default async ({ provide }: TestProject) => {
+  const path = join('node_modules/.cache/pglite-templates', `${templateKey()}.tar.gz`);
+  if (!existsSync(path)) {
+    const template = await createBridgeTemplate({
+      client: (adapter) => new PrismaClient({ adapter }),
+      migrations: { migrationsPath },
+      seed,
+      compression: 'gzip',
+    });
+    mkdirSync(dirname(path), { recursive: true });
+    await writeFile(path, Buffer.from(await template.arrayBuffer()));
+  }
+  provide('templatePath', path);
+};
+
+declare module 'vitest' {
+  export interface ProvidedContext {
+    templatePath: string;
+  }
+}
+```
+
+```typescript
+// tests/users.test.ts — any worker, any pool
+import { openAsBlob } from 'node:fs';
+import type { PrismaPg } from '@prisma/adapter-pg';
+import { PrismaClient } from '@prisma/client';
+import { loadBridgeTemplate } from 'prisma-pglite-bridge/testing';
+import { expect, inject, test } from 'vitest';
+
+const client = (adapter: PrismaPg) => new PrismaClient({ adapter });
+
+test('starts from the cached template', async () => {
+  const blob = await openAsBlob(inject('templatePath'));
+  const { prisma, close } = await loadBridgeTemplate(blob, { client, compression: 'gzip' });
+  try {
+    expect(await prisma.user.count()).toBe(1);
+  } finally {
+    await close();
+  }
+});
+```
+
+`compression` must match on both ends (`'none'`, the default, for
+in-process reuse; `'gzip'` for a file). The loader sets the MIME type
+PGlite keys its gunzip decision on, so the `openAsBlob` result needs no
+`type`. A mismatch, a dump from another PGlite version, or a file that
+is not a data directory fails as `TEMPLATE_LOAD_FAILED` with PGlite's
+error in `cause`. A loaded context holds no snapshot — `resetDb()`
+truncates it to empty — so load the template again when a test needs the
+seed back rather than resetting.
+
+**On-failure query trail without the fixture helper.** Turn the trail on
+through the bridge options and print it where your runner reports the
+failure:
+
+```typescript
+import { formatQueryTrail } from 'prisma-pglite-bridge';
+
+const ctx = await loadBridgeTemplate(template, { client, bridge: { queryTrail: true } });
+// in the failure path of the test:
+console.error(formatQueryTrail(ctx.bridge.queryTrail(), ctx.bridge.queryTrailMeta(), { testName }));
+```
+
+The pool twin for non-Prisma stacks is `prisma-pglite-bridge/pool/testing`:
+`createPoolContext`, `createPoolTemplate`, and `loadPoolTemplate` over
+the `setupPGlitePool` options (`setup`, `client`, `seed`, `dispose`),
+with the same `compression`, ownership, and reset-to-empty rules.
 
 ### Choosing an isolation model
 

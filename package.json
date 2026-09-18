@@ -49,6 +49,26 @@
         "default": "./dist/entry-pool.cjs"
       }
     },
+    "./testing": {
+      "import": {
+        "types": "./dist/entry-testing.d.mts",
+        "default": "./dist/entry-testing.mjs"
+      },
+      "require": {
+        "types": "./dist/entry-testing.d.cts",
+        "default": "./dist/entry-testing.cjs"
+      }
+    },
+    "./pool/testing": {
+      "import": {
+        "types": "./dist/testing/pool-testing.d.mts",
+        "default": "./dist/testing/pool-testing.mjs"
+      },
+      "require": {
+        "types": "./dist/testing/pool-testing.d.cts",
+        "default": "./dist/testing/pool-testing.cjs"
+      }
+    },
     "./pool/vitest": {
       "import": {
         "types": "./dist/testing/pool-vitest.d.mts",
@@ -94,6 +114,12 @@
     "*": {
       "pool": [
         "./dist/entry-pool.d.cts"
+      ],
+      "testing": [
+        "./dist/entry-testing.d.cts"
+      ],
+      "pool/testing": [
+        "./dist/testing/pool-testing.d.cts"
       ],
       "pool/vitest": [
         "./dist/testing/pool-vitest.d.cts"

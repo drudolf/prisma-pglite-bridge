@@ -333,6 +333,25 @@ longer exists — the schema changed after the snapshot. Re-run
 `snapshotDb()` after any DDL, or call `resetSnapshot()` to go back to
 truncate-to-empty resets.
 
+### `TEMPLATE_LOAD_FAILED`
+
+`loadBridgeTemplate()` / `loadPoolTemplate()` could not boot a PGlite
+from the template; the PGlite error is in `cause`. A template is a raw
+data-directory tarball from `createBridgeTemplate()` /
+`createPoolTemplate()`, and it loads only when three things line up:
+
+- **It is a template.** Anything else — an empty file, a stale cache
+  entry, a `pg_dump` — fails to untar or to start.
+- **Same PGlite version.** The data directory is version-locked; a
+  template dumped by another `@electric-sql/pglite` version does not
+  start. Key a cached template file on the PGlite version (and on a hash
+  of your migrations and seed inputs) and rebuild when any changes.
+- **Same `compression`.** Pass the value the template was created with
+  (default `'none'`). The loader checks the gzip magic bytes against it
+  before PGlite sees the template and names the mismatch in the message
+  (no `cause` in that case); it also sets the MIME type from it, so a
+  template read back from disk needs no type of its own.
+
 ## Warnings
 
 Bridge warnings go through `process.emitWarning` with a `type` from the

@@ -19,6 +19,7 @@ For known limits and runtime warnings see
 - [`PgBridgePool`](#pgbridgepool)
 - [The `/vitest` and `/jest` entries: Prisma testing helpers](#the-vitest-and-jest-entries-prisma-testing-helpers)
 - [The `/pool` entry and pool testing helpers](#the-pool-entry-and-pool-testing-helpers)
+- [The `/testing` and `/pool/testing` entries: runner-agnostic builders](#the-testing-and-pooltesting-entries-runner-agnostic-builders)
 - [Query trail](#query-trail)
 - [`PGliteServer`](#pgliteserver)
 - [`PGliteDuplex`](#pgliteduplex)
@@ -557,10 +558,12 @@ section is the surface.
 - `setupPGliteBridge(options)` (both entries) — create a bridge, apply
   the schema, build the client, `seed`, snapshot, and register
   `beforeEach(resetDb)` + `afterAll(close)` unless
-  `registerHooks: false`. Returns `{ prisma, bridge }`
-  (`PGliteTestContext<TClient>`); `resetDb` / `snapshotDb` /
-  `resetSnapshot` / `close` live on `bridge`. Async — call it with a
-  top-level `await` (Jest: native ESM mode).
+  `registerHooks: false`. Returns `{ prisma, bridge, close }`
+  (`PGliteTestContext<TClient>`, an alias of the `BridgeContext` from
+  [the `/testing` entry](#the-testing-and-pooltesting-entries-runner-agnostic-builders));
+  `resetDb` / `snapshotDb` / `resetSnapshot` live on `bridge`, and
+  `close()` ends the pool and the PGlite the context created. Async —
+  call it with a top-level `await` (Jest: native ESM mode).
 - `createBridgeTest(options)` (vitest only, ≥ 3.2) — the same flow as
   fixtures. Returns a `test` API whose tests can take `prisma` and
   `bridge`. Options are validated synchronously at the call.
@@ -599,7 +602,9 @@ omits `registerHooks`):
   `'file'`. `'worker'` shares one bridge across every file a worker
   runs (`threads` / `forks` pools only). `'test'` builds a per-file
   template and loads a fresh PGlite from it for every test — the only
-  scope safe for `test.concurrent`; `seed` still runs once per file.
+  scope safe for `test.concurrent`; `seed` still runs once per file. A
+  template must own the instance it dumps, so `scope: 'test'` rejects a
+  supplied `bridge.pglite` with a `TypeError` at the call.
 - `queryTrail?: boolean` — default `true`; see
   [Query trail](#query-trail).
 
@@ -642,7 +647,8 @@ sharing their snapshot/reset machinery:
   `{ pool, client }` fixtures and the same `scope: 'test' | 'file' |
   'worker'` semantics as `createBridgeTest`, including the per-file
   template dump behind `scope: 'test'` (the only scope safe for
-  `test.concurrent`).
+  `test.concurrent`; rejects a supplied `pool.pglite` with a
+  `TypeError` at the call).
 
 Options (`SetupPGlitePoolOptions<TClient>`):
 
@@ -669,6 +675,84 @@ Options (`SetupPGlitePoolOptions<TClient>`):
 bridge methods. On any failure after the pool is created, `dispose` is
 attempted when the client exists, and the pool — plus an internally
 created PGlite — is closed before the error propagates.
+
+## The `/testing` and `/pool/testing` entries: runner-agnostic builders
+
+`prisma-pglite-bridge/testing` is the hook-free core under the `/vitest`
+and `/jest` helpers, for runners without a fixture layer (node:test,
+ava, a vitest `globalSetup`) and for "build once, load per test" across
+processes. `prisma-pglite-bridge/pool/testing` is its Prisma-free twin
+for the `/pool` stack. Recipes: [Other runners and cross-process
+templates](./cookbook.md#other-runners-and-cross-process-templates).
+
+- `createBridgeContext(options)` — create a bridge, apply the schema
+  source, build the client, `seed`, and snapshot (unless
+  `snapshot: false`). Returns a `BridgeContext<TClient>`:
+  `{ prisma, bridge, close }`. Options are
+  `BridgeContextOptions<TClient>` — the `setupPGliteBridge` options
+  above minus `registerHooks`; exactly one of `migrations` / `schema` is
+  required, and the builder itself throws the same `TypeError` before
+  any PGlite is created. On any failure after the bridge is created it
+  is closed before the error propagates.
+- `close()` (on every `BridgeContext`) — ends the bridge pool, and
+  closes the PGlite only when the context created it: no `bridge.pglite`
+  supplied, or loaded from a template. It never calls
+  `prisma.$disconnect()` — the pool under the client is already ended;
+  call it yourself if your runner waits on open handles.
+- `createBridgeTemplate(options)` — build a context with
+  `snapshot: false`, dump its data directory to an in-memory tarball
+  (`BridgeTemplate = Blob | File`), and tear the context down. Options
+  are `BridgeTemplateOptions<TClient>`: `BridgeContextOptions` minus
+  `snapshot`, with `bridge?: Omit<PGliteBridgeOptions, 'pglite'>` — a
+  `pglite` passed anyway throws a `TypeError`, the template must own the
+  instance it dumps — and `compression?: 'none' | 'gzip'` (default
+  `'none'`, right for in-process reuse; `'gzip'` shrinks a template
+  written to disk).
+- `loadBridgeTemplate(template, options)` — boot a fresh, independent
+  PGlite from a template, await its readiness, and wrap it in a bridge +
+  client; no migrations or seed run. Options
+  (`LoadBridgeTemplateOptions<TClient>`): `client`,
+  `bridge?: Omit<PGliteBridgeOptions, 'pglite'>` (again a `TypeError` on
+  `pglite`), and `compression?` — must match the value the template was
+  created with (default `'none'`); the loader sets the matching MIME
+  type on the input itself, so a template read back from a file needs no
+  type reconstruction. A load PGlite rejects — not a data-directory
+  tarball, dumped by another PGlite version, or the wrong `compression`
+  — throws `PgBridgeError`
+  [`TEMPLATE_LOAD_FAILED`](./troubleshooting.md#template_load_failed)
+  with PGlite's error as `cause`, and no instance leaks. A loaded
+  context holds no snapshot: `bridge.resetDb()` truncates every user
+  table to empty — load the template again for a fresh seeded state. Its
+  `close()` shuts down the pool and the PGlite.
+
+A template is a raw PGlite data directory: locked to the PGlite version
+that dumped it and to the schema and seed it holds, and the bridge does
+not validate any of that. When you cache one on disk, key the filename
+on the `@electric-sql/pglite` version plus a hash of the migrations
+directory and the seed source, and rebuild when any of them changes.
+`TemplateCompression` (`'none' | 'gzip'`) is exported from both entries.
+
+`prisma-pglite-bridge/pool/testing` exports exactly `createPoolContext`,
+`createPoolTemplate`, `loadPoolTemplate` and the types `PoolTemplate`,
+`PoolContextOptions`, `PoolTemplateOptions`, `LoadPoolTemplateOptions`,
+`PGlitePoolTestContext`, `TemplateCompression` — no Prisma type
+(`pnpm check:pool-purity` enforces it). They mirror the Prisma trio over
+the `setupPGlitePool` options (`PoolContextOptions` = those minus
+`registerHooks`): `createPoolContext` returns the `PGlitePoolTestContext`
+described above, whose `close()` runs `dispose`, ends the pool, then
+closes the PGlite only when the context created it (no `pool.pglite`
+supplied, or loaded from a template); `createPoolTemplate` takes
+`PoolTemplateOptions` (`PoolContextOptions` minus `snapshot`,
+`pool?: Omit<PgBridgePoolOptions, 'pglite'>`, `compression?`) and
+`loadPoolTemplate` takes `LoadPoolTemplateOptions` (`client`, `dispose?`,
+`pool?` without `pglite`, `compression?`) — with the same `TypeError` on
+`pglite`, the same `TEMPLATE_LOAD_FAILED`, and the same reset-to-empty
+on a loaded context.
+
+`createBridgeTest` / `createPoolTest` with `scope: 'test'` are built on
+these builders (one template per file, one load per test), so they
+reject a supplied `bridge.pglite` / `pool.pglite` with the same
+`TypeError`, synchronously at the call.
 
 ## Query trail
 
@@ -904,6 +988,7 @@ links to its troubleshooting section.
 | [`MIGRATIONS_APPLY_FAILED`](./troubleshooting.md#migrations_apply_failed) | `pushMigrations()` | applying the SQL failed; the PGlite error is preserved as `cause`. On the migrations-directory path the message names the migration and its started `_prisma_migrations` row is kept |
 | [`MIGRATIONS_HISTORY_INVALID`](./troubleshooting.md#migrations_history_invalid) | `pushMigrations()` | `_prisma_migrations` holds a failed, duplicate, orphaned, or modified migration, or tables exist with no history at all; the message names the `prisma migrate resolve` repair |
 | [`SNAPSHOT_INVALID`](./troubleshooting.md#snapshot_invalid) | `resetDb()` (snapshot restore) | the schema changed since `snapshotDb()` — re-run `snapshotDb()` |
+| [`TEMPLATE_LOAD_FAILED`](./troubleshooting.md#template_load_failed) | `loadBridgeTemplate()` / `loadPoolTemplate()` | PGlite could not load the template: not a data-directory tarball, dumped by another PGlite version, or the wrong `compression`; the PGlite error is `cause` |
 
 Argument-type validation keeps the JavaScript-idiomatic `TypeError` (for
 example `max` on `PGliteBridge`/`PgBridgePool`, `copyAggregateCapBytes` on

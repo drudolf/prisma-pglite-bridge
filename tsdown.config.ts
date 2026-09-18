@@ -20,6 +20,8 @@ export default defineConfig({
     'src/testing/jest.ts',
     'src/testing/pool-vitest.ts',
     'src/testing/pool-jest.ts',
+    'src/entry-testing.ts',
+    'src/testing/pool-testing.ts',
   ],
   format: ['esm', 'cjs'],
   // tsconfig.build.json enables isolatedDeclarations, so tsdown emits .d.ts via

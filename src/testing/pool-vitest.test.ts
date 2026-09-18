@@ -6,11 +6,17 @@
  * file-wide, exactly as the sibling bridge entry documents for vitest's
  * normal hook scoping.
  */
+import { PGlite } from '@electric-sql/pglite';
 import type { TestAPI } from 'vitest';
 import { afterAll, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { PgBridgePool } from '../pool/index.ts';
-import { createPoolTest, type PoolTestFixtures, setupPGlitePool } from './pool-vitest.ts';
+import {
+  createPoolTest,
+  type PoolTestFixtures,
+  type SetupPGlitePoolOptions,
+  setupPGlitePool,
+} from './pool-vitest.ts';
 
 /** Read a table's `label` column in id order — the assertion currency below. */
 const labels = async (pool: PgBridgePool, table: string): Promise<string[]> => {
@@ -145,6 +151,72 @@ describe('createPoolTest — API creation', () => {
     // happens lazily at test time — creating the test API must not run it.
     expect(setup).not.toHaveBeenCalled();
     expect(client).not.toHaveBeenCalled();
+  });
+
+  it("throws a TypeError synchronously for scope: 'test' with a supplied pglite", () => {
+    const setup = vi.fn(async () => {});
+    // Never touched at call time — validation needs no real WASM instance.
+    const stubPglite = {} as PGlite;
+    const invalid = () =>
+      createPoolTest({
+        setup,
+        client: (pool) => ({ pool }),
+        scope: 'test',
+        pool: { pglite: stubPglite },
+      });
+    expect(invalid).toThrow(TypeError);
+    expect(invalid).toThrow(
+      'createPoolTest() does not accept a `pglite` option: the template must own its PGlite instance',
+    );
+    expect(setup).not.toHaveBeenCalled();
+  });
+});
+
+// 'file' scope keeps accepting a supplied pglite: the shared context is
+// built over it, and close() at file end leaves it open (caller-owned).
+const sharedPglite = await PGlite.create();
+afterAll(() => sharedPglite.close());
+
+const sharedInstanceTest = createPoolTest({
+  pool: { pglite: sharedPglite },
+  setup: async ({ pool }) => {
+    await pool.query('CREATE TABLE shared_rows (id serial PRIMARY KEY, label text NOT NULL)');
+  },
+  client: (pool) => ({ pool }),
+  seed: async ({ pool }) => {
+    await pool.query("INSERT INTO shared_rows (label) VALUES ('seed')");
+  },
+});
+
+describe("createPoolTest — scope: 'file' with a supplied pglite", () => {
+  sharedInstanceTest('builds the pool over the supplied instance', async ({ client, pool }) => {
+    expect(pool.pglite).toBe(sharedPglite);
+    expect(await labels(client.pool, 'shared_rows')).toEqual(['seed']);
+  });
+});
+
+// Backcompat pin (design D.2): the runner entry keeps `registerHooks` on
+// `SetupPGlitePoolOptions` even though the core's builder options dropped
+// it. tsc enforces this.
+describe('setupPGlitePool public type backcompat', () => {
+  interface FakeClient {
+    readonly tag: 'fake';
+  }
+
+  it('accepts the pre-change option object, registerHooks included', () => {
+    const preChange = {
+      setup: async (): Promise<void> => {},
+      client: (): FakeClient => ({ tag: 'fake' }),
+      seed: async (_client: FakeClient): Promise<void> => {},
+      dispose: async (_client: FakeClient): Promise<void> => {},
+      snapshot: false,
+      registerHooks: false,
+      pool: { max: 2 },
+    };
+    expectTypeOf(preChange).toExtend<SetupPGlitePoolOptions<FakeClient>>();
+    expectTypeOf<SetupPGlitePoolOptions<FakeClient>['registerHooks']>().toEqualTypeOf<
+      boolean | undefined
+    >();
   });
 });
 

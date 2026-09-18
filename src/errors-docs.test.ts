@@ -28,6 +28,7 @@ const errorCodes = [
   'MIGRATIONS_APPLY_FAILED',
   'MIGRATIONS_HISTORY_INVALID',
   'SNAPSHOT_INVALID',
+  'TEMPLATE_LOAD_FAILED',
 ] as const satisfies readonly PgBridgeErrorCode[];
 
 const warningTypes = [

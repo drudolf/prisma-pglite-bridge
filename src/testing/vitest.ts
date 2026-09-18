@@ -33,12 +33,13 @@ import type { PGliteBridge } from '../pglite-bridge';
 import {
   assertExactlyOneSchemaSource,
   createBridgeContext,
-  createBridgeContextFromDump,
   createBridgeTemplate,
+  loadBridgeTemplate,
   type PGliteTestContext,
   type SetupPGliteBridgeOptions,
 } from './core.ts';
 import { registerTrailFailureHook, resolveHelperTrail } from './query-trail-hook.ts';
+import { rejectPglite } from './template.ts';
 
 export type { PGliteTestContext, SetupPGliteBridgeOptions } from './core.ts';
 
@@ -211,7 +212,7 @@ const createTestScopedBridgeTest = <TClient>(
         { template }: { template: Blob | File },
         use: (value: PGliteBridge) => Promise<void>,
       ) => {
-        const context = await createBridgeContextFromDump(template, options);
+        const context = await loadBridgeTemplate(template, options);
         clients.set(context.bridge, context.prisma);
         try {
           await use(context.bridge);
@@ -282,6 +283,9 @@ export const createBridgeTest = <TClient>(
 ): TestAPI<BridgeTestFixtures<TClient>> => {
   assertExactlyOneSchemaSource('createBridgeTest', options);
   const scope = options.scope ?? 'file';
+  // 'test' scope dumps a template per file, and a template must own the
+  // instance it dumps — reject a supplied pglite here, synchronously.
+  if (scope === 'test') rejectPglite('createBridgeTest', 'template', options.bridge);
   // Trail default ON (env > helper option > bridge option). Resolve the
   // effective bridge-level `queryTrail` value WITHOUT clobbering an object-form
   // option (its `redactParams`/`maxEntries` must survive): an object is passed

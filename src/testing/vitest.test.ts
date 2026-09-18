@@ -1,7 +1,19 @@
+import type { PGlite } from '@electric-sql/pglite';
 import type { TestAPI } from 'vitest';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
-import { type BridgeTestFixtures, createBridgeTest, setupPGliteBridge } from './vitest.ts';
+import type { PGliteBridge } from '../pglite-bridge';
+import {
+  type BridgeTestFixtures,
+  createBridgeTest,
+  type PGliteTestContext,
+  type SetupPGliteBridgeOptions,
+  setupPGliteBridge,
+} from './vitest.ts';
+
+/** A caller-supplied instance stand-in: createBridgeTest never touches it at
+ *  call time (all setup is lazy), so validation needs no real WASM instance. */
+const stubPglite = {} as PGlite;
 
 // Validation-only unit tests. setupPGliteBridge must reject invalid option
 // combinations before any PGliteBridge (and thus any PGlite) is created, so
@@ -21,6 +33,12 @@ describe('setupPGliteBridge option validation', () => {
     const rejection = setupPGliteBridge({ client: () => ({}) });
     await expect(rejection).rejects.toBeInstanceOf(TypeError);
     await expect(rejection).rejects.toThrow('exactly one');
+  });
+
+  it('reports its own name, not the core builder it delegates to', async () => {
+    await expect(setupPGliteBridge({ client: () => ({}) })).rejects.toThrow(
+      'setupPGliteBridge requires exactly one of `migrations` or `schema`',
+    );
   });
 
   it('does not invoke the client factory when validation fails', async () => {
@@ -69,6 +87,12 @@ describe('createBridgeTest option validation', () => {
     expect(client).not.toHaveBeenCalled();
   });
 
+  it('reports its own name, not the core builder it delegates to', () => {
+    expect(() => createBridgeTest({ client: () => ({}) })).toThrow(
+      'createBridgeTest requires exactly one of `migrations` or `schema`',
+    );
+  });
+
   it('returns a test API without running any setup', () => {
     const client = vi.fn(() => ({}));
     const bridgeTest = createBridgeTest({ client, migrations: true });
@@ -76,6 +100,72 @@ describe('createBridgeTest option validation', () => {
     // Setup (bridge, schema, client, seed, snapshot) is per-scope work that
     // happens lazily at test time — creating the test API must not run it.
     expect(client).not.toHaveBeenCalled();
+  });
+});
+
+// 'test' scope dumps a per-file template, and a template must own the
+// instance it dumps — so a supplied pglite is rejected synchronously at
+// createBridgeTest() time, while the shared scopes keep accepting one.
+describe('createBridgeTest pglite option by scope', () => {
+  it("throws a TypeError synchronously for scope: 'test' with a supplied pglite", () => {
+    const client = vi.fn(() => ({}));
+    const invalid = () =>
+      createBridgeTest({ client, migrations: true, scope: 'test', bridge: { pglite: stubPglite } });
+    expect(invalid).toThrow(TypeError);
+    expect(invalid).toThrow(
+      'createBridgeTest() does not accept a `pglite` option: the template must own its PGlite instance',
+    );
+    expect(client).not.toHaveBeenCalled();
+  });
+
+  it("still accepts a supplied pglite for scope: 'file' (default) and 'worker'", () => {
+    const withDefault = createBridgeTest({
+      client: () => ({}),
+      migrations: true,
+      bridge: { pglite: stubPglite },
+    });
+    const withWorker = createBridgeTest({
+      client: () => ({}),
+      migrations: true,
+      scope: 'worker',
+      bridge: { pglite: stubPglite },
+    });
+    expect(withDefault).toBeTypeOf('function');
+    expect(withWorker).toBeTypeOf('function');
+  });
+});
+
+// Backcompat pin for the public option/context types (design D.2): the
+// runner entry keeps `registerHooks` on `SetupPGliteBridgeOptions` even
+// though the core's builder options dropped it, and the context gained
+// `close` without losing `prisma`/`bridge`. tsc enforces both.
+describe('setupPGliteBridge public type backcompat', () => {
+  interface FakeClient {
+    readonly tag: 'fake';
+  }
+
+  it('accepts the pre-change option object, registerHooks included', () => {
+    const preChange = {
+      client: (): FakeClient => ({ tag: 'fake' }),
+      migrations: true as const,
+      seed: async (_client: FakeClient): Promise<void> => {},
+      snapshot: false,
+      registerHooks: false,
+      bridge: { statsLevel: 'basic' as const },
+    };
+    expectTypeOf(preChange).toExtend<SetupPGliteBridgeOptions<FakeClient>>();
+    expectTypeOf<SetupPGliteBridgeOptions<FakeClient>['registerHooks']>().toEqualTypeOf<
+      boolean | undefined
+    >();
+  });
+
+  it('PGliteTestContext exposes exactly prisma, bridge and close', () => {
+    expectTypeOf<keyof PGliteTestContext<FakeClient>>().toEqualTypeOf<
+      'prisma' | 'bridge' | 'close'
+    >();
+    expectTypeOf<PGliteTestContext<FakeClient>['prisma']>().toEqualTypeOf<FakeClient>();
+    expectTypeOf<PGliteTestContext<FakeClient>['bridge']>().toEqualTypeOf<PGliteBridge>();
+    expectTypeOf<PGliteTestContext<FakeClient>['close']>().toEqualTypeOf<() => Promise<void>>();
   });
 });
 

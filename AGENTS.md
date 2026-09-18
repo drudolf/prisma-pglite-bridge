@@ -21,9 +21,11 @@ Docker, no server, no network. Requires Node ≥ 22 and Prisma 7.
 | `prisma-pglite-bridge` | Building blocks: `PGliteBridge`, `pushMigrations`, `pushSchema`, `hasSchema`, `PGliteServer`, `PgBridgeError` |
 | `prisma-pglite-bridge/vitest` | Prisma + vitest: `createBridgeTest` (fixtures), `setupPGliteBridge` (one call) |
 | `prisma-pglite-bridge/jest` | Prisma + Jest (native ESM): `setupPGliteBridge` |
+| `prisma-pglite-bridge/testing` | Prisma, any runner (node:test, ava, `globalSetup`): `createBridgeContext`, `createBridgeTemplate` → `loadBridgeTemplate` (build once, load per test, file-cacheable) |
 | `prisma-pglite-bridge/pool` | No Prisma: `PgBridgePool` is a `pg.Pool` for drizzle, kysely, knex, typeorm, mikro-orm |
 | `prisma-pglite-bridge/pool/vitest` | Any ORM + vitest: `createPoolTest`, `setupPGlitePool` |
 | `prisma-pglite-bridge/pool/jest` | Any ORM + Jest: `setupPGlitePool` |
+| `prisma-pglite-bridge/pool/testing` | Any ORM, any runner: `createPoolContext`, `createPoolTemplate` → `loadPoolTemplate` |
 
 ## Recipes
 
@@ -80,6 +82,8 @@ the bridge" (`PGliteServer` + `DATABASE_URL`); reset between tests with
 - Fixture tests must take `prisma` (or `client`) to get the per-test
   reset; taking only `bridge` / `pool` does not reset.
 - `test.concurrent` is safe only with `scope: 'test'`.
+- Templates (`/testing`, `/pool/testing`) are PGlite-version- and schema-locked
+  and never validated; a loaded context resets to empty — reload for the seed.
 - `resetDb()` / `snapshotDb()` need an idle pool: await every query and
   end open transactions first.
 - `pushMigrations` with a migrations directory is idempotent
@@ -114,6 +118,7 @@ carries the same pointer.
 | `MIGRATIONS_APPLY_FAILED` | schema SQL failed; PGlite error in `cause` |
 | `MIGRATIONS_HISTORY_INVALID` | failed, duplicate, orphaned, or modified migration in `_prisma_migrations`, or tables without history — message names the `prisma migrate resolve` repair |
 | `SNAPSHOT_INVALID` | schema changed since `snapshotDb()` — snapshot again |
+| `TEMPLATE_LOAD_FAILED` | `loadBridgeTemplate`/`loadPoolTemplate` got a non-template, a dump from another PGlite version, or the wrong `compression`; PGlite error in `cause` |
 
 Warnings (`process.emitWarning`, by `name`):
 `PGliteBridgeAbandonedTransactionWarning` (client released mid-transaction;

@@ -1,24 +1,31 @@
 /**
- * Red-first contract tests for `./pool-core.ts` — the Prisma-free,
- * runner-agnostic pool counterpart to `./core.ts`. The module does not
- * exist yet; every describe below pins the semantics its implementation
- * must satisfy. Most contexts run on one shared PGlite (caller-supplied
- * via `pool.pglite`) to keep WASM cold starts modest; the ownership and
- * dispose-failure tests let the core create its own instance because the
- * owned lifecycle is exactly what they pin.
+ * Contract tests for `./pool-core.ts` — the Prisma-free, runner-agnostic
+ * pool counterpart to `./core.ts`. Most contexts run on one shared PGlite
+ * (caller-supplied via `pool.pglite`) to keep WASM cold starts modest; the
+ * ownership and dispose-failure tests let the core create its own instance
+ * because the owned lifecycle is exactly what they pin, and the template
+ * builder/loader always own theirs — a `pglite` option is rejected there.
  */
+
+import { openAsBlob } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { PGlite } from '@electric-sql/pglite';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { setupPGlite } from '../__tests__/pglite.ts';
-import { PgBridgeError } from '../errors.ts';
+import { errorDocsPointer, PgBridgeError } from '../errors.ts';
 import { PgBridgePool } from '../pool/index.ts';
 import { livePoolCounts } from '../pool/session-registry.ts';
 import {
   createPoolContext,
-  createPoolContextFromDump,
   createPoolTemplate,
+  loadPoolTemplate,
   type PGlitePoolTestContext,
+  type PoolTemplate,
 } from './pool-core.ts';
+import type { TemplateCompression } from './template.ts';
 
 const pglite = await setupPGlite({ reset: false });
 
@@ -342,40 +349,61 @@ describe('createPoolContext — failure containment', () => {
 });
 
 describe('createPoolTemplate', () => {
-  it('returns a dump, skips the snapshot step, and tears its pool down', async () => {
-    await pglite.exec('DROP SCHEMA IF EXISTS _pglite_snapshot CASCADE');
-    const baseline = livePoolCounts.get(pglite) ?? 0;
+  it('returns a dump, skips the snapshot step, and tears its own instance down', async () => {
+    let templatePglite: PGlite | undefined;
+    let snapshotSchemaMissing: boolean | undefined;
 
-    const dump = await createPoolTemplate({
-      pool: { pglite },
-      setup: async ({ pool }) => {
+    const template = await createPoolTemplate({
+      setup: async ({ pool, pglite: owned }) => {
+        templatePglite = owned as PGlite;
         await pool.query('CREATE TABLE tmpl_items (id serial PRIMARY KEY, label text NOT NULL)');
       },
       client: (pool) => ({ pool }),
       seed: async ({ pool }) => {
         await pool.query("INSERT INTO tmpl_items (label) VALUES ('from-template')");
+        // The dump IS the template — no `_pglite_snapshot` schema is taken.
+        const { rows } = await pool.query<{ missing: boolean }>(
+          "SELECT to_regnamespace('_pglite_snapshot') IS NULL AS missing",
+        );
+        snapshotSchemaMissing = rows[0]?.missing;
       },
     });
 
-    expect(dump).toBeInstanceOf(Blob);
-    // Torn down: the template's pool released its shared-instance slot.
-    expect(livePoolCounts.get(pglite) ?? 0).toBe(baseline);
-    // The dump IS the template — no `_pglite_snapshot` schema is left behind.
-    const { rows } = await pglite.query<{ missing: boolean }>(
-      "SELECT to_regnamespace('_pglite_snapshot') IS NULL AS missing",
-    );
-    expect(rows[0]?.missing).toBe(true);
+    expect(template).toBeInstanceOf(Blob);
+    expect(template.type).toBe('application/x-tar');
+    expect(snapshotSchemaMissing).toBe(true);
+    // The template owned its instance and closed it after the dump.
+    expect(templatePglite).not.toBe(pglite);
+    expect(templatePglite?.closed).toBe(true);
+  });
 
-    await pglite.exec('DROP TABLE tmpl_items');
+  it('rejects a supplied pglite with a TypeError before creating anything', async () => {
+    const setup = vi.fn(async () => {});
+    const client = vi.fn((pool: PgBridgePool) => ({ pool }));
+    const baseline = livePoolCounts.get(pglite) ?? 0;
+
+    const rejection = createPoolTemplate({
+      pool: { pglite } as never,
+      setup,
+      client,
+    });
+    await expect(rejection).rejects.toBeInstanceOf(TypeError);
+    await expect(rejection).rejects.toThrow(
+      'createPoolTemplate() does not accept a `pglite` option: the template must own its PGlite instance',
+    );
+
+    expect(setup).not.toHaveBeenCalled();
+    expect(client).not.toHaveBeenCalled();
+    // No pool was built over the supplied instance.
+    expect(livePoolCounts.get(pglite) ?? 0).toBe(baseline);
   });
 });
 
-describe('createPoolContextFromDump', () => {
-  let dump: Blob | File;
+describe('loadPoolTemplate', () => {
+  let template: PoolTemplate;
 
   beforeAll(async () => {
-    dump = await createPoolTemplate({
-      pool: { pglite },
+    template = await createPoolTemplate({
       setup: async ({ pool }) => {
         await pool.query('CREATE TABLE dump_items (id serial PRIMARY KEY, label text NOT NULL)');
       },
@@ -386,13 +414,9 @@ describe('createPoolContextFromDump', () => {
     });
   });
 
-  afterAll(async () => {
-    await pglite.exec('DROP TABLE IF EXISTS dump_items');
-  });
-
   it('loads a fresh instance at the template state; close() shuts it down', async () => {
     const dispose = vi.fn(async () => {});
-    const loaded = await createPoolContextFromDump(dump, {
+    const loaded = await loadPoolTemplate(template, {
       client: (pool) => ({ pool }),
       dispose,
     });
@@ -409,9 +433,43 @@ describe('createPoolContextFromDump', () => {
     await expect(loaded.pool.connect()).rejects.toThrow(/after calling end/);
   });
 
+  it('close() without dispose never reaches into the client (no $disconnect call)', async () => {
+    const $disconnect = vi.fn(async () => {});
+    const loaded = await loadPoolTemplate(template, { client: (pool) => ({ pool, $disconnect }) });
+
+    await loaded.close();
+
+    expect($disconnect).not.toHaveBeenCalled();
+    expect(loaded.pglite.closed).toBe(true);
+  });
+
+  it('a loaded context holds no snapshot: resetDb() truncates to empty', async () => {
+    const loaded = await loadPoolTemplate(template, { client: (pool) => ({ pool }) });
+    try {
+      await loaded.resetDb();
+
+      expect(await labels(loaded.pool, 'dump_items')).toEqual([]);
+      // The schema survived the truncate: a fresh insert still works.
+      await loaded.pool.query("INSERT INTO dump_items (label) VALUES ('after-reset')");
+      expect(await labels(loaded.pool, 'dump_items')).toEqual(['after-reset']);
+    } finally {
+      await loaded.close();
+    }
+  });
+
+  it('loads a Blob that carries its own MIME type', async () => {
+    const typed = new Blob([template], { type: 'application/x-tar' });
+    const loaded = await loadPoolTemplate(typed, { client: (pool) => ({ pool }) });
+    try {
+      expect(await labels(loaded.pool, 'dump_items')).toEqual(['from-template']);
+    } finally {
+      await loaded.close();
+    }
+  });
+
   it('rejects and tears the loaded instance down when the client factory throws', async () => {
     await expect(
-      createPoolContextFromDump(dump, {
+      loadPoolTemplate(template, {
         client: () => {
           throw new Error('factory boom');
         },
@@ -420,7 +478,7 @@ describe('createPoolContextFromDump', () => {
   });
 
   it('close() tolerates an owned instance the caller already closed via ctx.pglite', async () => {
-    const loaded = await createPoolContextFromDump(dump, { client: (pool) => ({ pool }) });
+    const loaded = await loadPoolTemplate(template, { client: (pool) => ({ pool }) });
     await loaded.pool.end();
     await loaded.pglite.close();
 
@@ -428,8 +486,8 @@ describe('createPoolContextFromDump', () => {
   });
 
   it('loads independent contexts — mutating one does not affect another', async () => {
-    const first = await createPoolContextFromDump(dump, { client: (pool) => ({ pool }) });
-    const second = await createPoolContextFromDump(dump, { client: (pool) => ({ pool }) });
+    const first = await loadPoolTemplate(template, { client: (pool) => ({ pool }) });
+    const second = await loadPoolTemplate(template, { client: (pool) => ({ pool }) });
     try {
       await first.pool.query("INSERT INTO dump_items (label) VALUES ('only-in-first')");
 
@@ -440,4 +498,154 @@ describe('createPoolContextFromDump', () => {
       await second.close();
     }
   });
+
+  it('rejects a supplied pglite with a TypeError before PGlite.create is called', async () => {
+    const create = vi.spyOn(PGlite, 'create');
+    const client = vi.fn((pool: PgBridgePool) => ({ pool }));
+    const baseline = livePoolCounts.get(pglite) ?? 0;
+
+    const rejection = loadPoolTemplate(template, { pool: { pglite } as never, client });
+    await expect(rejection).rejects.toBeInstanceOf(TypeError);
+    await expect(rejection).rejects.toThrow(
+      'loadPoolTemplate() does not accept a `pglite` option: the loaded context must own its PGlite instance',
+    );
+
+    expect(create).not.toHaveBeenCalled();
+    expect(client).not.toHaveBeenCalled();
+    expect(livePoolCounts.get(pglite) ?? 0).toBe(baseline);
+  });
+});
+
+describe('loadPoolTemplate — compression round trip through a file', () => {
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'ppb-pool-template-'));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** Build → write → read back untyped via openAsBlob → load. */
+  const roundTrip = async (
+    compression: TemplateCompression,
+  ): Promise<PGlitePoolTestContext<{ pool: PgBridgePool }>> => {
+    const built = await createPoolTemplate({
+      setup: async ({ pool }) => {
+        await pool.query('CREATE TABLE rt_items (id serial PRIMARY KEY, label text NOT NULL)');
+      },
+      client: (pool) => ({ pool }),
+      seed: async ({ pool }) => {
+        await pool.query(`INSERT INTO rt_items (label) VALUES ('${compression}')`);
+      },
+      compression,
+    });
+    expect(built.type).toBe(compression === 'gzip' ? 'application/x-gzip' : 'application/x-tar');
+    const file = join(dir, `template.${compression}`);
+    await writeFile(file, new Uint8Array(await built.arrayBuffer()));
+    const fromDisk = await openAsBlob(file);
+    // A Blob read back from disk carries no MIME type — the loader must
+    // reconstruct it from `compression`.
+    expect(fromDisk.type).toBe('');
+    return loadPoolTemplate(fromDisk, { client: (pool) => ({ pool }), compression });
+  };
+
+  it("compression: 'none' survives writeFile → openAsBlob → load", async () => {
+    const loaded = await roundTrip('none');
+    try {
+      expect(await labels(loaded.pool, 'rt_items')).toEqual(['none']);
+    } finally {
+      await loaded.close();
+    }
+  });
+
+  it("compression: 'gzip' survives writeFile → openAsBlob → load", async () => {
+    const loaded = await roundTrip('gzip');
+    try {
+      expect(await labels(loaded.pool, 'rt_items')).toEqual(['gzip']);
+    } finally {
+      await loaded.close();
+    }
+  });
+});
+
+describe('loadPoolTemplate — TEMPLATE_LOAD_FAILED', () => {
+  const docsTail = `(docs: ${errorDocsPointer('TEMPLATE_LOAD_FAILED')})`;
+
+  /** Collect bridge warnings emitted while `run` executes (warnings are
+   *  emitted on a later tick, so drain the loop before reading). */
+  const collectWarnings = async (run: () => Promise<void>): Promise<string[]> => {
+    const names: string[] = [];
+    const onWarning = (warning: Error): void => {
+      if (warning.name.startsWith('PGliteBridge')) names.push(warning.name);
+    };
+    process.on('warning', onWarning);
+    try {
+      await run();
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.removeListener('warning', onWarning);
+    }
+    return names;
+  };
+
+  it('a garbage Blob rejects with a typed, caused, docs-pointed error and nothing leaks', async () => {
+    const client = vi.fn((pool: PgBridgePool) => ({ pool }));
+    let caught: unknown;
+    const warnings = await collectWarnings(async () => {
+      try {
+        await loadPoolTemplate(new Blob(['not a tar']), { client });
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    const error = caught as PgBridgeError;
+    expect(error.code).toBe('TEMPLATE_LOAD_FAILED');
+    expect(error.docs).toBe(errorDocsPointer('TEMPLATE_LOAD_FAILED'));
+    expect(error.cause).toBeDefined();
+    expect(error.message.endsWith(docsTail)).toBe(true);
+    // No pool was ever built, so the client factory never ran.
+    expect(client).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+  });
+
+  it.each([
+    ['gzip', 'none', /gzip-compressed but `compression` is 'none'/],
+    ['none', 'gzip', /`compression` is 'gzip' but the template is not gzip-compressed/],
+  ] as const)(
+    "a %s template loaded with compression: '%s' fails before PGlite sees it",
+    async (dumped, loadedAs, message) => {
+      // The loader checks the gzip magic itself: PGlite's gunzip helper leaks
+      // unhandled rejections on a failed inflate (which would fail this run),
+      // and it sniffs the magic on its own, which would let the gzip-as-none
+      // direction pass silently against the documented contract.
+      const template = await createPoolTemplate({
+        setup: async ({ pool }) => {
+          await pool.query('CREATE TABLE mm_items (id serial PRIMARY KEY)');
+        },
+        client: (pool) => ({ pool }),
+        compression: dumped,
+      });
+      // Spy after the build: constructing a PGlite goes through `create` too.
+      const create = vi.spyOn(PGlite, 'create').mockClear();
+      const client = vi.fn((pool: PgBridgePool) => ({ pool }));
+
+      let caught: unknown;
+      try {
+        await loadPoolTemplate(template, { client, compression: loadedAs });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(create).not.toHaveBeenCalled();
+      expect(client).not.toHaveBeenCalled();
+      expect(caught).toBeInstanceOf(PgBridgeError);
+      expect((caught as PgBridgeError).code).toBe('TEMPLATE_LOAD_FAILED');
+      expect((caught as PgBridgeError).message).toMatch(message);
+      expect((caught as PgBridgeError).cause).toBeUndefined();
+    },
+  );
 });
