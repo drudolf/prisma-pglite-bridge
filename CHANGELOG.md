@@ -1,5 +1,94 @@
 # prisma-pglite-bridge
 
+## 1.9.0
+
+### Minor Changes
+
+- ad268b8: Every `PgBridgeError` and bridge warning message now ends with a docs
+  pointer, `(docs: prisma-pglite-bridge/docs/troubleshooting.md#<code>)`,
+  and `PgBridgeError` gains a `docs` property carrying the same
+  package-relative pointer. `docs/troubleshooting.md` gains a section per
+  error code and warning. The `BRIDGE_OPTIONS_REQUIRED` message now
+  diagnoses the usual cause — a duplicated `pg` package — and names the
+  fix. If you matched on message text, match on `code` instead or strip
+  the trailing `(docs: …)` tail.
+- b3bb1ac: `pushMigrations` with a migrations directory (`migrationsPath` or
+  auto-discovered) now keeps Prisma's `_prisma_migrations` history —
+  same table DDL, same checksum, same rows as `prisma migrate deploy`.
+  The Prisma CLI (`migrate status` / `deploy` / `dev` through
+  `PGliteServer`) sees the migrations as applied, and a second call on a
+  persistent `dataDir` skips them, so the `hasSchema` guard around
+  `pushMigrations` is no longer needed. Migrations are applied one at a
+  time at Prisma's granularity (one `exec` per migration, started row
+  before, finished row after) instead of as one all-or-nothing batch: a
+  failing script now leaves the earlier migrations applied and its own
+  started row in place, as under Prisma's runner. The result gains
+  `applied` and `skipped` (migration names). New error code
+  `MIGRATIONS_HISTORY_INVALID` fires before applying when the history
+  holds a failed, duplicate, orphaned, or modified migration, or when
+  tables exist with no history at all (Prisma's P3005); the message names
+  the `prisma migrate resolve` repair. Persistent `dataDir`s populated by
+  an earlier `pushMigrations` hit that last case on upgrade: baseline them
+  with `prisma migrate resolve --applied <name>` per migration through a
+  `PGliteServer`, or start from an empty directory. `hasMigrations` is now `true`
+  after `pushMigrations`, and `hasSchema` ignores `_prisma%` tables. The
+  `sql` path is unchanged: one batch, no bookkeeping, not idempotent.
+- 92c82e8: `PGliteServer` gains `resetDb(options?)`, `snapshotDb(options?)`, and
+  `resetSnapshot(options?)` (`ServerSessionOptions { timeoutMs?: number }`,
+  default 5000). Each runs as the owner of the shared session: it fails
+  fast with the new error code `SERVER_NOT_IDLE` while any connection is
+  inside a transaction, otherwise queues behind the running statement and
+  throws `SERVER_NOT_IDLE` once `timeoutMs` elapses; `SERVER_CLOSED` and
+  `SERVER_PGLITE_CLOSED` cover the lifecycle, and `close()` cancels queued
+  waiters. The server path does not scrub session state — `SET`s,
+  `LISTEN`s, temp tables, and advisory locks on the app's connections
+  survive — because the session belongs to the connected app. Anything
+  that reaches `server.pglite` outside the server (a direct `exec`, a
+  companion `PGliteBridge` or `PgBridgePool`) must be idle when these are
+  called. Snapshot state is now read from the database on every reset,
+  so a bridge and a server over the same PGlite agree on it. The bridge's
+  `resetDb()` restore now runs in one transaction with `SET LOCAL
+  session_replication_role`: a failed restore leaves the data untouched
+  and the GUC never leaks into the session. The `_prisma%` table filter
+  now escapes the underscore, so it matches only the `_prisma` prefix.
+- 8440420: Two new entry points expose the runner-agnostic core under the test
+  helpers. `prisma-pglite-bridge/testing` exports `createBridgeContext`,
+  `createBridgeTemplate`, `loadBridgeTemplate` and the types
+  `BridgeContext`, `BridgeContextOptions`, `BridgeTemplate`,
+  `BridgeTemplateOptions`, `LoadBridgeTemplateOptions`,
+  `TemplateCompression`; `prisma-pglite-bridge/pool/testing` exports the
+  Prisma-free twins `createPoolContext`, `createPoolTemplate`,
+  `loadPoolTemplate` and `PoolTemplate`, `PoolContextOptions`,
+  `PoolTemplateOptions`, `LoadPoolTemplateOptions`,
+  `PGlitePoolTestContext`, `TemplateCompression`. `createBridgeContext`
+  validates the schema source itself (exactly one of `migrations` /
+  `schema`, a `TypeError` before any PGlite exists) and returns `close()`,
+  which ends the pool and closes the PGlite only when the context created
+  it — never `prisma.$disconnect()`. The template builders and loaders
+  reject a `pglite` option with a `TypeError`; `compression: 'none' |
+  'gzip'` (default `'none'`) is set on both the builder and the loader,
+  and the loader applies the matching MIME type so a template read back
+  from a file loads as is. A load PGlite rejects throws the new
+  `TEMPLATE_LOAD_FAILED` with PGlite's error as `cause`. A loaded context
+  holds no snapshot, so `resetDb()` truncates it to empty. `createBridgeTest`
+  and `createPoolTest` with `scope: 'test'` now reject a supplied
+  `bridge.pglite` / `pool.pglite` with a `TypeError` at the call.
+
+### Patch Changes
+
+- ff47a2c: Allow Vitest 5 as a peer dependency. The `./vitest` and `./pool/vitest`
+  entry points are now tested against Vitest 5.0.0; Vitest 3.2+ and 4.x
+  remain supported.
+- 41e119b: Pin `@prisma/schema-engine-wasm` to the engine build shipped with Prisma
+  7.10.0 (`7.10.0-4.0edf323e`), so `pushSchema` uses the same schema engine
+  as the `prisma` CLI of the matching release.
+- b27ba76: Ship `docs/` and a new `AGENTS.md` in the npm tarball. README links to
+  the API reference, cookbook, troubleshooting, and server docs now
+  resolve inside `node_modules/prisma-pglite-bridge/`, so offline readers
+  and coding agents can follow them without leaving the project.
+  `AGENTS.md` is a short agent-facing map of the entry points, the
+  minimal recipes, error codes, warnings, and foot-guns.
+
 ## 1.8.0
 
 ### Minor Changes
