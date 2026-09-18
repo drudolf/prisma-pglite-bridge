@@ -210,6 +210,36 @@ The `PGlite` instance handed to `PGliteServer` (or reused by it) is
 already closed. Pass an open instance, or let the server create its own
 by omitting `pglite`.
 
+### `SERVER_NOT_IDLE`
+
+`PGliteServer.resetDb()`, `snapshotDb()`, or `resetSnapshot()` could not
+take the shared session. The message tells you which case you hit:
+
+- *requires no open transaction on any connection; got N* — a
+  connected client is inside a transaction (`BEGIN` without
+  `COMMIT`/`ROLLBACK`, a Prisma `$transaction`, an open cursor). The
+  call fails fast instead of waiting: the transaction holds the session
+  until it ends, and truncating under it would be wrong anyway. Finish
+  the request — `COMMIT` or `ROLLBACK` — then call again.
+- *timed out after Nms waiting for the session; a connection is still
+  busy* — no transaction was open, so the call queued behind the
+  running statement, but it did not finish within `timeoutMs` (default
+  5000). Wait for the request to complete, or pass a larger
+  `{ timeoutMs }` when a legitimately slow statement is expected.
+
+In tests, call these methods between requests — in `beforeEach`, or
+after the awaited response — never while a request is in flight.
+
+Two things the guard does not do. It does not reset connection state:
+the session belongs to the connected app, so `SET`s, `LISTEN`s, temp
+tables, and advisory locks on the app's connections survive a server
+reset (unlike `PGliteBridge.resetDb()`); use a fresh connection when a
+test depends on session state. And it cannot see anything that reaches
+`server.pglite` outside the server — a direct `pglite.exec`/`query`, a
+`PGliteBridge` or `PgBridgePool` built over `server.pglite`. Those must
+be idle (or closed) when you call these methods; the server's lock does
+not cover them.
+
 ### `PGLITE_CLOSED`
 
 A bridge, pool, or server operation started after its `PGlite` instance

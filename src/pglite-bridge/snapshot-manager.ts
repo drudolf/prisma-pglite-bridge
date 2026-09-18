@@ -11,7 +11,32 @@ const SYSTEM_SCHEMA_EXCLUSION = `schemaname NOT IN ('pg_catalog', 'information_s
        AND schemaname != '${SNAPSHOT_SCHEMA_NEW}'`;
 
 const USER_TABLES_WHERE = `${SYSTEM_SCHEMA_EXCLUSION}
-       AND tablename NOT LIKE '_prisma%'`;
+       AND tablename NOT LIKE '\\_prisma%'`;
+
+/**
+ * Everything `DISCARD ALL` does except `DEALLOCATE ALL`: named prepared
+ * statements survive resets. User tables are only truncated, never dropped,
+ * so retained statements revalidate transparently — this keeps the bridge's
+ * prepared-statement cache warm across `resetDb()`.
+ */
+const SESSION_SCRUB_SQL = `CLOSE ALL;
+       SET SESSION AUTHORIZATION DEFAULT;
+       RESET ALL;
+       UNLISTEN *;
+       SELECT pg_advisory_unlock_all();
+       DISCARD PLANS;
+       DISCARD SEQUENCES;
+       DISCARD TEMP`;
+
+export interface ResetDbOptions {
+  /**
+   * Also reset session state (`SET`s, `LISTEN`s, cursors, temp tables,
+   * advisory locks) after restoring the data. Default `true` — the bridge
+   * owns its session. `PGliteServer` passes `false`: its session belongs to
+   * the connected app and a scrub would silently reconfigure it.
+   */
+  scrubSession?: boolean;
+}
 
 const SNAPSHOT_SCHEMA_IDENT = quoteIdent(SNAPSHOT_SCHEMA);
 const SNAPSHOT_SCHEMA_NEW_IDENT = quoteIdent(SNAPSHOT_SCHEMA_NEW);
@@ -30,13 +55,14 @@ const SNAPSHOT_SCHEMA_LITERAL = `'${SNAPSHOT_SCHEMA}'`;
  * Operations are serialized per manager instance, not per session: a
  * second bridge's snapshot calls against the same shared PGlite session
  * are not serialized against this one's (covered only by the
- * shared-instance advisory warning).
+ * shared-instance advisory warning). Whether a snapshot exists is read
+ * from the database on every reset, never cached, so two managers over one
+ * PGlite (a bridge and a `PGliteServer`) always agree.
  *
  * @internal
  */
 export class SnapshotManager {
   readonly #pglite: PGlite | PGliteInterface;
-  #hasSnapshot = false;
   /** Tail of the serialized operation chain — see {@link #serialize}. */
   #chain: Promise<unknown> = Promise.resolve();
 
@@ -141,8 +167,6 @@ export class SnapshotManager {
         .catch(() => {});
       throw err;
     }
-
-    this.#hasSnapshot = true;
   }
 
   /** Drop the saved snapshot (and any interrupted-rebuild staging schema),
@@ -152,74 +176,71 @@ export class SnapshotManager {
   }
 
   async #resetSnapshot(): Promise<void> {
-    this.#hasSnapshot = false;
     await this.#pglite.exec(`DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_IDENT} CASCADE`);
     await this.#pglite.exec(`DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_NEW_IDENT} CASCADE`);
   }
 
   /**
    * Truncate all user tables. If a snapshot exists, restore its contents and
-   * sequence values afterwards. Either way, finish with the session reset
-   * below — everything `DISCARD ALL` covers except `DEALLOCATE ALL`, so
-   * named prepared statements survive.
+   * sequence values afterwards — in one transaction, so a failed restore
+   * leaves the data untouched and the FK/trigger bypass
+   * (`SET LOCAL session_replication_role`) never outlives it. Then, unless
+   * `scrubSession: false`, reset session state — everything `DISCARD ALL`
+   * covers except `DEALLOCATE ALL`, so named prepared statements survive.
    *
    * Requires the live schema to still structurally match the snapshot:
    * a source table or column dropped since `snapshotDb()` fails fast
    * (before anything is truncated), and other column drift surfaces as an
    * insert error against the snapshot table.
    */
-  resetDb(): Promise<void> {
-    return this.#serialize(() => this.#resetDb());
+  resetDb(options: ResetDbOptions = {}): Promise<void> {
+    return this.#serialize(() => this.#resetDb(options.scrubSession !== false));
   }
 
-  async #resetDb(): Promise<void> {
-    if (this.#hasSnapshot) await this.#snapshotSchemaExists();
+  async #resetDb(scrubSession: boolean): Promise<void> {
+    const hasSnapshot = await this.#snapshotSchemaExists();
 
     const tables = await this.#getTables();
 
     // Plan the restore before truncating — and even when no live user
     // table is left to truncate — so schema drift since snapshotDb()
     // fails loudly with the data still intact.
-    const restore = this.#hasSnapshot ? await this.#restorePlan() : [];
+    const restore = hasSnapshot ? await this.#restorePlan() : [];
 
     if (tables) {
-      await this.#withReplicationRoleReplica(async () => {
+      try {
+        await this.#pglite.exec('BEGIN');
+        // Transaction-local: FK and trigger checks are off for the restore
+        // only, and the GUC never leaks into the session — on the server path
+        // that session belongs to the connected app.
+        await this.#pglite.exec('SET LOCAL session_replication_role = replica');
         await this.#pglite.exec(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
 
         for (const insert of restore) {
           await this.#pglite.exec(insert);
         }
 
-        if (!this.#hasSnapshot) return;
+        if (hasSnapshot) {
+          const { rows: seqs } = await this.#pglite.query<{ name: string; value: string }>(
+            `SELECT quote_literal(name) AS name, value::text AS value FROM ${SNAPSHOT_SCHEMA_IDENT}.__sequences`,
+          );
 
-        const { rows: seqs } = await this.#pglite.query<{ name: string; value: string }>(
-          `SELECT quote_literal(name) AS name, value::text AS value FROM ${SNAPSHOT_SCHEMA_IDENT}.__sequences`,
-        );
-
-        for (const { name, value } of seqs) {
-          // Two-arg setval marks is_called = true: a sequence positioned via
-          // setval(seq, n, false) before snapshotDb() restores one off (next
-          // value n+1, not n). Pre-existing, accepted — capturing is_called
-          // would cost a per-sequence query at snapshot time.
-          await this.#pglite.exec(`SELECT setval(${name}, ${value})`);
+          for (const { name, value } of seqs) {
+            // Two-arg setval marks is_called = true: a sequence positioned via
+            // setval(seq, n, false) before snapshotDb() restores one off (next
+            // value n+1, not n). Pre-existing, accepted — capturing is_called
+            // would cost a per-sequence query at snapshot time.
+            await this.#pglite.exec(`SELECT setval(${name}, ${value})`);
+          }
         }
-      });
+        await this.#pglite.exec('COMMIT');
+      } catch (err) {
+        await this.#pglite.exec('ROLLBACK').catch(() => {});
+        throw err;
+      }
     }
 
-    // Everything DISCARD ALL does except DEALLOCATE ALL: named prepared
-    // statements survive resets. User tables are only truncated, never
-    // dropped, so retained statements revalidate transparently — this keeps
-    // the bridge's prepared-statement cache warm across resetDb().
-    await this.#pglite.exec(
-      `CLOSE ALL;
-       SET SESSION AUTHORIZATION DEFAULT;
-       RESET ALL;
-       UNLISTEN *;
-       SELECT pg_advisory_unlock_all();
-       DISCARD PLANS;
-       DISCARD SEQUENCES;
-       DISCARD TEMP`,
-    );
+    if (scrubSession) await this.#pglite.exec(SESSION_SCRUB_SQL);
   }
 
   /**
@@ -300,30 +321,15 @@ export class SnapshotManager {
   }
 
   /**
-   * Self-heal: external SQL (a caller's raw `DROP SCHEMA`, a
-   * `prisma migrate reset`) may drop `_pglite_snapshot` out from under us.
-   * Returns whether the schema actually exists right now, and clears
-   * `#hasSnapshot` if it doesn't.
+   * Whether `_pglite_snapshot` exists right now — read from the catalog on
+   * every reset. External SQL (a caller's raw `DROP SCHEMA`, a
+   * `prisma migrate reset`) may drop it, and another manager over the same
+   * PGlite may create it; caching either answer would desynchronize them.
    */
   async #snapshotSchemaExists(): Promise<boolean> {
     const { rows } = await this.#pglite.query<{ exists: boolean }>(
       `SELECT to_regnamespace(${SNAPSHOT_SCHEMA_LITERAL}) IS NOT NULL AS exists`,
     );
-    const exists = rows[0]?.exists;
-    if (!exists) this.#hasSnapshot = false;
-    // Stryker disable next-line BooleanLiteral: accept — the returned boolean is
-    // discarded at the sole call site (#resetDb awaits without using it); only
-    // the #hasSnapshot side effect above is observable. `exists` is already a
-    // boolean, so `!!exists === exists` regardless.
-    return !!exists;
-  }
-
-  async #withReplicationRoleReplica(fn: () => Promise<void>): Promise<void> {
-    try {
-      await this.#pglite.exec('SET session_replication_role = replica');
-      await fn();
-    } finally {
-      await this.#pglite.exec('SET session_replication_role = DEFAULT');
-    }
+    return rows[0]?.exists === true;
   }
 }

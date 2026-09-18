@@ -70,7 +70,8 @@ const { prisma } = await setupPGliteBridge({ client: (adapter) => new PrismaClie
 
 App in a separate process (Playwright, Next.js, supertest against a
 spawned server): `docs/cookbook.md` → "End-to-end: run your app against
-the bridge" (`PGliteServer` + `DATABASE_URL`).
+the bridge" (`PGliteServer` + `DATABASE_URL`); reset between tests with
+`server.resetDb()` (data only; connection state persists).
 
 ## Rules of thumb
 
@@ -106,6 +107,7 @@ carries the same pointer.
 | `INVALID_STATS_LEVEL` | `statsLevel` not `'off'` / `'basic'` / `'full'` |
 | `SERVER_CLOSED` | `PGliteServer.listen()` after `close()` |
 | `SERVER_PGLITE_CLOSED` | server given an already-closed PGlite |
+| `SERVER_NOT_IDLE` | `PGliteServer.resetDb/snapshotDb` while a connection is in a transaction or still busy past `timeoutMs` |
 | `PGLITE_CLOSED` | the PGlite instance was closed under a live bridge |
 | `PGLITE_NOT_READY` | PGlite never became ready (readiness timeout) |
 | `MIGRATIONS_UNAVAILABLE` | no `sql`, no `migration.sql` files, no loadable `prisma.config.ts` |

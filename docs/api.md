@@ -143,7 +143,10 @@ Instance members:
   session-local state (`SET` variables, temp tables, `LISTEN`
   registrations, cached plans — everything `DISCARD ALL` covers
   *except* named prepared statements, which are deliberately kept
-  so the warm statement cache survives the reset).
+  so the warm statement cache survives the reset). The truncate and
+  snapshot restore run in one transaction (with `SET LOCAL
+  session_replication_role` for the FK bypass), so a failed restore
+  leaves the data untouched.
   Call in `beforeEach` for per-test isolation.
   Note: this clears all data including seed data — re-seed after
   reset (or use `snapshotDb()` first) if needed. Prisma's `_prisma%`
@@ -787,6 +790,56 @@ See the dedicated guide: [`PGliteServer`](./server.md) —
 options, Unix-socket mode, shadow-database wiring, and security
 notes.
 
+### Snapshot and reset
+
+`PGliteServer` carries the same snapshot surface as `PGliteBridge`,
+run as the owner of the shared session:
+
+- `resetDb(options?)` — truncates every user table (`RESTART
+  IDENTITY`, so sequences restart) and, when a snapshot exists,
+  restores its rows and sequence values.
+- `snapshotDb(options?)` — captures the current tables and sequence
+  values so later `resetDb()` calls restore to them.
+- `resetSnapshot(options?)` — drops the snapshot so later `resetDb()`
+  calls truncate to empty.
+
+Each takes `ServerSessionOptions`:
+
+- `timeoutMs?: number` — upper bound on waiting for a running
+  statement to finish, in milliseconds. Default `5000`. `0` (and any
+  negative value, which Node clamps to `0`) means "do not wait": the
+  call throws `SERVER_NOT_IDLE` unless the session is free right now.
+
+Idle rules: the call fails fast with `SERVER_NOT_IDLE` while any
+connection is inside a transaction (the transaction holds the session
+until `COMMIT`/`ROLLBACK`). Otherwise it queues behind the statement
+currently running — admission is lock-first, so no later statement
+from a client gets ahead of it — and throws `SERVER_NOT_IDLE` if the
+session has not come free after `timeoutMs`. `SERVER_CLOSED` after
+`close()` (a call still waiting when `close()` runs is cancelled with
+it; one already holding the session finishes first),
+`SERVER_PGLITE_CLOSED` when the PGlite instance is closed, and
+`SNAPSHOT_INVALID` when the schema changed since `snapshotDb()`.
+
+Connection state is **not** reset. `PGliteBridge.resetDb()` owns its
+session and scrubs it (`SET`s, `LISTEN`s, temp tables, advisory
+locks); the server's session belongs to the connected app, so all of
+that survives `server.resetDb()`. Use a fresh connection (or restart
+the app) when a test depends on session state.
+
+Precondition: anything that reaches `server.pglite` outside the server
+must be idle when these methods are called — a direct
+`server.pglite.exec()`/`query()`, a `PGliteBridge` or `PgBridgePool`
+built over `server.pglite`. The server's lock cannot see them, so the
+idle rules above do not protect against a reset running under their
+statements.
+
+Snapshot state lives in the database (the `_pglite_snapshot` schema)
+and is read on every reset, so a snapshot taken through a
+`PGliteBridge` over `server.pglite` is restorable with
+`server.resetDb()`, and vice versa. Prisma's `_prisma%` tables are
+neither captured nor truncated.
+
 ## `PGliteDuplex`
 
 The Duplex stream that replaces `pg.Client`'s network socket.
@@ -844,6 +897,7 @@ links to its troubleshooting section.
 | [`INVALID_STATS_LEVEL`](./troubleshooting.md#invalid_stats_level) | `new PGliteBridge(...)` | `statsLevel` is not `'off'`, `'basic'`, or `'full'` |
 | [`SERVER_CLOSED`](./troubleshooting.md#server_closed) | `PGliteServer.listen()` | `listen()` after `close()` |
 | [`SERVER_PGLITE_CLOSED`](./troubleshooting.md#server_pglite_closed) | `PGliteServer.listen()` | the provided PGlite instance is already closed |
+| [`SERVER_NOT_IDLE`](./troubleshooting.md#server_not_idle) | `PGliteServer.resetDb()` / `snapshotDb()` / `resetSnapshot()` | a connection is inside a transaction, or a statement was still running after `timeoutMs` |
 | [`PGLITE_CLOSED`](./troubleshooting.md#pglite_closed) | duplex startup / recovery (surfaces via connection or query rejection) | the PGlite instance was closed |
 | [`PGLITE_NOT_READY`](./troubleshooting.md#pglite_not_ready) | duplex startup / recovery (surfaces via connection or query rejection) | PGlite failed to become ready (includes the readiness timeout) |
 | [`MIGRATIONS_UNAVAILABLE`](./troubleshooting.md#migrations_unavailable) | `pushMigrations()` | no usable migrations source: no `sql`, no `migration.sql` files, no loadable `prisma.config.ts` |

@@ -4,11 +4,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import pg from 'pg';
+import Cursor from 'pg-cursor';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockPGlite } from '../__tests__/mocks.ts';
 import { setupPGlite } from '../__tests__/pglite.ts';
 import { PgBridgeError } from '../errors.ts';
+import { PGliteBridge } from '../pglite-bridge/index.ts';
+import { SessionLock } from '../utils/session-lock.ts';
 import { PGliteServer, type PGliteServerOptions } from './index.ts';
 
 // One shared PGlite for the ~19 tests that only need a caller-supplied instance
@@ -588,6 +591,296 @@ describe('PGliteServer', () => {
     ]);
     await client.end().catch(() => {});
     expect(server.pglite.closed).toBe(true);
+  });
+
+  describe('PGliteServer snapshot surface', () => {
+    // Snapshot state lives in the shared PGlite (`_pglite_snapshot` schema);
+    // the outer afterEach drops only public tables, so each test queues the
+    // schema drop FIRST — cleanups pop LIFO, so it runs after the server and
+    // client are gone.
+    const startSnapshotServer = async (): Promise<{ server: PGliteServer; client: pg.Client }> => {
+      cleanups.push(async () => {
+        await sharedDb.exec('DROP SCHEMA IF EXISTS "_pglite_snapshot" CASCADE');
+      });
+      const { server, connectionString } = await startServer({ pglite: sharedDb });
+      const client = new pg.Client(connectionString);
+      // close()-during-wait destroys the socket under a live client; keep pg's
+      // 'error' event from crashing the worker.
+      client.on('error', () => {});
+      await client.connect();
+      cleanups.push(async () => {
+        await client.end().catch(() => {});
+      });
+      return { server, client };
+    };
+
+    const countRows = async (client: pg.Client): Promise<number> => {
+      const { rows } = await client.query<{ n: string }>('SELECT count(*)::text AS n FROM t');
+      return Number(rows[0]?.n);
+    };
+
+    const caught = async (p: Promise<unknown>): Promise<PgBridgeError> => {
+      const error = await p.then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(PgBridgeError);
+      return error as PgBridgeError;
+    };
+
+    // `pg_sleep` cannot model "a statement is running": PGlite executes each
+    // statement synchronously on the JS thread, so no test code — and no
+    // resetDb — can run WHILE one executes (a 50ms timer fires only after a
+    // pg_sleep(0.3) returns). A suspended portal — pg-cursor after a partial
+    // read, before close() — is the in-flight state where the duplex holds
+    // the session (until the terminating Sync) while JS keeps running.
+    const openCursor = async (client: pg.Client): Promise<Cursor<{ i: number }>> => {
+      const cursor = client.query(
+        new Cursor<{ i: number }>('SELECT i FROM generate_series(1, 100) g(i)'),
+      );
+      const page = await cursor.read(10);
+      expect(page).toHaveLength(10);
+      return cursor;
+    };
+
+    it('idle round trip: snapshotDb / resetDb restore, resetSnapshot / resetDb truncate', async () => {
+      const { server, client } = await startSnapshotServer();
+      await client.query('CREATE TABLE t (id serial PRIMARY KEY, v text)');
+      await client.query(`INSERT INTO t (v) VALUES ('seed')`);
+
+      await server.snapshotDb();
+      await client.query(`INSERT INTO t (v) VALUES ('a'), ('b')`);
+      expect(await countRows(client)).toBe(3);
+
+      await server.resetDb();
+      expect(await countRows(client)).toBe(1);
+
+      await server.resetSnapshot();
+      await server.resetDb();
+      expect(await countRows(client)).toBe(0);
+    });
+
+    it('rejects SERVER_NOT_IDLE promptly while a connection has an open transaction', async () => {
+      const { server, client } = await startSnapshotServer();
+      await client.query('BEGIN');
+      try {
+        const t0 = Date.now();
+        const error = await caught(server.resetDb());
+        expect(Date.now() - t0).toBeLessThan(200);
+        expect(error.code).toBe('SERVER_NOT_IDLE');
+        expect(error.message).toMatch(/^resetDb\(\) requires no open transaction/);
+        expect(error.message).toMatch(/got 1\./);
+      } finally {
+        await client.query('ROLLBACK');
+      }
+    });
+
+    it('waits for an in-flight statement (suspended portal) before resetting', async () => {
+      const { server, client } = await startSnapshotServer();
+      await client.query('CREATE TABLE t (id int)');
+      await client.query('INSERT INTO t VALUES (1)');
+
+      const cursor = await openCursor(client);
+      let resetSettled = false;
+      const reset = server.resetDb().finally(() => {
+        resetSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      // Still queued behind the held session.
+      expect(resetSettled).toBe(false);
+
+      await cursor.close();
+      await reset;
+      expect(resetSettled).toBe(true);
+      expect(await countRows(client)).toBe(0);
+    });
+
+    it('times out with SERVER_NOT_IDLE and leaves no stale waiter behind', async () => {
+      const { server, client } = await startSnapshotServer();
+      const cursor = await openCursor(client);
+      const cancelSpy = vi.spyOn(SessionLock.prototype, 'cancel');
+
+      const t0 = Date.now();
+      const error = await caught(server.resetDb({ timeoutMs: 50 }));
+      expect(Date.now() - t0).toBeLessThan(1000);
+      expect(error.code).toBe('SERVER_NOT_IDLE');
+      expect(error.message).toMatch(/^resetDb\(\) timed out after 50ms/);
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+
+      // Releasing the session must not hand it to the cancelled waiter: a
+      // stale grant would wedge every later statement on this connection.
+      await cursor.close();
+      const { rows } = await client.query<{ one: number }>('SELECT 1::int AS one');
+      expect(rows).toEqual([{ one: 1 }]);
+      await expect(server.resetDb()).resolves.toBeUndefined();
+    });
+
+    it('does not cancel a hold that was granted before the expiry timer fired', async () => {
+      const { server, client } = await startSnapshotServer();
+      await client.query('CREATE TABLE t (id int)');
+      const cancelSpy = vi.spyOn(SessionLock.prototype, 'cancel');
+
+      // Fake timers pin the ordering: an idle server grants synchronously,
+      // `granted` flips on the next microtask, and `#withSession` reaches its
+      // clearTimeout one microtask later. Firing the expiry timer between the
+      // two is only possible by hand — with real timers the clearTimeout
+      // always wins, so the guard is unreachable there.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const reset = server.resetDb({ timeoutMs: 0 });
+        await Promise.resolve();
+        vi.advanceTimersByTime(1);
+        await reset;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(cancelSpy).not.toHaveBeenCalled();
+
+      const { rows } = await client.query<{ one: number }>('SELECT 1::int AS one');
+      expect(rows).toEqual([{ one: 1 }]);
+    });
+
+    it('resolves with timeoutMs: 0 on an idle server (grant beats the timer)', async () => {
+      const { server, client } = await startSnapshotServer();
+      const cancelSpy = vi.spyOn(SessionLock.prototype, 'cancel');
+
+      await expect(server.resetDb({ timeoutMs: 0 })).resolves.toBeUndefined();
+      expect(cancelSpy).not.toHaveBeenCalled();
+
+      const { rows } = await client.query<{ one: number }>('SELECT 1::int AS one');
+      expect(rows).toEqual([{ one: 1 }]);
+    });
+
+    it.each([
+      {
+        state: 'application_name',
+        setup: `SET application_name = 'e2e'`,
+        probe: `SELECT current_setting('application_name') AS v`,
+        expected: 'e2e',
+        cleanup: 'RESET application_name',
+      },
+      {
+        state: 'LISTEN registration',
+        setup: 'LISTEN chan',
+        probe: `SELECT string_agg(c, ',') AS v FROM pg_listening_channels() AS c`,
+        expected: 'chan',
+        cleanup: 'UNLISTEN *',
+      },
+      {
+        state: 'temp table',
+        setup: 'CREATE TEMP TABLE tmp_e2e (x int)',
+        probe: 'SELECT count(*)::text AS v FROM tmp_e2e',
+        expected: '0',
+        cleanup: 'DROP TABLE tmp_e2e',
+      },
+      {
+        state: 'advisory lock',
+        setup: 'SELECT pg_advisory_lock(42)',
+        probe: `SELECT count(*)::text AS v FROM pg_locks WHERE locktype = 'advisory' AND objid = 42`,
+        expected: '1',
+        cleanup: 'SELECT pg_advisory_unlock_all()',
+      },
+      {
+        state: 'session_replication_role',
+        setup: 'SET session_replication_role = origin',
+        probe: `SELECT current_setting('session_replication_role') AS v`,
+        expected: 'origin',
+        cleanup: 'RESET session_replication_role',
+      },
+    ])(
+      '$state survives server.resetDb() on the same connection',
+      async ({ setup, probe, expected, cleanup }) => {
+        const { server, client } = await startSnapshotServer();
+        // A user table forces the truncate transaction (with its SET LOCAL
+        // inside) — the path that could leak into the session.
+        await client.query('CREATE TABLE t (id int)');
+        await client.query(setup);
+        try {
+          await server.resetDb();
+
+          const { rows } = await client.query<{ v: string }>(probe);
+          expect(rows[0]?.v).toBe(expected);
+        } finally {
+          await client.query(cleanup);
+        }
+      },
+    );
+
+    it('shares snapshot state with a PGliteBridge over the same PGlite, both ways', async () => {
+      const { server, client } = await startSnapshotServer();
+      const bridge = new PGliteBridge({ pglite: sharedDb });
+      try {
+        await client.query('CREATE TABLE t (id serial PRIMARY KEY, v text)');
+        await client.query(`INSERT INTO t (v) VALUES ('seed')`);
+
+        // bridge.snapshotDb → server.resetDb restores.
+        await bridge.snapshotDb();
+        await client.query(`INSERT INTO t (v) VALUES ('x')`);
+        await server.resetDb();
+        expect(await countRows(client)).toBe(1);
+
+        // server.snapshotDb → bridge.resetDb restores.
+        await client.query(`INSERT INTO t (v) VALUES ('y'), ('z')`);
+        await server.snapshotDb();
+        await client.query(`INSERT INTO t (v) VALUES ('w')`);
+        await bridge.resetDb();
+        expect(await countRows(client)).toBe(3);
+
+        // bridge.resetSnapshot → server.resetDb truncates.
+        await bridge.resetSnapshot();
+        await server.resetDb();
+        expect(await countRows(client)).toBe(0);
+      } finally {
+        await bridge.close();
+      }
+      // Caller-owned PGlite stays open.
+      expect(sharedDb.closed).toBe(false);
+    });
+
+    it('close() rejects a resetDb still waiting for the session with SERVER_CLOSED', async () => {
+      const { server, client } = await startSnapshotServer();
+      // The cursor is deliberately abandoned: close() destroys the socket
+      // under the suspended portal, and pg-cursor's close() never gets its
+      // callback on a dead connection. The cleanup's client.end() tears it down.
+      await openCursor(client);
+
+      const pending = server.resetDb();
+      const closed = server.close();
+      const error = await caught(pending);
+      expect(error.code).toBe('SERVER_CLOSED');
+      expect(error.message).toMatch(/closed while waiting for the session/);
+      await closed;
+
+      // On a closed server the rejection is immediate.
+      const t0 = Date.now();
+      const again = await caught(server.resetDb());
+      expect(again.code).toBe('SERVER_CLOSED');
+      expect(again.message).toMatch(/^resetDb\(\) was called on a closed PGliteServer\./);
+      expect(Date.now() - t0).toBeLessThan(50);
+    });
+
+    it('snapshotDb rejects SERVER_PGLITE_CLOSED when the caller-supplied PGlite is closed', async () => {
+      const server = new PGliteServer({ pglite: createMockPGlite({ closed: true }) });
+
+      const error = await caught(server.snapshotDb());
+      expect(error.code).toBe('SERVER_PGLITE_CLOSED');
+      expect(error.message).toMatch(
+        /^snapshotDb\(\) requires an open PGlite instance; got a closed one\./,
+      );
+    });
+
+    it('close() lets an in-flight snapshotDb finish before shutting the owned PGlite down', async () => {
+      const server = new PGliteServer();
+      cleanups.push(() => server.close());
+      await server.listen();
+      await server.pglite.exec('CREATE TABLE t (id int); INSERT INTO t VALUES (1)');
+
+      const snapshot = server.snapshotDb();
+      const closed = server.close();
+      await expect(snapshot).resolves.toBeUndefined();
+      await expect(closed).resolves.toBeUndefined();
+      expect(server.pglite.closed).toBe(true);
+    });
   });
 
   describe('lifecycle idempotency', () => {

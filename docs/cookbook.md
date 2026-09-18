@@ -509,7 +509,7 @@ stack connects to it like to any Postgres:
 // tests/app.e2e.test.ts
 import { type ChildProcess, spawn } from 'node:child_process';
 import { PGliteServer, pushMigrations } from 'prisma-pglite-bridge';
-import { afterAll, beforeAll, expect, test } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, test } from 'vitest';
 
 const server = new PGliteServer(); // owns an in-memory PGlite
 let app: ChildProcess;
@@ -517,7 +517,8 @@ let app: ChildProcess;
 beforeAll(async () => {
   const databaseUrl = await server.listen(); // postgres://postgres@127.0.0.1:<port>/postgres
   await pushMigrations(server.pglite, { migrationsPath: './prisma/migrations' });
-  // seed here if needed: await server.pglite.exec('INSERT INTO ...')
+  await server.pglite.exec(`INSERT INTO "User" (email, name) VALUES ('ada@example.com', 'Ada')`);
+  await server.snapshotDb(); // resetDb() restores to this seeded state
 
   app = spawn(process.execPath, ['--import', 'tsx', 'src/server.ts'], {
     env: { ...process.env, DATABASE_URL: databaseUrl, PORT: '3999' },
@@ -532,6 +533,8 @@ beforeAll(async () => {
     app.once('exit', (code) => reject(new Error(`app exited early (${code}): ${out}`)));
   });
 }, 30_000);
+
+beforeEach(() => server.resetDb());
 
 afterAll(async () => {
   if (app.exitCode === null) {
@@ -551,7 +554,7 @@ test('POST /users then GET /users', async () => {
   expect(created.status).toBe(201);
 
   const users = await (await fetch('http://127.0.0.1:3999/users')).json();
-  expect(users).toHaveLength(1);
+  expect(users).toHaveLength(2); // Ada from the seed + Grace
 });
 ```
 
@@ -563,25 +566,39 @@ does not race the DDL.
 
 What this setup does and does not give you:
 
-- **Seed and reset.** `PGliteServer` exposes `server.pglite`, not the
-  bridge's `resetDb` / `snapshotDb`. For per-test resets, build a
-  `new PGliteBridge({ pglite: server.pglite })` in the test process
-  and call its `snapshotDb()` / `resetDb()` — but only while the app
-  is idle. The bridge's idle check sees its own pool, not the app's
-  connections, so a reset during an in-flight request would truncate
-  under it.
+- **A server reset restores data, not connection state.** `SET`s,
+  `LISTEN`s, temp tables, and advisory locks on the app's connections
+  survive `server.resetDb()` — use a fresh connection (or restart the
+  app) when a test depends on session state.
+- **Seed and reset go through the server.** In `beforeAll`, after
+  `pushMigrations`: seed via `server.pglite.exec(...)` — or build a
+  `new PGliteBridge({ pglite: server.pglite })`, seed through a Prisma
+  client on it, and close it *before* the next step — then
+  `await server.snapshotDb()`. In `beforeEach` (or between tests),
+  `await server.resetDb()`. Both wait for the app's running statement
+  to finish and throw `SERVER_NOT_IDLE` when a connection is inside a
+  transaction or still busy after `timeoutMs` (default 5000), so call
+  them between requests, never during one. The server's lock covers
+  only its own connections: anything else that reaches `server.pglite`
+  — a direct `exec`, a companion bridge or pool — must be idle (or
+  closed) when you call them. See
+  [Snapshot and reset](./api.md#snapshot-and-reset).
 - **One session.** PGlite is single-user: the app's connections and
   any `psql` you attach all serialize through the server's
-  `SessionLock` (a bridge over `server.pglite` has its own lock, hence
-  the idle rule above). Parallel test workers hitting one server run
-  one query at a time; give each worker its own `PGliteServer` + app
-  pair (and its own port) if that becomes the bottleneck.
+  `SessionLock`. Parallel test workers hitting one server run one
+  query at a time; give each worker its own `PGliteServer` + app pair
+  (and its own port) if that becomes the bottleneck.
 - **Playwright.** Start the server in
   [`globalSetup`](https://playwright.dev/docs/test-global-setup-teardown),
   apply the schema, and export the URL as `process.env.DATABASE_URL`
   before the `webServer` command starts; close the server in
   `globalTeardown`. The `webServer` entry inherits the environment, so
-  the app boots against the bridge with no config change.
+  the app boots against the bridge with no config change. The server
+  object lives in the process that started it, so `server.resetDb()`
+  has to run there: in `globalSetup`-owned code, or behind a test-only
+  HTTP route served from that process which the specs hit between
+  tests — spec files run in Playwright's worker processes and cannot
+  reach the object directly.
 - **No auth, loopback only.** The server accepts any user, no
   password, and rejects SSL — see [Security](./server.md#security).
 

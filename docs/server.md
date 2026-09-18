@@ -8,7 +8,11 @@ The bridge already pipes Prisma's queries through PGlite in-process
 without a network hop — `PGliteServer` is for the cases where
 you need an actual `host:port` (or socket path): driving the Prisma
 CLI's shadow database, attaching a SQL GUI to inspect test state,
-or running tools that hard-require a wire-protocol endpoint.
+or running tools that hard-require a wire-protocol endpoint. For
+tests that drive an app in another process, the server also carries
+`resetDb()` / `snapshotDb()` — see
+[Snapshot and reset](./api.md#snapshot-and-reset) and the
+[end-to-end recipe](./cookbook.md#end-to-end-run-your-app-against-the-bridge).
 
 ## Contents
 

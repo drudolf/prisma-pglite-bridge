@@ -39,6 +39,7 @@ import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 
 import { PGliteDuplex } from '../duplex';
 import { PgBridgeError } from '../errors.ts';
+import { SnapshotManager } from '../pglite-bridge/snapshot-manager.ts';
 import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SessionLock } from '../utils/session-lock.ts';
 
@@ -98,6 +99,26 @@ export interface PGliteServerOptions {
 
 type BridgedSocket = net.Socket & { duplex?: PGliteDuplex };
 
+/** Options for {@link PGliteServer.resetDb}, {@link PGliteServer.snapshotDb}, and {@link PGliteServer.resetSnapshot}. */
+export interface ServerSessionOptions {
+  /**
+   * Upper bound on waiting for a running statement to finish, in
+   * milliseconds. Default 5000. `0` (and any negative value, which Node
+   * clamps to `0`) means "do not wait": the call throws `SERVER_NOT_IDLE`
+   * unless the session is free right now.
+   */
+  timeoutMs?: number;
+}
+
+const DEFAULT_SESSION_TIMEOUT_MS = 5_000;
+
+const notIdle = (method: string, detail: string): PgBridgeError =>
+  new PgBridgeError('SERVER_NOT_IDLE', `${method}() ${detail}`);
+
+const openTransactionsDetail = (open: number): string =>
+  `requires no open transaction on any connection; got ${open}. ` +
+  'Finish the request (COMMIT or ROLLBACK) before calling.';
+
 export class PGliteServer {
   /**
    * The PGlite instance this server fronts. Created internally when no
@@ -113,6 +134,12 @@ export class PGliteServer {
   readonly #sessionLock = new SessionLock();
   readonly #sockets = new Set<BridgedSocket>();
   readonly #ownsPglite: boolean;
+  readonly #snapshot: SnapshotManager;
+  /** Lock ids of `resetDb`/`snapshotDb`/`resetSnapshot` calls still waiting
+   *  for the session; `close()` cancels them. */
+  readonly #sessionWaiters = new Set<symbol>();
+  /** Snapshot operations that hold the session; `close()` drains them. */
+  readonly #sessionOps = new Set<Promise<unknown>>();
 
   /** In-flight or completed bind; memoizes repeat `listen()` calls and lets
    *  `close()` wait out a still-binding listener. Cleared on bind failure so
@@ -125,6 +152,7 @@ export class PGliteServer {
 
     this.#ownsPglite = !pglite;
     this.pglite = pglite ?? new PGlite();
+    this.#snapshot = new SnapshotManager(this.pglite);
     this.#options = {
       ...rest,
       host: rest.host || '127.0.0.1',
@@ -235,6 +263,15 @@ export class PGliteServer {
     // Wait out an in-flight bind — node silently drops a close() issued
     // mid-bind, which would leak the listener and leave listen() unsettled.
     await this.#listening?.catch(() => {});
+    // Queued snapshot operations never get the session; one that holds it
+    // runs to completion before the PGlite goes away.
+    for (const id of this.#sessionWaiters) {
+      this.#sessionLock.cancel(
+        id,
+        new PgBridgeError('SERVER_CLOSED', 'PGliteServer closed while waiting for the session.'),
+      );
+    }
+    await Promise.allSettled(this.#sessionOps);
     // Stop accepting BEFORE destroying sockets: a connection accepted
     // between the two would escape the sweep. server.close() only settles
     // once all live sockets are gone, so it is awaited after the sweep.
@@ -253,6 +290,122 @@ export class PGliteServer {
       await this.pglite.close();
     }
   };
+
+  /**
+   * Restore every user table to the last {@link snapshotDb} state — or
+   * truncate to empty without one — after waiting for the shared session to
+   * go idle. Fails fast with `SERVER_NOT_IDLE` while any connection is inside
+   * a transaction, and after `timeoutMs` (default 5000) if a statement is
+   * still running. Sequences restart (`RESTART IDENTITY`).
+   *
+   * Connection state is **not** reset: the session belongs to the connected
+   * app, so its `SET`s, `LISTEN`s, temp tables, and advisory locks survive
+   * (unlike `PGliteBridge.resetDb`). Use a fresh connection when a test
+   * depends on session state.
+   *
+   * Hard precondition: anything that reaches `server.pglite` outside this
+   * server — a direct `pglite.exec`/`query`, a companion `PGliteBridge` or
+   * `PgBridgePool` over it — must be idle. The server's lock cannot see them.
+   *
+   * @throws {PgBridgeError} `SERVER_NOT_IDLE`, `SERVER_CLOSED`,
+   *   `SERVER_PGLITE_CLOSED`, `SNAPSHOT_INVALID` (schema changed since the
+   *   snapshot).
+   */
+  resetDb = (options?: ServerSessionOptions): Promise<void> =>
+    this.#withSession('resetDb', options, () => this.#snapshot.resetDb({ scrubSession: false }));
+
+  /**
+   * Capture every user table and sequence value so later {@link resetDb}
+   * calls restore to it. Same idle rules and precondition as `resetDb`. A
+   * snapshot taken through a `PGliteBridge` over the same PGlite is visible
+   * here, and vice versa — the state lives in the database.
+   */
+  snapshotDb = (options?: ServerSessionOptions): Promise<void> =>
+    this.#withSession('snapshotDb', options, () => this.#snapshot.snapshotDb());
+
+  /** Drop the snapshot so later {@link resetDb} calls truncate to empty. Same idle rules as `resetDb`. */
+  resetSnapshot = (options?: ServerSessionOptions): Promise<void> =>
+    this.#withSession('resetSnapshot', options, () => this.#snapshot.resetSnapshot());
+
+  #openTransactions(): number {
+    let open = 0;
+    for (const { duplex } of this.#sockets) if (duplex?.inTransaction) open += 1;
+    return open;
+  }
+
+  /**
+   * Run a snapshot operation as the session owner: fail fast on an open
+   * transaction (it would hold the lock until COMMIT), then queue behind any
+   * in-flight statement — admission is lock-first on every duplex path — with
+   * a bounded wait, run, release. Only this method releases the hold; a
+   * duplex's idle-ReadyForQuery release matches its own id, never ours.
+   */
+  async #withSession<T>(
+    method: string,
+    options: ServerSessionOptions | undefined,
+    op: () => Promise<T>,
+  ): Promise<T> {
+    const timeoutMs = options?.timeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
+    if (this.#closing) {
+      throw new PgBridgeError('SERVER_CLOSED', `${method}() was called on a closed PGliteServer.`);
+    }
+    if (this.pglite.closed) {
+      throw new PgBridgeError(
+        'SERVER_PGLITE_CLOSED',
+        `${method}() requires an open PGlite instance; got a closed one.`,
+      );
+    }
+    const open = this.#openTransactions();
+    if (open > 0) throw notIdle(method, openTransactionsDetail(open));
+
+    const id = Symbol(`PGliteServer.${method}`);
+    this.#sessionWaiters.add(id);
+    let granted = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const acquired = this.#sessionLock.acquire(id).then(() => {
+      granted = true;
+    });
+    const expiry = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        // The grant can land in the same tick the timer fires; cancelling an
+        // owner would release a hold we are about to use.
+        if (granted) return;
+        const error = notIdle(
+          method,
+          `timed out after ${timeoutMs}ms waiting for the session; a connection is still busy.`,
+        );
+        this.#sessionLock.cancel(id, error);
+        reject(error);
+      }, timeoutMs);
+      timer.unref();
+    });
+    try {
+      await Promise.race([acquired, expiry]);
+    } finally {
+      clearTimeout(timer);
+      this.#sessionWaiters.delete(id);
+    }
+
+    const run = (async () => {
+      try {
+        // A transaction holds the lock from BEGIN to COMMIT, so none can be
+        // open now that we own it. Kept as an invariant check, not a
+        // reachable path.
+        const stillOpen = this.#openTransactions();
+        /* v8 ignore next */
+        if (stillOpen > 0) throw notIdle(method, openTransactionsDetail(stillOpen));
+        return await op();
+      } finally {
+        this.#sessionLock.release(id);
+      }
+    })();
+    this.#sessionOps.add(run);
+    try {
+      return await run;
+    } finally {
+      this.#sessionOps.delete(run);
+    }
+  }
 
   #initDuplex(socket: BridgedSocket): PGliteDuplex {
     socket.duplex = new PGliteDuplex(this.pglite, {

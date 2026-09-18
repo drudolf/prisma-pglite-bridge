@@ -18,7 +18,7 @@
 export { PGliteDuplex, type PGliteDuplexOptions } from './duplex';
 export { PgBridgeError, type PgBridgeErrorCode } from './errors.ts';
 export { PGliteBridge, type PGliteBridgeOptions } from './pglite-bridge';
-export type { PGliteServerOptions } from './pglite-server';
+export type { PGliteServerOptions, ServerSessionOptions } from './pglite-server';
 export { PGliteServer } from './pglite-server';
 export { PgBridgePool, type PgBridgePoolOptions } from './pool';
 export type {

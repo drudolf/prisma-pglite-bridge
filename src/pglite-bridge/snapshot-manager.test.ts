@@ -124,26 +124,135 @@ describe('snapshot manager', () => {
     await pglite.exec('DROP TABLE users');
   });
 
-  it('skips truncation work and resets session state without deallocating statements', async () => {
+  it('skips the transaction and resets session state without deallocating statements when no user table exists', async () => {
     const pglite = createMockPGlite();
 
     const snapshot = new SnapshotManager(pglite);
 
     await snapshot.resetDb();
 
-    const executed = vi
-      .mocked(pglite.exec)
-      .mock.calls.map((call) => String(call[0]))
-      .join('\n');
+    const execCalls = vi.mocked(pglite.exec).mock.calls.map((call) => String(call[0]));
+    // No user table → nothing to truncate → no transaction at all; the
+    // session scrub is the only statement issued.
+    expect(execCalls).toHaveLength(1);
+    const executed = execCalls[0] ?? '';
+    expect(executed).not.toContain('BEGIN');
+    expect(executed).not.toContain('COMMIT');
     expect(executed).not.toContain('TRUNCATE');
     // Granular equivalent of DISCARD ALL minus DEALLOCATE ALL: session vars
     // reset, temp tables and plans discarded — prepared statements survive.
+    expect(executed).toContain('CLOSE ALL');
+    expect(executed).toContain('SET SESSION AUTHORIZATION DEFAULT');
     expect(executed).toContain('RESET ALL');
-    expect(executed).toContain('DISCARD TEMP');
+    expect(executed).toContain('UNLISTEN *');
+    expect(executed).toContain('pg_advisory_unlock_all()');
     expect(executed).toContain('DISCARD PLANS');
+    expect(executed).toContain('DISCARD SEQUENCES');
+    expect(executed).toContain('DISCARD TEMP');
     expect(executed).not.toContain('DEALLOCATE');
     expect(executed).not.toContain('DISCARD ALL');
-    expect(vi.mocked(pglite.query).mock.calls).toHaveLength(1);
+    // Snapshot-presence probe + user-table listing; no restore plan without
+    // a snapshot schema.
+    const sqls = vi.mocked(pglite.query).mock.calls.map((call) => String(call[0]));
+    expect(sqls).toHaveLength(2);
+    expect(sqls[0]).toContain('to_regnamespace');
+    expect(sqls[1]).toContain('pg_tables');
+  });
+
+  it('resetDb({ scrubSession: false }) leaves the session settings of a real PGlite untouched', async () => {
+    // A user table forces the truncate/restore transaction (with its
+    // SET LOCAL inside); a session-level SET there would leak past COMMIT.
+    await pglite.exec('CREATE TABLE keep_settings_t (id int)');
+    await pglite.exec(`SET application_name = 'keep'; SET session_replication_role = origin`);
+    try {
+      const snapshot = new SnapshotManager(pglite);
+      await snapshot.resetDb({ scrubSession: false });
+
+      const { rows } = await pglite.query<{ app: string; role: string }>(
+        `SELECT current_setting('application_name') AS app,
+                current_setting('session_replication_role') AS role`,
+      );
+      expect(rows).toEqual([{ app: 'keep', role: 'origin' }]);
+    } finally {
+      await pglite.exec('RESET ALL; DROP TABLE keep_settings_t');
+    }
+  });
+
+  it('two managers over one PGlite agree on snapshot presence', async () => {
+    await pglite.exec(
+      `CREATE TABLE shared_mgr_t (id serial PRIMARY KEY, v text);
+       INSERT INTO shared_mgr_t (v) VALUES ('seed')`,
+    );
+    try {
+      const a = new SnapshotManager(pglite);
+      const b = new SnapshotManager(pglite);
+
+      // A's snapshot is visible to B: B restores the seed row.
+      await a.snapshotDb();
+      await pglite.exec(`INSERT INTO shared_mgr_t (v) VALUES ('extra')`);
+      await b.resetDb();
+      const { rows: restored } = await pglite.query<{ v: string }>(
+        'SELECT v FROM shared_mgr_t ORDER BY id',
+      );
+      expect(restored).toEqual([{ v: 'seed' }]);
+
+      // B's resetSnapshot is visible to A: A truncates to empty.
+      await b.resetSnapshot();
+      await a.resetDb();
+      const { rows: truncated } = await pglite.query<{ count: string }>(
+        'SELECT count(*)::text AS count FROM shared_mgr_t',
+      );
+      expect(truncated[0]?.count).toBe('0');
+    } finally {
+      await pglite.exec(
+        'DROP SCHEMA IF EXISTS "_pglite_snapshot" CASCADE; DROP TABLE shared_mgr_t',
+      );
+    }
+  });
+
+  it('excludes _prisma% tables by escaped LIKE — xprisma_data is a user table', async () => {
+    // `_` is a LIKE wildcard: an unescaped '_prisma%' also matches
+    // 'xprisma_data'. The escaped '\_prisma%' pattern must exclude only a
+    // literal leading underscore.
+    await pglite.exec(
+      `CREATE TABLE _prisma_migrations (id int);
+       CREATE TABLE xprisma_data (id int);
+       INSERT INTO _prisma_migrations VALUES (1);
+       INSERT INTO xprisma_data VALUES (1)`,
+    );
+    try {
+      const snapshot = new SnapshotManager(pglite);
+      await snapshot.snapshotDb();
+
+      const { rows: captured } = await pglite.query<{ source_table: string }>(
+        'SELECT source_table FROM "_pglite_snapshot".__tables ORDER BY source_table',
+      );
+      expect(captured).toEqual([{ source_table: 'xprisma_data' }]);
+
+      await pglite.exec(
+        'INSERT INTO _prisma_migrations VALUES (2); INSERT INTO xprisma_data VALUES (2)',
+      );
+      await snapshot.resetDb();
+
+      const counts = async (): Promise<{ migrations: string; data: string }> => {
+        const { rows } = await pglite.query<{ migrations: string; data: string }>(
+          `SELECT (SELECT count(*)::text FROM _prisma_migrations) AS migrations,
+                  (SELECT count(*)::text FROM xprisma_data) AS data`,
+        );
+        return rows[0] ?? { migrations: '?', data: '?' };
+      };
+      // _prisma_migrations untouched (2 rows); xprisma_data restored to the seed.
+      expect(await counts()).toEqual({ migrations: '2', data: '1' });
+
+      await snapshot.resetSnapshot();
+      await snapshot.resetDb();
+      // Still untouched; xprisma_data truncated.
+      expect(await counts()).toEqual({ migrations: '2', data: '0' });
+    } finally {
+      await pglite.exec(
+        'DROP SCHEMA IF EXISTS "_pglite_snapshot" CASCADE; DROP TABLE _prisma_migrations, xprisma_data',
+      );
+    }
   });
 
   it('keeps named prepared statements usable across resetDb', async () => {
@@ -687,12 +796,78 @@ describe('SnapshotManager mutation survivors', () => {
     }
   });
 
-  // Kills L155 `this.#hasSnapshot = false` -> `= true` in #resetSnapshot.
-  // On a real DB the mutant self-heals (the schema is dropped, so the next
-  // resetDb re-probes and clears the flag), masking it. A mock keeps the
-  // schema "present" so the flag survives: with the mutant, resetDb runs the
-  // self-heal probe and the restore-plan query; clean source runs neither.
-  it('clears #hasSnapshot in resetSnapshot so the next resetDb skips the restore path', async () => {
+  // Snapshot presence is probed on EVERY resetDb (`to_regnamespace`) — there
+  // is no cached flag. Kills: probe body -> `{}` / `rows[0]?.exists === true`
+  // -> `!== true` / `?.` -> `.` / the `hasSnapshot ? #restorePlan() : []`
+  // ternary swaps. The mock flips the probe answer between calls; the restore
+  // path (`__tables` plan + `__sequences` read) must follow the live answer.
+  it('probes the snapshot schema on every resetDb: absent then present', async () => {
+    const probeAnswers = [false, true];
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
+      if (sql.includes('to_regnamespace')) return { rows: [{ exists: probeAnswers.shift() }] };
+      return { rows: [] };
+    });
+    const pglite = createMockPGlite({ query });
+    const snapshot = new SnapshotManager(pglite);
+
+    await snapshot.resetDb();
+    const first = query.mock.calls.map((call) => String(call[0]));
+    expect(first.filter((sql) => sql.includes('to_regnamespace'))).toHaveLength(1);
+    expect(first.some((sql) => sql.includes('__tables'))).toBe(false);
+    expect(first.some((sql) => sql.includes('__sequences'))).toBe(false);
+
+    query.mockClear();
+    await snapshot.resetDb();
+    const second = query.mock.calls.map((call) => String(call[0]));
+    expect(second.filter((sql) => sql.includes('to_regnamespace'))).toHaveLength(1);
+    expect(second.some((sql) => sql.includes('__tables'))).toBe(true);
+    expect(second.some((sql) => sql.includes('__sequences'))).toBe(true);
+    expect(probeAnswers).toHaveLength(0);
+  });
+
+  it('probes the snapshot schema on every resetDb: present then dropped externally', async () => {
+    const probeAnswers = [true, false];
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
+      if (sql.includes('to_regnamespace')) return { rows: [{ exists: probeAnswers.shift() }] };
+      return { rows: [] };
+    });
+    const pglite = createMockPGlite({ query });
+    const snapshot = new SnapshotManager(pglite);
+
+    await snapshot.resetDb();
+    const first = query.mock.calls.map((call) => String(call[0]));
+    expect(first.some((sql) => sql.includes('__tables'))).toBe(true);
+    expect(first.some((sql) => sql.includes('__sequences'))).toBe(true);
+
+    // An external `DROP SCHEMA "_pglite_snapshot"` between the two calls.
+    query.mockClear();
+    await snapshot.resetDb();
+    const second = query.mock.calls.map((call) => String(call[0]));
+    expect(second.filter((sql) => sql.includes('to_regnamespace'))).toHaveLength(1);
+    expect(second.some((sql) => sql.includes('__tables'))).toBe(false);
+    expect(second.some((sql) => sql.includes('__sequences'))).toBe(false);
+    expect(probeAnswers).toHaveLength(0);
+  });
+
+  it('treats an empty probe result as "no snapshot"', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
+      return { rows: [] };
+    });
+    const pglite = createMockPGlite({ query });
+    const snapshot = new SnapshotManager(pglite);
+
+    await expect(snapshot.resetDb()).resolves.toBeUndefined();
+    const sqls = query.mock.calls.map((call) => String(call[0]));
+    expect(sqls.some((sql) => sql.includes('__tables'))).toBe(false);
+  });
+
+  it('resetSnapshot does not skip the probe on the next resetDb', async () => {
+    // Presence lives in the database, not in the manager: after
+    // resetSnapshot the next resetDb still asks the catalog (and follows its
+    // answer — the mock keeps the schema "present").
     const query = vi.fn(async (sql: string) => {
       if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
       if (sql.includes('to_regnamespace')) return { rows: [{ exists: true }] };
@@ -706,8 +881,8 @@ describe('SnapshotManager mutation survivors', () => {
     await snapshot.resetDb();
 
     const sqls = query.mock.calls.map((call) => String(call[0]));
-    expect(sqls.some((sql) => sql.includes('to_regnamespace'))).toBe(false);
-    expect(sqls.some((sql) => sql.includes('__tables'))).toBe(false);
+    expect(sqls.filter((sql) => sql.includes('to_regnamespace'))).toHaveLength(1);
+    expect(sqls.some((sql) => sql.includes('__tables'))).toBe(true);
   });
 
   // Kills L299 `rows.map((row) => row.qualified).join(', ')` -> `.join('')`.
@@ -794,13 +969,61 @@ describe('SnapshotManager mutation survivors', () => {
     }
   });
 
-  // Kills the finally-block survivors:
-  //   L321 finally body -> `{}`
-  //   L322 `SET session_replication_role = DEFAULT` -> `''`
-  // On the success path the trailing `RESET ALL` masks the reset; on the error
-  // path (a failing TRUNCATE) resetDb rejects before `RESET ALL`, so the
-  // finally is the only thing that restores the role. The mutants skip it.
-  it('restores the replication role via the finally even when the truncate fails', async () => {
+  // The restore runs as ONE transaction with a transaction-local
+  // replication-role bypass. Exact exec sequence pins: `BEGIN` -> `''`,
+  // `SET LOCAL ...` -> `''`, `COMMIT` -> `''`, the setval/insert loops ->
+  // `{}`, `if (hasSnapshot)` -> `if (false)`, and any reintroduction of a
+  // session-level `SET session_replication_role = DEFAULT`.
+  it('restores inside BEGIN / SET LOCAL / TRUNCATE / … / COMMIT and never resets the role at session level', async () => {
+    const exec = vi.fn(async (_sql: string) => {});
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('to_regnamespace')) return { rows: [{ exists: true }] };
+      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
+      if (sql.includes('__tables')) {
+        return {
+          rows: [
+            {
+              snap_name_ident: '"_snap_0"',
+              qualified: 'public.t',
+              table_exists: true,
+              cols: 'id, v',
+              needs_overriding: false,
+              missing_cols: null,
+            },
+          ],
+        };
+      }
+      if (sql.includes('__sequences')) return { rows: [{ name: "'public.t_id_seq'", value: '7' }] };
+      return { rows: [] };
+    });
+    const pglite = createMockPGlite({ exec, query });
+    const snapshot = new SnapshotManager(pglite);
+
+    await snapshot.resetDb();
+
+    const execCalls = exec.mock.calls.map((call) => String(call[0]));
+    expect(execCalls).toEqual([
+      'BEGIN',
+      'SET LOCAL session_replication_role = replica',
+      'TRUNCATE TABLE public.t RESTART IDENTITY CASCADE',
+      'INSERT INTO public.t (id, v) SELECT id, v FROM "_pglite_snapshot"."_snap_0"',
+      "SELECT setval('public.t_id_seq', 7)",
+      'COMMIT',
+      expect.stringContaining('RESET ALL'),
+    ]);
+    expect(execCalls.some((sql) => sql.includes('session_replication_role = DEFAULT'))).toBe(false);
+    expect(execCalls.some((sql) => /(^|[^L])SET session_replication_role/.test(sql))).toBe(false);
+    // The scrub is the last statement, after COMMIT — never inside the
+    // transaction (DISCARD TEMP cannot run in a transaction block).
+    const scrub = execCalls[execCalls.length - 1] ?? '';
+    expect(scrub).toContain('DISCARD TEMP');
+    expect(scrub).not.toContain('COMMIT');
+    // Sequences are read AFTER the truncate, inside the transaction.
+    const sqls = query.mock.calls.map((call) => String(call[0]));
+    expect(sqls[sqls.length - 1]).toContain('__sequences');
+  });
+
+  it('rolls back and propagates the error when the truncate fails — no COMMIT, no scrub', async () => {
     const boom = new Error('truncate boom');
     const exec = vi.fn(async (sql: string) => {
       if (sql.includes('TRUNCATE')) throw boom;
@@ -812,12 +1035,129 @@ describe('SnapshotManager mutation survivors', () => {
     const pglite = createMockPGlite({ exec, query });
     const snapshot = new SnapshotManager(pglite);
 
-    await expect(snapshot.resetDb()).rejects.toThrow('truncate boom');
+    const error = await snapshot.resetDb().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBe(boom);
 
     const execCalls = exec.mock.calls.map((call) => String(call[0]));
-    expect(execCalls).toContain('SET session_replication_role = replica');
-    expect(execCalls).toContain('SET session_replication_role = DEFAULT');
-    // The throw propagates past the trailing session reset, so it never runs.
-    expect(execCalls.some((sql) => sql.includes('RESET ALL'))).toBe(false);
+    expect(execCalls).toEqual([
+      'BEGIN',
+      'SET LOCAL session_replication_role = replica',
+      'TRUNCATE TABLE public.t RESTART IDENTITY CASCADE',
+      'ROLLBACK',
+    ]);
+  });
+
+  it('rolls back and propagates a failing restore insert', async () => {
+    const boom = new Error('insert boom');
+    const exec = vi.fn(async (sql: string) => {
+      if (sql.startsWith('INSERT')) throw boom;
+    });
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('to_regnamespace')) return { rows: [{ exists: true }] };
+      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
+      if (sql.includes('__tables')) {
+        return {
+          rows: [
+            {
+              snap_name_ident: '"_snap_0"',
+              qualified: 'public.t',
+              table_exists: true,
+              cols: null,
+              needs_overriding: false,
+              missing_cols: null,
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    });
+    const pglite = createMockPGlite({ exec, query });
+    const snapshot = new SnapshotManager(pglite);
+
+    await expect(snapshot.resetDb()).rejects.toThrow('insert boom');
+
+    const execCalls = exec.mock.calls.map((call) => String(call[0]));
+    expect(execCalls.slice(-2)).toEqual([
+      'INSERT INTO public.t SELECT * FROM "_pglite_snapshot"."_snap_0"',
+      'ROLLBACK',
+    ]);
+    expect(execCalls).not.toContain('COMMIT');
+    // The sequence read sits after the inserts, so a failing insert skips it.
+    const sqls = query.mock.calls.map((call) => String(call[0]));
+    expect(sqls.some((sql) => sql.includes('__sequences'))).toBe(false);
+  });
+
+  it('surfaces the original error even when the ROLLBACK itself fails', async () => {
+    const boom = new Error('truncate boom');
+    const rollbackBoom = new Error('rollback boom');
+    const exec = vi.fn(async (sql: string) => {
+      if (sql.includes('TRUNCATE')) throw boom;
+      if (sql === 'ROLLBACK') throw rollbackBoom;
+    });
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
+      return { rows: [] };
+    });
+    const pglite = createMockPGlite({ exec, query });
+    const snapshot = new SnapshotManager(pglite);
+
+    const error = await snapshot.resetDb().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBe(boom);
+    expect(exec.mock.calls.map((call) => String(call[0]))).toContain('ROLLBACK');
+  });
+
+  // Kills `options.scrubSession !== false` -> `=== false` / `true` / `false`
+  // and `if (scrubSession)` -> `if (true)` / `if (false)`.
+  describe('scrubSession', () => {
+    const scrubbedDb = () => {
+      const exec = vi.fn(async (_sql: string) => {});
+      const query = vi.fn(async (sql: string) => {
+        if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
+        return { rows: [] };
+      });
+      return { exec, snapshot: new SnapshotManager(createMockPGlite({ exec, query })) };
+    };
+    const execSql = (exec: ReturnType<typeof scrubbedDb>['exec']): string[] =>
+      exec.mock.calls.map((call) => String(call[0]));
+
+    it('false runs the transaction but none of the scrub statements', async () => {
+      const { exec, snapshot } = scrubbedDb();
+      await snapshot.resetDb({ scrubSession: false });
+
+      const execCalls = execSql(exec);
+      expect(execCalls).toEqual([
+        'BEGIN',
+        'SET LOCAL session_replication_role = replica',
+        'TRUNCATE TABLE public.t RESTART IDENTITY CASCADE',
+        'COMMIT',
+      ]);
+      const joined = execCalls.join('\n');
+      expect(joined).not.toContain('RESET ALL');
+      expect(joined).not.toContain('DISCARD TEMP');
+      expect(joined).not.toContain('CLOSE ALL');
+      expect(joined).not.toContain('UNLISTEN');
+      expect(joined).not.toContain('pg_advisory_unlock_all');
+    });
+
+    it.each([
+      ['omitted', undefined],
+      ['{}', {}],
+      ['{ scrubSession: true }', { scrubSession: true }],
+    ])('%s runs the scrub after COMMIT', async (_label, options) => {
+      const { exec, snapshot } = scrubbedDb();
+      await snapshot.resetDb(options);
+
+      const execCalls = execSql(exec);
+      expect(execCalls).toHaveLength(5);
+      expect(execCalls[3]).toBe('COMMIT');
+      expect(execCalls[4]).toContain('RESET ALL');
+      expect(execCalls[4]).toContain('DISCARD TEMP');
+    });
   });
 });
