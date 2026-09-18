@@ -12,6 +12,7 @@ For the underlying API, see the [API reference](./api.md).
   - [Wiring the bridge into your app](#wiring-the-bridge-into-your-app)
   - [Schema and seed](#schema-and-seed)
   - [On-failure query trail](#on-failure-query-trail)
+  - [End-to-end: run your app against the bridge](#end-to-end-run-your-app-against-the-bridge)
 - [Other ORMs](#other-orms)
   - [Wiring recipes](#wiring-recipes)
   - [Testing with any ORM](#testing-with-any-orm)
@@ -494,6 +495,95 @@ replay or bisection? That is a deliberate non-goal for now, gated on
 measured demand: open an issue on the
 [issue tracker](https://github.com/drudolf/prisma-pglite-bridge/issues)
 and say so.
+
+### End-to-end: run your app against the bridge
+
+The in-process bridge lives in the test process, so a server you spawn
+separately (a built HTTP server, a Next.js dev server, a CLI, the app
+Playwright drives) cannot reach it. For those, serve the same PGlite
+over a socket with [`PGliteServer`](./server.md) and hand the child
+process the URL as `DATABASE_URL` — the app's own `pg` / `PrismaPg`
+stack connects to it like to any Postgres:
+
+```typescript
+// tests/app.e2e.test.ts
+import { type ChildProcess, spawn } from 'node:child_process';
+import { PGliteServer, pushMigrations } from 'prisma-pglite-bridge';
+import { afterAll, beforeAll, expect, test } from 'vitest';
+
+const server = new PGliteServer(); // owns an in-memory PGlite
+let app: ChildProcess;
+
+beforeAll(async () => {
+  const databaseUrl = await server.listen(); // postgres://postgres@127.0.0.1:<port>/postgres
+  await pushMigrations(server.pglite, { migrationsPath: './prisma/migrations' });
+  // seed here if needed: await server.pglite.exec('INSERT INTO ...')
+
+  app = spawn(process.execPath, ['--import', 'tsx', 'src/server.ts'], {
+    env: { ...process.env, DATABASE_URL: databaseUrl, PORT: '3999' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  await new Promise<void>((resolve, reject) => {
+    let out = '';
+    app.stdout?.on('data', (chunk: Buffer) => {
+      out += chunk.toString();
+      if (out.includes('listening')) resolve();
+    });
+    app.once('exit', (code) => reject(new Error(`app exited early (${code}): ${out}`)));
+  });
+}, 30_000);
+
+afterAll(async () => {
+  if (app.exitCode === null) {
+    const exited = new Promise((resolve) => app.once('exit', resolve));
+    app.kill('SIGTERM');
+    await exited;
+  }
+  await server.close(); // also closes the owned PGlite
+});
+
+test('POST /users then GET /users', async () => {
+  const created = await fetch('http://127.0.0.1:3999/users', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'grace@example.com', name: 'Grace' }),
+  });
+  expect(created.status).toBe(201);
+
+  const users = await (await fetch('http://127.0.0.1:3999/users')).json();
+  expect(users).toHaveLength(1);
+});
+```
+
+Order matters only at the start: `listen()` resolves once PGlite is
+ready, and `pushMigrations` may run before or after it — it talks to
+`server.pglite` directly and PGlite executes one statement at a time.
+Spawn the app only after the schema is in place so its first query
+does not race the DDL.
+
+What this setup does and does not give you:
+
+- **Seed and reset.** `PGliteServer` exposes `server.pglite`, not the
+  bridge's `resetDb` / `snapshotDb`. For per-test resets, build a
+  `new PGliteBridge({ pglite: server.pglite })` in the test process
+  and call its `snapshotDb()` / `resetDb()` — but only while the app
+  is idle. The bridge's idle check sees its own pool, not the app's
+  connections, so a reset during an in-flight request would truncate
+  under it.
+- **One session.** PGlite is single-user: the app's connections and
+  any `psql` you attach all serialize through the server's
+  `SessionLock` (a bridge over `server.pglite` has its own lock, hence
+  the idle rule above). Parallel test workers hitting one server run
+  one query at a time; give each worker its own `PGliteServer` + app
+  pair (and its own port) if that becomes the bottleneck.
+- **Playwright.** Start the server in
+  [`globalSetup`](https://playwright.dev/docs/test-global-setup-teardown),
+  apply the schema, and export the URL as `process.env.DATABASE_URL`
+  before the `webServer` command starts; close the server in
+  `globalTeardown`. The `webServer` entry inherits the environment, so
+  the app boots against the bridge with no config change.
+- **No auth, loopback only.** The server accepts any user, no
+  password, and rejects SSL — see [Security](./server.md#security).
 
 ## Other ORMs
 
