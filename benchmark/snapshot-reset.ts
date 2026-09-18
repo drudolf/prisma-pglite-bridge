@@ -45,15 +45,15 @@ for (const tables of tableCounts) {
       ).join('\n'),
     );
     const manager = new SnapshotManager(db);
-    const start = performance.now();
+    const snapshotStart = performance.now();
     await manager.snapshotDb();
-    const snapshotMs = performance.now() - start;
+    const snapshotMs = performance.now() - snapshotStart;
     const samples: number[] = [];
     for (let i = 0; i < warmup + iterations; i++) {
       await db.exec('INSERT INTO bench_0 (value) VALUES (999)');
-      const start = performance.now();
+      const resetStart = performance.now();
       await manager.resetDb();
-      const elapsed = performance.now() - start;
+      const elapsed = performance.now() - resetStart;
       if (i >= warmup) samples.push(elapsed);
       const { rows } = await db.query(
         'SELECT count(*)::int AS n, sum(doubled)::int AS total FROM bench_0',
