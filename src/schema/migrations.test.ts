@@ -331,8 +331,8 @@ describe('pushMigrations', () => {
     );
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe(
-      'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
+    expect((error as Error).message).toMatch(
+      /^Failed to apply schema SQL to in-memory PGlite\. Check your schema or migration files\./,
     );
     const cause = (error as Error).cause;
     expect(cause).toBeInstanceOf(Error);
@@ -423,9 +423,11 @@ describe('getMigrationSQL Tier A site pins — MIGRATIONS_UNAVAILABLE', () => {
       expect(caught).toBeInstanceOf(Error);
       expect((caught as PgBridgeError).code).toBe('MIGRATIONS_UNAVAILABLE');
       expect((caught as PgBridgeError).name).toBe('PgBridgeError');
-      expect((caught as PgBridgeError).message).toBe(
-        `No migration.sql files found in ${migrationsPath}. Run \`prisma migrate dev\` to generate migration files.`,
-      );
+      expect(
+        (caught as PgBridgeError).message.startsWith(
+          `No migration.sql files found in ${migrationsPath}. Run \`prisma migrate dev\` to generate migration files.`,
+        ),
+      ).toBe(true);
     } finally {
       removeTempDir(migrationsPath);
     }
@@ -450,8 +452,8 @@ describe('getMigrationSQL Tier A site pins — MIGRATIONS_UNAVAILABLE', () => {
     expect((caught as PgBridgeError).constructor.name).toBe('PgBridgeError');
     expect((caught as PgBridgeError).code).toBe('MIGRATIONS_UNAVAILABLE');
     expect((caught as PgBridgeError).name).toBe('PgBridgeError');
-    expect((caught as PgBridgeError).message).toBe(
-      'No migration files found and no prisma.config.ts could be loaded. Run `prisma migrate dev` to generate them, or pass pre-generated SQL via the `sql` option.',
+    expect((caught as PgBridgeError).message).toMatch(
+      /^No migration files found and no prisma\.config\.ts could be loaded\. Run `prisma migrate dev` to generate them, or pass pre-generated SQL via the `sql` option\./,
     );
   });
 });
@@ -469,8 +471,8 @@ describe('pushMigrations Tier A site pin — MIGRATIONS_APPLY_FAILED', () => {
     expect(caught).toBeInstanceOf(Error);
     expect((caught as PgBridgeError).code).toBe('MIGRATIONS_APPLY_FAILED');
     expect((caught as PgBridgeError).name).toBe('PgBridgeError');
-    expect((caught as PgBridgeError).message).toBe(
-      'Failed to apply schema SQL to in-memory PGlite. Check your schema or migration files.',
+    expect((caught as PgBridgeError).message).toMatch(
+      /^Failed to apply schema SQL to in-memory PGlite\. Check your schema or migration files\./,
     );
     // { cause } must be populated (the PGlite exec error)
     expect((caught as PgBridgeError).cause).toBeInstanceOf(Error);

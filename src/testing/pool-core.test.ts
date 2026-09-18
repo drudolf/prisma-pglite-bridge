@@ -28,8 +28,9 @@ const labels = async (pool: PgBridgePool, table: string): Promise<string[]> => {
   return rows.map((row) => row.label);
 };
 
-/** The idle-gate message tail shared by resetDb()/snapshotDb() — each method
- *  prefixes its own name. Pinned verbatim: the wording is public contract. */
+/** The idle-gate message body shared by resetDb()/snapshotDb() — each method
+ *  prefixes its own name; PgBridgeError appends the docs pointer after it.
+ *  Pinned verbatim as the message head: the wording is public contract. */
 const IDLE_GATE_TAIL =
   'requires no in-flight or waiting pool checkouts; got 1. ' +
   'Await all pending queries (or release checked-out clients) before calling.';
@@ -100,7 +101,7 @@ describe('createPoolContext — lifecycle order and snapshot reset', () => {
 
     expect(caught).toBeInstanceOf(PgBridgeError);
     expect((caught as PgBridgeError).code).toBe('POOL_NOT_IDLE');
-    expect((caught as PgBridgeError).message).toBe(`resetDb() ${IDLE_GATE_TAIL}`);
+    expect((caught as PgBridgeError).message.startsWith(`resetDb() ${IDLE_GATE_TAIL}`)).toBe(true);
 
     // Released — the gate reopens and the reset succeeds again.
     await ctx.resetDb();
@@ -119,7 +120,9 @@ describe('createPoolContext — lifecycle order and snapshot reset', () => {
 
     expect(caught).toBeInstanceOf(PgBridgeError);
     expect((caught as PgBridgeError).code).toBe('POOL_NOT_IDLE');
-    expect((caught as PgBridgeError).message).toBe(`snapshotDb() ${IDLE_GATE_TAIL}`);
+    expect((caught as PgBridgeError).message.startsWith(`snapshotDb() ${IDLE_GATE_TAIL}`)).toBe(
+      true,
+    );
   });
 
   it('snapshotDb re-captures the current state as the new reset baseline', async () => {

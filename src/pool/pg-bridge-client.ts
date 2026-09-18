@@ -5,7 +5,7 @@ import { PgBridgeError } from '../errors.ts';
 import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import type { SessionLock } from '../utils/session-lock.ts';
 import { createStatementNameGenerator } from '../utils/statement-names.ts';
-import type { BridgeWarningType } from '../warnings.ts';
+import { emitBridgeWarning } from '../warnings.ts';
 import { decodeStatementCacheInvalidation, type StatementCacheInvalidation } from './deallocate.ts';
 import { isObject, isTypesLike, wrapTypesWithFastArrayParsers } from './fast-array-parsers.ts';
 import { FastQuery, type FastQueryField, type FastQueryResult } from './fast-query.ts';
@@ -241,7 +241,13 @@ export class PgBridgeClient extends pg.Client {
 
   constructor(config?: PgBridgeClientConfig) {
     if (!config?.[PgBridgeClient.OptionsKey]) {
-      throw new PgBridgeError('BRIDGE_OPTIONS_REQUIRED', 'PgBridgeClient requires bridge options');
+      throw new PgBridgeError(
+        'BRIDGE_OPTIONS_REQUIRED',
+        'PgBridgeClient requires bridge options. If you did not construct PgBridgeClient ' +
+          'yourself, two copies of the `pg` package are installed and @prisma/adapter-pg is ' +
+          'using a different copy than prisma-pglite-bridge extends. Diagnose with `pnpm why pg` ' +
+          '(or `npm ls pg`); fix by deduplicating pg (one version workspace-wide, e.g. a pnpm override).',
+      );
     }
     const { [PgBridgeClient.OptionsKey]: bridge, ...clientConfig } = config;
 
@@ -389,10 +395,10 @@ export class PgBridgeClient extends pg.Client {
       // connection): the duplex _destroy path already rolls back. And a
       // transaction closed by the in-flight work itself needs no cleanup.
       if (duplex.destroyed || !duplex.inTransaction) return Promise.resolve();
-      process.emitWarning(
+      emitBridgeWarning(
+        'PGliteBridgeAbandonedTransactionWarning',
         'A pool client was released with an open transaction; attempting ROLLBACK. ' +
           'Commit or roll back before release().',
-        { type: 'PGliteBridgeAbandonedTransactionWarning' satisfies BridgeWarningType },
       );
       // super.query, not this.query: re-entering query() from a chain link
       // would chain onto the link's own unsettled tail and deadlock. A bare

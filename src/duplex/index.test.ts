@@ -749,7 +749,7 @@ describe('PGliteDuplex error paths', () => {
 
     const err = await writeAndAwait(duplex, startupBytes());
     expect(err).toBeInstanceOf(Error);
-    expect(err?.message).toBe('PGlite instance closed');
+    expect(err?.message).toMatch(/^PGlite instance closed/);
 
     duplex.destroy();
   });
@@ -765,7 +765,7 @@ describe('PGliteDuplex error paths', () => {
 
     const err = await writeAndAwait(duplex, startupBytes());
     expect(err).toBeInstanceOf(Error);
-    expect(err?.message).toBe('PGlite instance not ready: startup failed');
+    expect(err?.message).toMatch(/^PGlite instance not ready: startup failed/);
 
     duplex.destroy();
   });
@@ -781,7 +781,7 @@ describe('PGliteDuplex error paths', () => {
 
     const err = await writeAndAwait(duplex, startupBytes());
     expect(err).toBeInstanceOf(Error);
-    expect(err?.message).toBe('PGlite instance not ready: plain string reason');
+    expect(err?.message).toMatch(/^PGlite instance not ready: plain string reason/);
 
     duplex.destroy();
   });
@@ -798,7 +798,7 @@ describe('PGliteDuplex error paths', () => {
 
     const err = await writeAndAwait(duplex, startupBytes());
     expect(err).toBeInstanceOf(Error);
-    expect(err?.message).toBe(
+    expect(err?.message).toContain(
       `PGlite instance not ready: Operation timed out after ${TIMEOUT_MS}ms`,
     );
 
@@ -825,7 +825,7 @@ describe('PGliteDuplex error paths', () => {
 
     const err = await writeAndAwait(duplex, startupBytes());
     expect(err).toBeInstanceOf(Error);
-    expect(err?.message).toBe('PGlite instance closed');
+    expect(err?.message).toMatch(/^PGlite instance closed/);
 
     duplex.destroy();
   });
@@ -3536,7 +3536,7 @@ describe('waitPGliteReady Tier A site pins (PgBridgeError)', () => {
     expect(caught).toBeInstanceOf(Error);
     expect((caught as PgBridgeError).code).toBe('PGLITE_CLOSED');
     expect((caught as PgBridgeError).name).toBe('PgBridgeError');
-    expect((caught as PgBridgeError).message).toBe('PGlite instance closed');
+    expect((caught as PgBridgeError).message).toMatch(/^PGlite instance closed/);
   });
 
   // Site :28 — PGLITE_NOT_READY
@@ -3561,7 +3561,7 @@ describe('waitPGliteReady Tier A site pins (PgBridgeError)', () => {
     expect(caught).toBeInstanceOf(Error);
     expect((caught as PgBridgeError).code).toBe('PGLITE_NOT_READY');
     expect((caught as PgBridgeError).name).toBe('PgBridgeError');
-    expect((caught as PgBridgeError).message).toBe('PGlite instance not ready: startup failed');
+    expect((caught as PgBridgeError).message).toMatch(/^PGlite instance not ready: startup failed/);
   });
 });
 

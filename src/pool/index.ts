@@ -16,7 +16,7 @@ import type { TelemetrySink } from '../telemetry/bridge-stats.ts';
 import { pgliteNeedsProtocolCleanup } from '../utils/pglite-capabilities.ts';
 import { resolveSyncToFs, type SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
 import { SessionLock } from '../utils/session-lock.ts';
-import type { BridgeWarningType } from '../warnings.ts';
+import { emitBridgeWarning } from '../warnings.ts';
 import {
   type DuplexTeardown,
   PgBridgeClient,
@@ -398,13 +398,13 @@ export class PgBridgePool extends pg.Pool {
     const liveCount = (livePoolCounts.get(resolvedPglite) ?? 0) + 1;
     livePoolCounts.set(resolvedPglite, liveCount);
     if (liveCount > 1) {
-      process.emitWarning(
+      emitBridgeWarning(
+        'PGliteBridgeSharedInstanceWarning',
         'Multiple live PgBridgePools share one PGlite instance. Queries from all ' +
           "pools serialize through PGlite's WASM mutex — adding pools does not " +
           'increase throughput. Concurrent transactions from different pools ' +
           'may interleave; for transaction isolation across pools coordinate ' +
           "explicitly (await one pool's transaction before starting another's).",
-        { type: 'PGliteBridgeSharedInstanceWarning' satisfies BridgeWarningType },
       );
     }
 

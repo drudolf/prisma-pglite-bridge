@@ -50,15 +50,15 @@ import type { QueryTrailEntry, QueryTrailMeta, QueryTrailOptions } from '../pool
 import { BridgeStats, type Stats, type StatsLevel } from '../telemetry/bridge-stats.ts';
 import { assertPoolIdle } from '../utils/assert-pool-idle.ts';
 import type { SyncToFsMode } from '../utils/resolve-sync-to-fs.ts';
-import type { BridgeWarningType } from '../warnings.ts';
+import { emitBridgeWarning } from '../warnings.ts';
 import { SnapshotManager } from './snapshot-manager.ts';
 
 /** @internal Exported for testing. */
 export const emitBridgeLeakWarning = (): void => {
-  process.emitWarning(
+  emitBridgeWarning(
+    'PGliteBridgeLeakWarning',
     'PGliteBridge was garbage-collected before close() was called. ' +
       'Call bridge.close() to release the pool and finalize stats().',
-    { type: 'PGliteBridgeLeakWarning' satisfies BridgeWarningType },
   );
 };
 

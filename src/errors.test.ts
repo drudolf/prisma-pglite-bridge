@@ -1,8 +1,8 @@
 /**
  * Unit tests for src/errors.ts — the PgBridgeError class and PgBridgeErrorCode type.
  *
- * These tests are RED until src/errors.ts is created. Every assertion is a
- * forward-contract pin against the post-implementation surface.
+ * Every assertion is a contract pin against the public surface, including
+ * the docs tail appended to every message and the `docs` property.
  *
  * Also contains the barrel re-export identity check (Item 3 of the cold-agent
  * brief): { PgBridgeError } from src/index.ts must be the same class as the
@@ -10,8 +10,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-// This import will fail (module missing) until errors.ts is created — expected.
-import { PgBridgeError } from './errors.ts';
+import { errorDocsPointer, PgBridgeError, TROUBLESHOOTING_DOC, withDocsTail } from './errors.ts';
 
 describe('PgBridgeError class', () => {
   it('is an instance of Error', () => {
@@ -53,10 +52,35 @@ describe('PgBridgeError class', () => {
     expect(Object.hasOwn(err, 'code')).toBe(true);
   });
 
-  it('message passthrough — err.message equals the constructor argument', () => {
+  it('message is the constructor argument plus the docs tail', () => {
     const msg = 'PGlite instance closed';
     const err = new PgBridgeError('PGLITE_CLOSED', msg);
-    expect(err.message).toBe(msg);
+    expect(err.message).toBe(withDocsTail(msg, errorDocsPointer('PGLITE_CLOSED')));
+  });
+
+  it('docs equals errorDocsPointer(code) and is package-relative', () => {
+    const err = new PgBridgeError('POOL_NOT_IDLE', 'msg');
+    expect(err.docs).toBe(errorDocsPointer('POOL_NOT_IDLE'));
+    expect(err.docs.startsWith('prisma-pglite-bridge/docs/troubleshooting.md#')).toBe(true);
+    expect(Object.hasOwn(err, 'docs')).toBe(true);
+  });
+
+  it('single-line message: exact tail format, one space before the pointer', () => {
+    const err = new PgBridgeError('SERVER_CLOSED', 'Server is closed.');
+    expect(err.message).toBe(
+      'Server is closed. (docs: prisma-pglite-bridge/docs/troubleshooting.md#server_closed)',
+    );
+  });
+
+  it('multi-line message: the tail lands on its own last line', () => {
+    const body = 'Missing internals:\n- a\n- b';
+    const err = new PgBridgeError('UNSUPPORTED_PG_INTERNALS', body);
+    const lines = err.message.split('\n');
+    expect(lines.at(-1)).toBe(
+      '(docs: prisma-pglite-bridge/docs/troubleshooting.md#unsupported_pg_internals)',
+    );
+    expect(lines.at(-1)?.startsWith('(docs: ')).toBe(true);
+    expect(lines.slice(0, -1).join('\n')).toBe(body);
   });
 
   it('cause passthrough via ErrorOptions', () => {
@@ -88,6 +112,23 @@ describe('PgBridgeError class', () => {
       const err = new PgBridgeError(code, 'msg');
       expect(err.code).toBe(code);
     }
+  });
+});
+
+describe('docs pointer helpers', () => {
+  it('TROUBLESHOOTING_DOC is the package-relative guide path', () => {
+    expect(TROUBLESHOOTING_DOC).toBe('prisma-pglite-bridge/docs/troubleshooting.md');
+  });
+
+  it('errorDocsPointer lowercases the code as the anchor', () => {
+    expect(errorDocsPointer('MIGRATIONS_APPLY_FAILED')).toBe(
+      `${TROUBLESHOOTING_DOC}#migrations_apply_failed`,
+    );
+  });
+
+  it('withDocsTail separates with a space for single-line and a newline for multi-line', () => {
+    expect(withDocsTail('one line', 'p')).toBe('one line (docs: p)');
+    expect(withDocsTail('two\nlines', 'p')).toBe('two\nlines\n(docs: p)');
   });
 });
 

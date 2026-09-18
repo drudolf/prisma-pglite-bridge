@@ -751,8 +751,8 @@ describe('PGliteServer.listen() Tier A site pin — SERVER_CLOSED', () => {
     expect(caught).toBeInstanceOf(Error);
     expect((caught as PgBridgeError).code).toBe('SERVER_CLOSED');
     expect((caught as PgBridgeError).name).toBe('PgBridgeError');
-    expect((caught as PgBridgeError).message).toBe(
-      'PGliteServer is closed — create a new instance to listen again.',
+    expect((caught as PgBridgeError).message).toMatch(
+      /^PGliteServer is closed — create a new instance to listen again\./,
     );
   });
 });
@@ -774,8 +774,8 @@ describe('PGliteServer.listen() Tier A site pin — SERVER_PGLITE_CLOSED', () =>
     expect(caught).toBeInstanceOf(Error);
     expect((caught as PgBridgeError).code).toBe('SERVER_PGLITE_CLOSED');
     expect((caught as PgBridgeError).name).toBe('PgBridgeError');
-    expect((caught as PgBridgeError).message).toBe(
-      'PGliteServer requires an open PGlite instance; got a closed one.',
+    expect((caught as PgBridgeError).message).toMatch(
+      /^PGliteServer requires an open PGlite instance; got a closed one\./,
     );
   });
 });

@@ -738,8 +738,8 @@ describe('PGliteBridge constructor Tier A site pin — INVALID_STATS_LEVEL', () 
     expect(caught).toBeInstanceOf(Error);
     expect((caught as PgBridgeError).code).toBe('INVALID_STATS_LEVEL');
     expect((caught as PgBridgeError).name).toBe('PgBridgeError');
-    expect((caught as PgBridgeError).message).toBe(
-      `statsLevel must be 'off', 'basic', or 'full'; got invalid`,
+    expect((caught as PgBridgeError).message).toMatch(
+      /^statsLevel must be 'off', 'basic', or 'full'; got invalid/,
     );
   });
 });

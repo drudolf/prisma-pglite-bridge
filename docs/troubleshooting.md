@@ -1,5 +1,9 @@
 # Troubleshooting & limitations
 
+Every `PgBridgeError` and bridge warning message ends with a pointer into
+this file (`(docs: prisma-pglite-bridge/docs/troubleshooting.md#<code>)`);
+the anchor is the error code or warning name, lowercased.
+
 ## Limitations
 
 - **Node.js 22+ only** — requires `node:stream`, `node:fs`, and
@@ -143,7 +147,115 @@ the affected name persistently fails 26000 on its next use until it is
 re-prepared or the session resets. See the eviction-detection notes in
 [api.md](./api.md#pgbridgepool) for the exact supported subset.
 
-## `PGliteBridgeAbandonedTransactionWarning`
+## Error codes
+
+Every `PgBridgeError` message ends with a pointer into this file
+(`(docs: prisma-pglite-bridge/docs/troubleshooting.md#<code>)`), and the
+error carries the same pointer as its `docs` property. Match on
+`error.code`; the sections below are keyed by code.
+
+### `UNSUPPORTED_PG_INTERNALS`
+
+See [Unsupported pg internals](#unsupported-pg-internals) above: the
+installed `pg` copy lacks the private 8.x members the bridge drives.
+Check `pnpm why pg`, deduplicate, and stay on `pg` ≥ 8.16.3.
+
+### `BRIDGE_OPTIONS_REQUIRED`
+
+`PgBridgeClient` was constructed without the pool's internal options.
+If you did not construct `PgBridgeClient` yourself, two copies of `pg`
+are installed and `@prisma/adapter-pg` resolves a different copy than
+`prisma-pglite-bridge` extends. The adapter tests the pool with
+`instanceof pg.Pool`; against a foreign copy that fails, so it treats
+the bridge pool as a plain config object, and `pg-pool` then constructs
+a `PgBridgeClient` from that object without the bridge options.
+
+Diagnose:
+
+```sh
+pnpm why pg    # or: npm ls pg
+```
+
+Fix by deduplicating `pg` to one version workspace-wide — remove direct
+pins that differ from `@prisma/adapter-pg`'s range, or add an override
+(pnpm: `pnpm.overrides` / `pnpm-workspace.yaml` `overrides`; npm:
+`overrides`). Reproduced 2026-09-18 with two `pg` copies
+(`scripts/dup-pg-fixture.sh` rebuilds that scenario); two copies of
+the bridge over one `pg` were tested the same day and do not trigger
+it.
+
+### `POOL_NOT_IDLE`
+
+`resetDb()`, `snapshotDb()`, or `resetSnapshot()` was called while a
+pool client was checked out or a checkout was waiting. These methods run
+raw SQL on the shared session and would interleave with in-flight
+queries. Await every pending query, end any open `$transaction` (or
+release checked-out clients on the pool path), then call again. With
+`createBridgeTest`, take `prisma` from the fixture and let the helper
+reset between tests.
+
+### `INVALID_STATS_LEVEL`
+
+`new PGliteBridge({ statsLevel })` accepts only `'off'`, `'basic'`, or
+`'full'`. See [stats](./stats.md).
+
+### `SERVER_CLOSED`
+
+`PGliteServer.listen()` was called after `close()`. A server is
+single-use — create a new instance.
+
+### `SERVER_PGLITE_CLOSED`
+
+The `PGlite` instance handed to `PGliteServer` (or reused by it) is
+already closed. Pass an open instance, or let the server create its own
+by omitting `pglite`.
+
+### `PGLITE_CLOSED`
+
+A bridge, pool, or server operation started after its `PGlite` instance
+was closed. Surfaces through connection or query rejection. Close the
+bridge before the instance (`bridge.close()` closes an owned instance
+for you), and do not share one instance across tests that close it.
+
+### `PGLITE_NOT_READY`
+
+`PGlite` failed to become ready, or the `timeout` option elapsed while
+waiting for it. The original reason follows the colon in the message
+(WASM startup failure, a corrupt `dataDir`, a template that does not
+load). Check the `dataDir`, raise `timeout`, or delete a corrupt data
+directory.
+
+### `MIGRATIONS_UNAVAILABLE`
+
+`pushMigrations` found no migration source: no `sql`, no `migration.sql`
+under `migrationsPath`, or no loadable `prisma.config.ts` (from
+`configRoot` or the working directory). Run `prisma migrate dev` to
+generate migration files, pass `migrationsPath` explicitly, or pass
+pre-generated SQL via `sql`. In monorepos set `configRoot` to the
+package that owns `prisma.config.ts`.
+
+### `MIGRATIONS_APPLY_FAILED`
+
+The schema SQL failed inside PGlite; the PGlite error is attached as
+`cause`. Common causes: the schema was already applied to a persistent
+`dataDir` (guard with `hasSchema`), a migration relies on an extension
+PGlite does not bundle, or the SQL was hand-edited. Fix the SQL or the
+guard and re-run.
+
+### `SNAPSHOT_INVALID`
+
+`resetDb()` found that a table or column captured by `snapshotDb()` no
+longer exists — the schema changed after the snapshot. Re-run
+`snapshotDb()` after any DDL, or call `resetSnapshot()` to go back to
+truncate-to-empty resets.
+
+## Warnings
+
+Bridge warnings go through `process.emitWarning` with a `type` from the
+list below and end with the same docs pointer as errors. Filter with
+`process.on('warning', (w) => w.name === '<type>')`.
+
+### `PGliteBridgeAbandonedTransactionWarning`
 
 A pool client was released back to the pool with an open transaction —
 `release()` was called after `BEGIN` without a `COMMIT` or `ROLLBACK`.
@@ -159,6 +271,24 @@ rollback).
 Fix the caller: `COMMIT` or `ROLLBACK` (or let your ORM's transaction
 helper finish) before releasing the client. The automatic rollback is
 a safety net, not a transaction API.
+
+### `PGliteBridgeSharedInstanceWarning`
+
+More than one live `PgBridgePool` (or `PGliteBridge`) shares one
+`PGlite` instance. Emitted once, as an advisory: all pools serialize
+through the single PGlite session, so extra pools add no throughput,
+and transactions from different pools can interleave unless you await
+one pool's transaction before starting another's. Statement caches
+coordinate across pools automatically. Expected and harmless when a
+test deliberately runs raw SQL through a second pool; otherwise reuse
+one pool.
+
+### `PGliteBridgeLeakWarning`
+
+A `PGliteBridge` was garbage-collected before `close()` was called. The
+pool and its PGlite instance were released by the collector, but
+`stats()` was never finalized and teardown order was not yours. Call
+`bridge.close()` in `afterAll` (the testing helpers do this for you).
 
 ## `ExperimentalWarning: Importing WebAssembly module instances is an experimental feature`
 

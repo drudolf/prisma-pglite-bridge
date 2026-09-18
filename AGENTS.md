@@ -93,11 +93,14 @@ the bridge" (`PGliteServer` + `DATABASE_URL`).
 ## Errors (`PgBridgeError`, match on `.code`)
 
 Full table with triggers: `docs/api.md` → "Errors: PgBridgeError".
+Every error and warning message ends with
+`(docs: prisma-pglite-bridge/docs/troubleshooting.md#<code>)`; `error.docs`
+carries the same pointer.
 
 | Code | Meaning |
 | --- | --- |
 | `UNSUPPORTED_PG_INTERNALS` | installed `pg` lacks the internals the bridge drives — `docs/troubleshooting.md` → "Unsupported pg internals" |
-| `BRIDGE_OPTIONS_REQUIRED` | `PgBridgeClient` constructed outside `PgBridgePool`; historically also seen with two `pg` copies installed — check `pnpm why pg` |
+| `BRIDGE_OPTIONS_REQUIRED` | two `pg` copies installed (adapter and bridge resolve different ones) — `pnpm why pg`, dedupe; or `PgBridgeClient` constructed outside `PgBridgePool` |
 | `POOL_NOT_IDLE` | `resetDb` / `snapshotDb` while a client is checked out |
 | `INVALID_STATS_LEVEL` | `statsLevel` not `'off'` / `'basic'` / `'full'` |
 | `SERVER_CLOSED` | `PGliteServer.listen()` after `close()` |

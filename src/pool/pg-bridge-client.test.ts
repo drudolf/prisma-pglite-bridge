@@ -111,10 +111,10 @@ afterEach(async () => {
 
 describe('PgBridgeClient', () => {
   it('throws when bridge options are missing', () => {
-    expect(() => new PgBridgeClient()).toThrow('PgBridgeClient requires bridge options');
+    expect(() => new PgBridgeClient()).toThrow('PgBridgeClient requires bridge options.');
     // A config object without the options key throws the same way.
     expect(() => new PgBridgeClient({} as ConstructorParameters<typeof PgBridgeClient>[0])).toThrow(
-      'PgBridgeClient requires bridge options',
+      'PgBridgeClient requires bridge options.',
     );
   });
 
@@ -2803,7 +2803,9 @@ describe('PgBridgeClient constructor Tier A site pin (PgBridgeError)', () => {
     expect(caught).toBeInstanceOf(Error);
     expect((caught as PgBridgeError).code).toBe('BRIDGE_OPTIONS_REQUIRED');
     expect((caught as PgBridgeError).name).toBe('PgBridgeError');
-    expect((caught as PgBridgeError).message).toBe('PgBridgeClient requires bridge options');
+    expect((caught as PgBridgeError).message).toMatch(/^PgBridgeClient requires bridge options\. /);
+    // The reworded diagnostic names the duplicate-pg cause and the dedup probe.
+    expect((caught as PgBridgeError).message).toContain('pnpm why pg');
   });
 
   it('throws PgBridgeError with code BRIDGE_OPTIONS_REQUIRED for a config without the options key', () => {
@@ -2815,7 +2817,7 @@ describe('PgBridgeClient constructor Tier A site pin (PgBridgeError)', () => {
     }
     expect(caught).toBeInstanceOf(PgBridgeError);
     expect((caught as PgBridgeError).code).toBe('BRIDGE_OPTIONS_REQUIRED');
-    expect((caught as PgBridgeError).message).toBe('PgBridgeClient requires bridge options');
+    expect((caught as PgBridgeError).message).toMatch(/^PgBridgeClient requires bridge options\. /);
   });
 });
 
@@ -2937,8 +2939,8 @@ describe('mutation-hardening: survivor kills', () => {
       const client = await pool.connect();
       try {
         // Open a transaction and release without COMMIT/ROLLBACK: the cleanup link
-        // emits the abandoned-transaction warning, whose message tail (2064) must
-        // include the exact guidance.
+        // emits the abandoned-transaction warning, whose message body (2064) must
+        // include the exact guidance (the docs pointer follows it).
         await client.query('BEGIN');
         (
           client as unknown as { rollbackAbandonedTransaction: () => void }
