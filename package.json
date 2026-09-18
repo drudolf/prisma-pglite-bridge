@@ -173,7 +173,7 @@
     "bench:lock": "tsx benchmark/lock-admission.ts",
     "bench:trail": "tsx benchmark/query-trail.ts",
     "build:schema-engine": "tsx scripts/build-schema-engine.ts",
-    "prepublishOnly": "pnpm test:unit && pnpm test:gc && pnpm build && pnpm check:exports",
+    "prepublishOnly": "[ \"$RELEASE_CHECKS_DONE\" = 1 ] || (pnpm test:unit && pnpm test:gc && pnpm build && pnpm check:exports)",
     "prepare": "husky && prisma generate"
   },
   "peerDependencies": {

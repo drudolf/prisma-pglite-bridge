@@ -24,6 +24,10 @@ jobs:
       - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm test:coverage
+      - run: pnpm check:exports
+      # changesets 3 runs `pnpm publish --json` with piped stdio and discards
+      # the prepublishOnly output. The steps above already cover everything
+      # that hook runs, so skip its blind re-run.
       - uses: changesets/action@v1
         id: changesets
         with:
@@ -33,6 +37,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
           HUSKY: "0"
+          RELEASE_CHECKS_DONE: "1"
       - name: Update release PR with version
         if: steps.changesets.outputs.pullRequestNumber
         run: |
