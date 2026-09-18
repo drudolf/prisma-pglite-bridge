@@ -166,6 +166,7 @@
     "changeset": "changeset",
     "bench": "tsx benchmark/run.ts",
     "bench:isolation": "tsx benchmark/isolation-cost.ts",
+    "bench:reset": "tsx benchmark/snapshot-reset.ts",
     "bench:pg-server": "tsx benchmark/pg-server.ts",
     "bench:orm": "tsx benchmark/orm/run.ts",
     "bench:compat": "tsx benchmark/compat/run.ts",

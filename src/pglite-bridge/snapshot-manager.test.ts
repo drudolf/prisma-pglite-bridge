@@ -815,14 +815,19 @@ describe('SnapshotManager mutation survivors', () => {
     const first = query.mock.calls.map((call) => String(call[0]));
     expect(first.filter((sql) => sql.includes('to_regnamespace'))).toHaveLength(1);
     expect(first.some((sql) => sql.includes('__tables'))).toBe(false);
-    expect(first.some((sql) => sql.includes('__sequences'))).toBe(false);
+    expect(vi.mocked(pglite.exec).mock.calls.some(([sql]) => sql.includes('__sequences'))).toBe(
+      false,
+    );
 
     query.mockClear();
+    vi.mocked(pglite.exec).mockClear();
     await snapshot.resetDb();
     const second = query.mock.calls.map((call) => String(call[0]));
     expect(second.filter((sql) => sql.includes('to_regnamespace'))).toHaveLength(1);
     expect(second.some((sql) => sql.includes('__tables'))).toBe(true);
-    expect(second.some((sql) => sql.includes('__sequences'))).toBe(true);
+    expect(vi.mocked(pglite.exec).mock.calls.some(([sql]) => sql.includes('__sequences'))).toBe(
+      true,
+    );
     expect(probeAnswers).toHaveLength(0);
   });
 
@@ -839,15 +844,20 @@ describe('SnapshotManager mutation survivors', () => {
     await snapshot.resetDb();
     const first = query.mock.calls.map((call) => String(call[0]));
     expect(first.some((sql) => sql.includes('__tables'))).toBe(true);
-    expect(first.some((sql) => sql.includes('__sequences'))).toBe(true);
+    expect(vi.mocked(pglite.exec).mock.calls.some(([sql]) => sql.includes('__sequences'))).toBe(
+      true,
+    );
 
     // An external `DROP SCHEMA "_pglite_snapshot"` between the two calls.
     query.mockClear();
+    vi.mocked(pglite.exec).mockClear();
     await snapshot.resetDb();
     const second = query.mock.calls.map((call) => String(call[0]));
     expect(second.filter((sql) => sql.includes('to_regnamespace'))).toHaveLength(1);
     expect(second.some((sql) => sql.includes('__tables'))).toBe(false);
-    expect(second.some((sql) => sql.includes('__sequences'))).toBe(false);
+    expect(vi.mocked(pglite.exec).mock.calls.some(([sql]) => sql.includes('__sequences'))).toBe(
+      false,
+    );
     expect(probeAnswers).toHaveLength(0);
   });
 
@@ -969,11 +979,8 @@ describe('SnapshotManager mutation survivors', () => {
     }
   });
 
-  // The restore runs as ONE transaction with a transaction-local
-  // replication-role bypass. Exact exec sequence pins: `BEGIN` -> `''`,
-  // `SET LOCAL ...` -> `''`, `COMMIT` -> `''`, the setval/insert loops ->
-  // `{}`, `if (hasSnapshot)` -> `if (false)`, and any reintroduction of a
-  // session-level `SET session_replication_role = DEFAULT`.
+  // The restore runs as one protocol call, with a transaction-local
+  // replication-role bypass. The session scrub stays outside that call.
   it('restores inside BEGIN / SET LOCAL / TRUNCATE / … / COMMIT and never resets the role at session level', async () => {
     const exec = vi.fn(async (_sql: string) => {});
     const query = vi.fn(async (sql: string) => {
@@ -993,7 +1000,6 @@ describe('SnapshotManager mutation survivors', () => {
           ],
         };
       }
-      if (sql.includes('__sequences')) return { rows: [{ name: "'public.t_id_seq'", value: '7' }] };
       return { rows: [] };
     });
     const pglite = createMockPGlite({ exec, query });
@@ -1002,28 +1008,27 @@ describe('SnapshotManager mutation survivors', () => {
     await snapshot.resetDb();
 
     const execCalls = exec.mock.calls.map((call) => String(call[0]));
-    expect(execCalls).toEqual([
+    expect(execCalls).toHaveLength(2);
+    expect(execCalls[0]?.split(';\n')).toEqual([
       'BEGIN',
       'SET LOCAL session_replication_role = replica',
       'TRUNCATE TABLE public.t RESTART IDENTITY CASCADE',
       'INSERT INTO public.t (id, v) SELECT id, v FROM "_pglite_snapshot"."_snap_0"',
-      "SELECT setval('public.t_id_seq', 7)",
+      expect.stringContaining('SELECT setval(name::regclass, value,'),
       'COMMIT',
-      expect.stringContaining('RESET ALL'),
     ]);
     expect(execCalls.some((sql) => sql.includes('session_replication_role = DEFAULT'))).toBe(false);
     expect(execCalls.some((sql) => /(^|[^L])SET session_replication_role/.test(sql))).toBe(false);
     // The scrub is the last statement, after COMMIT — never inside the
     // transaction (DISCARD TEMP cannot run in a transaction block).
     const scrub = execCalls[execCalls.length - 1] ?? '';
+    expect(scrub).toContain('RESET ALL');
     expect(scrub).toContain('DISCARD TEMP');
     expect(scrub).not.toContain('COMMIT');
-    // Sequences are read AFTER the truncate, inside the transaction.
-    const sqls = query.mock.calls.map((call) => String(call[0]));
-    expect(sqls[sqls.length - 1]).toContain('__sequences');
+    expect(execCalls[0]).toContain('FROM "_pglite_snapshot".__sequences s');
   });
 
-  it('rolls back and propagates the error when the truncate fails — no COMMIT, no scrub', async () => {
+  it('rolls back and propagates the error when the restore batch fails, without scrubbing', async () => {
     const boom = new Error('truncate boom');
     const exec = vi.fn(async (sql: string) => {
       if (sql.includes('TRUNCATE')) throw boom;
@@ -1043,9 +1048,7 @@ describe('SnapshotManager mutation survivors', () => {
 
     const execCalls = exec.mock.calls.map((call) => String(call[0]));
     expect(execCalls).toEqual([
-      'BEGIN',
-      'SET LOCAL session_replication_role = replica',
-      'TRUNCATE TABLE public.t RESTART IDENTITY CASCADE',
+      expect.stringContaining('TRUNCATE TABLE public.t RESTART IDENTITY CASCADE'),
       'ROLLBACK',
     ]);
   });
@@ -1053,7 +1056,7 @@ describe('SnapshotManager mutation survivors', () => {
   it('rolls back and propagates a failing restore insert', async () => {
     const boom = new Error('insert boom');
     const exec = vi.fn(async (sql: string) => {
-      if (sql.startsWith('INSERT')) throw boom;
+      if (sql.includes('INSERT INTO')) throw boom;
     });
     const query = vi.fn(async (sql: string) => {
       if (sql.includes('to_regnamespace')) return { rows: [{ exists: true }] };
@@ -1080,14 +1083,10 @@ describe('SnapshotManager mutation survivors', () => {
     await expect(snapshot.resetDb()).rejects.toThrow('insert boom');
 
     const execCalls = exec.mock.calls.map((call) => String(call[0]));
-    expect(execCalls.slice(-2)).toEqual([
-      'INSERT INTO public.t SELECT * FROM "_pglite_snapshot"."_snap_0"',
+    expect(execCalls).toEqual([
+      expect.stringContaining('INSERT INTO public.t SELECT * FROM "_pglite_snapshot"."_snap_0"'),
       'ROLLBACK',
     ]);
-    expect(execCalls).not.toContain('COMMIT');
-    // The sequence read sits after the inserts, so a failing insert skips it.
-    const sqls = query.mock.calls.map((call) => String(call[0]));
-    expect(sqls.some((sql) => sql.includes('__sequences'))).toBe(false);
   });
 
   it('surfaces the original error even when the ROLLBACK itself fails', async () => {
@@ -1131,7 +1130,8 @@ describe('SnapshotManager mutation survivors', () => {
       await snapshot.resetDb({ scrubSession: false });
 
       const execCalls = execSql(exec);
-      expect(execCalls).toEqual([
+      expect(execCalls).toHaveLength(1);
+      expect(execCalls[0]?.split(';\n')).toEqual([
         'BEGIN',
         'SET LOCAL session_replication_role = replica',
         'TRUNCATE TABLE public.t RESTART IDENTITY CASCADE',
@@ -1154,10 +1154,10 @@ describe('SnapshotManager mutation survivors', () => {
       await snapshot.resetDb(options);
 
       const execCalls = execSql(exec);
-      expect(execCalls).toHaveLength(5);
-      expect(execCalls[3]).toBe('COMMIT');
-      expect(execCalls[4]).toContain('RESET ALL');
-      expect(execCalls[4]).toContain('DISCARD TEMP');
+      expect(execCalls).toHaveLength(2);
+      expect(execCalls[0]).toMatch(/;\nCOMMIT$/);
+      expect(execCalls[1]).toContain('RESET ALL');
+      expect(execCalls[1]).toContain('DISCARD TEMP');
     });
   });
 });

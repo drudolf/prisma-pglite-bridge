@@ -157,7 +157,9 @@ Instance members:
   so the history survives resets.
 - `snapshotDb()` — captures the current DB contents into an internal
   snapshot so later `resetDb()` calls restore to that state instead of
-  truncating to empty.
+  truncating to empty. Partitioned and inherited tables retain each row
+  in its original physical table. Sequence values and their `is_called`
+  flags are saved, including unused and standalone sequences.
 - `resetSnapshot()` — discards the current snapshot so later
   `resetDb()` calls truncate back to empty again.
 

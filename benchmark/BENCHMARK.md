@@ -466,6 +466,45 @@ own ~40MB in-memory data directory. Cold start is the most
 variance-prone (it does the most work per test), so treat the ratio as
 the signal and the absolute tail as indicative.
 
+### Snapshot reset scaling
+
+`pnpm bench:reset --json` measures the shared snapshot manager at 1, 10,
+50, and 100 tables. Each table has 20 seed rows, an identity primary key,
+and a stored generated column. Before each reset, one table receives an
+extra row; verification runs outside the timer. Cold start and snapshot
+creation are excluded from reset latency. Override with `-n 100 -w 10
+--tables 10,100`; snapshot creation time is reported separately.
+
+Local comparison against `965c0bf`, macOS x64, i9-9980HK, Node 24.14.1,
+PGlite 0.5.8: 50 measured resets after 5 warmups, sequential runs on the
+same machine. These are synthetic schema-size results, separate from
+the realistic integration seed above.
+
+| Tables | Before p50 | After p50 | Speedup | Before p95 | After p95 |
+| -----: | ---------: | --------: | ------: | ---------: | --------: |
+| 1 | 26.35ms | 6.88ms | 3.83x | 48.45ms | 7.87ms |
+| 10 | 40.81ms | 15.00ms | 2.72x | 47.87ms | 20.01ms |
+| 50 | 97.75ms | 50.05ms | 1.95x | 130.99ms | 81.97ms |
+| 100 | 163.19ms | 94.96ms | 1.72x | 216.37ms | 210.44ms |
+
+The change reads column metadata directly from `pg_attribute`, batches
+the restore transaction into one `exec`, and restores all sequences in
+one SQL statement. A seeded reset now needs three catalog queries and
+two `exec` calls, independent of table count; previously it needed four
+queries and `tables + sequences + 5` `exec` calls. Schema drift is still
+checked on every reset, and the session scrub stays after commit.
+
+This is one local before/after comparison, not a cross-platform claim.
+The 100-table p95 barely improved: table truncation, row/index rebuilds,
+and runtime variability still matter after removing bridge overhead.
+The benchmark is intended to make further changes measurable, including
+their tails, rather than impose timing thresholds on tests.
+
+A capacity smoke test with `pnpm bench:reset --tables 1000 -n 3 -w 1
+--json` also passed: 1,000 tables, 20,000 seed rows, and verification of
+every table's row count, generated values, and next identity value.
+That run overlapped other tests, so its timings are not used above.
+
 ## Adapters
 
 | Flag value                        | What it benchmarks                                                   |

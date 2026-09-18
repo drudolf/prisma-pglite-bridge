@@ -124,7 +124,10 @@ export class SnapshotManager {
       for (const [i, { schemaname, tablename, qualified }] of tables.entries()) {
         const snapName = `_snap_${i}`;
         await this.#pglite.exec(
-          `CREATE TABLE ${SNAPSHOT_SCHEMA_NEW_IDENT}.${quoteIdent(snapName)} AS SELECT * FROM ${qualified}`,
+          // Each physical table is listed separately, including partition
+          // leaves and inheritance children. Scanning descendants here would
+          // snapshot their rows twice and restore them into the parent too.
+          `CREATE TABLE ${SNAPSHOT_SCHEMA_NEW_IDENT}.${quoteIdent(snapName)} AS SELECT * FROM ONLY ${qualified}`,
         );
         await this.#pglite.query(
           `INSERT INTO ${SNAPSHOT_SCHEMA_NEW_IDENT}.__tables VALUES ($1, $2, $3)`,
@@ -132,19 +135,26 @@ export class SnapshotManager {
         );
       }
 
-      const { rows: seqs } = await this.#pglite.query<{ name: string; value: string }>(
-        `SELECT quote_literal(quote_ident(schemaname) || '.' || quote_ident(sequencename)) AS name, last_value::text AS value
+      const { rows: seqs } = await this.#pglite.query<{ name: string; qualified: string }>(
+        `SELECT quote_literal(quote_ident(schemaname) || '.' || quote_ident(sequencename)) AS name,
+                quote_ident(schemaname) || '.' || quote_ident(sequencename) AS qualified
          FROM pg_sequences
-         WHERE ${SYSTEM_SCHEMA_EXCLUSION}
-         AND last_value IS NOT NULL`,
+         WHERE ${SYSTEM_SCHEMA_EXCLUSION}`,
       );
 
       await this.#pglite.exec(
-        `CREATE TABLE ${SNAPSHOT_SCHEMA_NEW_IDENT}.__sequences (name text, value bigint)`,
+        `CREATE TABLE ${SNAPSHOT_SCHEMA_NEW_IDENT}.__sequences (name text, value bigint, is_called boolean)`,
       );
-      for (const { name, value } of seqs) {
+      if (seqs.length > 0) {
+        // pg_sequences hides the value of unconsumed sequences and omits
+        // is_called. Read both directly, keeping bigint values inside SQL.
         await this.#pglite.exec(
-          `INSERT INTO ${SNAPSHOT_SCHEMA_NEW_IDENT}.__sequences VALUES (${name}, ${value})`,
+          seqs
+            .map(
+              ({ name, qualified }) =>
+                `INSERT INTO ${SNAPSHOT_SCHEMA_NEW_IDENT}.__sequences SELECT ${name}, last_value, is_called FROM ${qualified}`,
+            )
+            .join(';\n'),
         );
       }
 
@@ -159,8 +169,7 @@ export class SnapshotManager {
       await this.#pglite.exec('COMMIT');
     } catch (err) {
       // Best-effort cleanup — the build error is what must propagate. The
-      // rolled-back transaction leaves the previous snapshot (and
-      // #hasSnapshot) untouched.
+      // rolled-back transaction leaves the previous snapshot untouched.
       await this.#pglite
         .exec('ROLLBACK')
         .then(() => this.#pglite.exec(`DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_NEW_IDENT} CASCADE`))
@@ -207,33 +216,26 @@ export class SnapshotManager {
     // fails loudly with the data still intact.
     const restore = hasSnapshot ? await this.#restorePlan() : [];
 
-    if (tables) {
+    if (tables || hasSnapshot) {
+      // One protocol call for the entire restore, independent of table or
+      // sequence count. Keep the session scrub separate: it must run after
+      // the restore commits. Any SQL failure aborts before COMMIT and the
+      // catch rolls back all table changes.
+      const statements = ['BEGIN', 'SET LOCAL session_replication_role = replica'];
+      if (tables) statements.push(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
+      statements.push(...restore);
+      if (hasSnapshot) {
+        // A persisted snapshot from an older bridge has no is_called column;
+        // its two-argument setval semantics mean true. New snapshots retain
+        // the flag, including never-used standalone sequences without tables.
+        statements.push(
+          `SELECT setval(name::regclass, value, COALESCE((to_jsonb(s)->>'is_called')::boolean, true))
+           FROM ${SNAPSHOT_SCHEMA_IDENT}.__sequences s`,
+        );
+      }
+      statements.push('COMMIT');
       try {
-        await this.#pglite.exec('BEGIN');
-        // Transaction-local: FK and trigger checks are off for the restore
-        // only, and the GUC never leaks into the session — on the server path
-        // that session belongs to the connected app.
-        await this.#pglite.exec('SET LOCAL session_replication_role = replica');
-        await this.#pglite.exec(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
-
-        for (const insert of restore) {
-          await this.#pglite.exec(insert);
-        }
-
-        if (hasSnapshot) {
-          const { rows: seqs } = await this.#pglite.query<{ name: string; value: string }>(
-            `SELECT quote_literal(name) AS name, value::text AS value FROM ${SNAPSHOT_SCHEMA_IDENT}.__sequences`,
-          );
-
-          for (const { name, value } of seqs) {
-            // Two-arg setval marks is_called = true: a sequence positioned via
-            // setval(seq, n, false) before snapshotDb() restores one off (next
-            // value n+1, not n). Pre-existing, accepted — capturing is_called
-            // would cost a per-sequence query at snapshot time.
-            await this.#pglite.exec(`SELECT setval(${name}, ${value})`);
-          }
-        }
-        await this.#pglite.exec('COMMIT');
+        await this.#pglite.exec(statements.join(';\n'));
       } catch (err) {
         await this.#pglite.exec('ROLLBACK').catch(() => {});
         throw err;
@@ -250,10 +252,15 @@ export class SnapshotManager {
    * snapshot), and `GENERATED ALWAYS` identity columns need
    * `OVERRIDING SYSTEM VALUE` to accept their seed ids —
    * `session_replication_role = replica` does not bypass identity
-   * enforcement. A zero-column table has no `information_schema.columns`
+   * enforcement. A zero-column table has no user `pg_attribute`
    * rows — indistinguishable from a dropped one by columns alone, hence the
    * `to_regclass` probe — and falls back to the legacy `SELECT *` form,
    * which round-trips row multiplicity fine.
+   *
+   * Read pg_attribute directly: information_schema.columns expands domain,
+   * type, collation, and privilege joins that this plan never uses. This
+   * runs on every reset, so that view's planning cost alone can dominate a
+   * small test database. Resolve relation OIDs anew to detect schema drift.
    *
    * Fails fast on structural drift: a source table or column dropped since
    * `snapshotDb()` throws here, before anything is truncated. (A dropped
@@ -269,24 +276,29 @@ export class SnapshotManager {
       needs_overriding: boolean;
       missing_cols: string | null;
     }>(
-      `SELECT quote_ident(t.snap_name) AS snap_name_ident,
+      `WITH tables AS (
+         SELECT t.*,
+                to_regclass(quote_ident(t.source_schema) || '.' || quote_ident(t.source_table)) AS source_oid,
+                to_regclass(${SNAPSHOT_SCHEMA_LITERAL} || '.' || quote_ident(t.snap_name)) AS snap_oid
+         FROM ${SNAPSHOT_SCHEMA_IDENT}.__tables t
+       )
+       SELECT quote_ident(t.snap_name) AS snap_name_ident,
               quote_ident(t.source_schema) || '.' || quote_ident(t.source_table) AS qualified,
-              to_regclass(quote_ident(t.source_schema) || '.' || quote_ident(t.source_table)) IS NOT NULL AS table_exists,
-              string_agg(quote_ident(c.column_name), ', ' ORDER BY c.ordinal_position)
-                FILTER (WHERE c.is_generated = 'NEVER') AS cols,
-              COALESCE(bool_or(c.is_identity = 'YES' AND c.identity_generation = 'ALWAYS'), false) AS needs_overriding,
-              (SELECT string_agg(quote_ident(sc.column_name), ', ' ORDER BY sc.ordinal_position)
-                 FROM information_schema.columns sc
-                WHERE sc.table_schema = ${SNAPSHOT_SCHEMA_LITERAL}
-                  AND sc.table_name = t.snap_name
-                  AND NOT EXISTS (SELECT 1 FROM information_schema.columns lc
-                                   WHERE lc.table_schema = t.source_schema
-                                     AND lc.table_name = t.source_table
-                                     AND lc.column_name = sc.column_name)) AS missing_cols
-       FROM ${SNAPSHOT_SCHEMA_IDENT}.__tables t
-       LEFT JOIN information_schema.columns c
-         ON c.table_schema = t.source_schema AND c.table_name = t.source_table
-       GROUP BY t.snap_name, t.source_schema, t.source_table`,
+              t.source_oid IS NOT NULL AS table_exists,
+              string_agg(quote_ident(c.attname), ', ' ORDER BY c.attnum)
+                FILTER (WHERE c.attgenerated = '') AS cols,
+              COALESCE(bool_or(c.attidentity = 'a'), false) AS needs_overriding,
+              (SELECT string_agg(quote_ident(sc.attname), ', ' ORDER BY sc.attnum)
+                 FROM pg_catalog.pg_attribute sc
+                WHERE sc.attrelid = t.snap_oid AND sc.attnum > 0 AND NOT sc.attisdropped
+                  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute lc
+                                   WHERE lc.attrelid = t.source_oid
+                                     AND lc.attnum > 0 AND NOT lc.attisdropped
+                                     AND lc.attname = sc.attname)) AS missing_cols
+       FROM tables t
+       LEFT JOIN pg_catalog.pg_attribute c
+         ON c.attrelid = t.source_oid AND c.attnum > 0 AND NOT c.attisdropped
+       GROUP BY t.snap_name, t.source_schema, t.source_table, t.source_oid, t.snap_oid`,
     );
 
     return rows.map(
