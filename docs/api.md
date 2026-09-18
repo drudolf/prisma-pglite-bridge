@@ -17,6 +17,7 @@ For known limits and runtime warnings see
 - [`hasMigrations(pglite)`](#hasmigrationspglite)
 - [`hasSchema(pglite)`](#hasschemapglite)
 - [`PgBridgePool`](#pgbridgepool)
+- [The `/vitest` and `/jest` entries: Prisma testing helpers](#the-vitest-and-jest-entries-prisma-testing-helpers)
 - [The `/pool` entry and pool testing helpers](#the-pool-entry-and-pool-testing-helpers)
 - [Query trail](#query-trail)
 - [`PGliteServer`](#pgliteserver)
@@ -473,6 +474,77 @@ explicitly if cross-pool isolation matters.
 
 Most users should prefer [`PGliteBridge`](#pglitebridge), which
 wraps this class and adds schema/reset/snapshot lifecycle.
+
+## The `/vitest` and `/jest` entries: Prisma testing helpers
+
+`prisma-pglite-bridge/vitest` and `prisma-pglite-bridge/jest` wrap
+`PGliteBridge`, schema apply, seed, snapshot, and the runner's
+lifecycle hooks in one call. Walkthroughs and the isolation trade-offs
+are in the [cookbook](./cookbook.md#vitest-one-call-or-fixtures); this
+section is the surface.
+
+- `setupPGliteBridge(options)` (both entries) — create a bridge, apply
+  the schema, build the client, `seed`, snapshot, and register
+  `beforeEach(resetDb)` + `afterAll(close)` unless
+  `registerHooks: false`. Returns `{ prisma, bridge }`
+  (`PGliteTestContext<TClient>`); `resetDb` / `snapshotDb` /
+  `resetSnapshot` / `close` live on `bridge`. Async — call it with a
+  top-level `await` (Jest: native ESM mode).
+- `createBridgeTest(options)` (vitest only, ≥ 3.2) — the same flow as
+  fixtures. Returns a `test` API whose tests can take `prisma` and
+  `bridge`. Options are validated synchronously at the call.
+
+Options (`SetupPGliteBridgeOptions<TClient>`):
+
+- `client: (adapter: PrismaPg) => TClient` — build the Prisma client;
+  the bridge cannot import your generated client, so you construct it:
+  `(adapter) => new PrismaClient({ adapter })`. Synchronous.
+- `migrations?: PushMigrationsOptions | true` — apply
+  `prisma/migrations` via [`pushMigrations`](#pushmigrationspglite-options).
+  `true` auto-discovers the directory through `prisma.config.ts` (the
+  optional `@prisma/config` peer must be installed); an object passes
+  `migrationsPath` / `sql` / `configRoot` explicitly.
+- `schema?: PushSchemaOptions` — apply an inline schema string via
+  [`pushSchema`](#pushschemaadapter-options) instead.
+- **Exactly one of `migrations` / `schema` is required** — passing
+  neither or both throws a `TypeError` whose message ends in "requires
+  exactly one of `migrations` or `schema` to define the database shape",
+  before any PGlite is created.
+- `seed?: (client: TClient) => Promise<void>` — runs once after the
+  schema is applied, before the snapshot. Awaited; leave no queries in
+  flight when it resolves.
+- `snapshot?: boolean` — default `true`; with `false`, `resetDb()`
+  truncates all user tables instead of restoring the seeded state.
+- `registerHooks?: boolean` — default `true` (`setupPGliteBridge` only).
+- `bridge?: PGliteBridgeOptions` — forwarded to the
+  [`PGliteBridge`](#pglitebridge) constructor: `max`, `queryTrail`
+  (object form), `statsLevel`, `query_timeout`, `schema` (search
+  path), `pglite` (caller-owned instance — `close()` leaves it open).
+
+`createBridgeTest` adds (`CreateBridgeTestOptions<TClient>`, which
+omits `registerHooks`):
+
+- `scope?: 'test' | 'file' | 'worker'` — bridge lifetime; default
+  `'file'`. `'worker'` shares one bridge across every file a worker
+  runs (`threads` / `forks` pools only). `'test'` builds a per-file
+  template and loads a fresh PGlite from it for every test — the only
+  scope safe for `test.concurrent`; `seed` still runs once per file.
+- `queryTrail?: boolean` — default `true`; see
+  [Query trail](#query-trail).
+
+Fixtures (`BridgeTestFixtures<TClient>`):
+
+- `prisma` — the client, reset to the seeded snapshot before every
+  test that takes it.
+- `bridge` — the scoped bridge. **Taking only `bridge` does not reset
+  the database**; tests that touch data should take `prisma`.
+
+On any failure after the bridge is created (schema apply, seed,
+snapshot) the bridge is closed before the error propagates. The helper
+never calls `prisma.$disconnect()`; `bridge.close()` ends the pool and
+PGlite underneath the client, so an explicit disconnect is hygiene
+only. With the `prisma-client` generator, import `PrismaClient` from
+your generator `output` path rather than `@prisma/client`.
 
 ## The `/pool` entry and pool testing helpers
 

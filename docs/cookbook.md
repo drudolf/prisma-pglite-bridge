@@ -56,7 +56,7 @@ WASM instance is closed when the file finishes (`afterAll`). Options:
 `schema` applies an inline Prisma schema instead of migrations,
 `snapshot: false` makes resets truncate to empty, and
 `registerHooks: false` hands the lifecycle back to you — see the
-[API reference](./api.md).
+[API reference](./api.md#the-vitest-and-jest-entries-prisma-testing-helpers).
 
 **Fixtures (`createBridgeTest`)** wrap the same flow in vitest's
 [test context](https://vitest.dev/guide/test-context.html) — tests
