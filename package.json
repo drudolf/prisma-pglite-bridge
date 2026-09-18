@@ -111,7 +111,10 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "docs",
+    "!docs/mutation-testing.md",
+    "README.md",
+    "AGENTS.md"
   ],
   "sideEffects": false,
   "engines": {

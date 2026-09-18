@@ -218,6 +218,14 @@ cost](./benchmark/BENCHMARK.md#per-test-isolation-cost).
   known issues (PGlite version mismatch, WASM `ExperimentalWarning`)
   and runtime constraints.
 
+## For AI agents
+
+The package ships its docs: `node_modules/prisma-pglite-bridge/docs/`
+holds the API reference, cookbook, troubleshooting guide, `PGliteServer`,
+stats, and compatibility docs, and `node_modules/prisma-pglite-bridge/AGENTS.md`
+is a one-page map of entry points, recipes, error codes, and foot-guns
+written for coding agents. Point an agent at `AGENTS.md` first.
+
 ## License
 
 MIT
