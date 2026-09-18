@@ -166,18 +166,16 @@ export const pushMigrations = async (
 
 /**
  * Returns `true` when the `_prisma_migrations` table exists and has at
- * least one row with `finished_at IS NOT NULL`. Useful as a "first run"
- * guard for persistent dataDirs:
+ * least one row with `finished_at IS NOT NULL` — i.e. the Prisma CLI
+ * (`migrate deploy` / `migrate dev`, e.g. through `PGliteServer`) has
+ * applied migrations to this database.
  *
- * ```typescript
- * if (!(await hasMigrations(pglite))) {
- *   await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
- * }
- * ```
+ * Not a guard for {@link pushMigrations}: it executes the migration SQL
+ * without recording `_prisma_migrations` rows, and {@link pushSchema} (WASM
+ * diff) records none either, so this stays `false` after both. Guard those
+ * with {@link hasSchema}.
  *
- * Awaits `pglite.waitReady` implicitly via `pglite.query(...)`. Detects only
- * Prisma-managed migrations — `pushSchema` (WASM diff) does not populate
- * `_prisma_migrations`, so this returns `false` for adapter-applied schemas.
+ * Awaits `pglite.waitReady` implicitly via `pglite.query(...)`.
  */
 export const hasMigrations = async (pglite: PGlite | PGliteInterface): Promise<boolean> => {
   const { rows } = await pglite.query<{ exists: boolean }>(
@@ -195,12 +193,12 @@ export const hasMigrations = async (pglite: PGlite | PGliteInterface): Promise<b
  * Returns `true` when the `public` schema contains at least one user table.
  * Broader sibling of {@link hasMigrations} — fires for any DDL, regardless of
  * whether it came from {@link pushMigrations}, {@link pushSchema}, or hand-rolled
- * SQL. Use as a "first run" guard when you are not using a Prisma migrations
- * directory:
+ * SQL. Use as the "first run" guard for persistent dataDirs, for both
+ * {@link pushMigrations} and {@link pushSchema}:
  *
  * ```typescript
  * if (!(await hasSchema(pglite))) {
- *   await pushSchema(bridge.adapter, { schema });
+ *   await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
  * }
  * ```
  *

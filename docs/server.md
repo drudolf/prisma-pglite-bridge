@@ -43,7 +43,7 @@ URL ready to pass to any `pg.Client` / `pg.Pool`. The PGlite
 instance is always accessible as `server.pglite` so scripts can
 pass it to helpers like
 [`pushMigrations`](./api.md#pushmigrationspglite-options) or
-[`hasMigrations`](./api.md#hasmigrationspglite) without threading a
+[`hasSchema`](./api.md#hasschemapglite) without threading a
 separate variable.
 
 By default the server binds to `127.0.0.1` on an ephemeral port

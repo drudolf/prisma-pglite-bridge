@@ -60,9 +60,10 @@ project layout:
 `pushSchema` / `resetSchema` work against any `PrismaPg` adapter
 (typically `bridge.adapter`). If you reopen a persistent `dataDir`
 that already holds the schema, call neither — guard the call with
-[`hasMigrations`](#hasmigrationspglite) (Prisma migrations) or
-[`hasSchema`](#hasschemapglite) (any user table) so the apply step
-runs only on a fresh dataDir.
+[`hasSchema`](#hasschemapglite) so the apply step runs only on a fresh
+dataDir. [`hasMigrations`](#hasmigrationspglite) is not that guard: it
+detects migrations applied by the Prisma CLI, and `pushMigrations`
+records none.
 
 Schema SQL is executed verbatim with no checksum or signature
 verification. Compose it from trusted, version-controlled source
@@ -273,26 +274,32 @@ await resetSchema(bridge.adapter);
 
 Returns `true` when the `_prisma_migrations` table exists on
 `pglite` and contains at least one row with
-`finished_at IS NOT NULL`. Useful as a "first run" guard for
-persistent `dataDir` setups so [`pushMigrations`](#pushmigrationspglite-options)
-only runs on a fresh database:
+`finished_at IS NOT NULL` — that is, when the Prisma CLI
+(`migrate deploy` / `migrate dev`, e.g. through
+[`PGliteServer`](./server.md)) has applied migrations to this
+database. Use it to decide whether a persistent `dataDir` still
+needs a CLI migration run:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import { hasMigrations, pushMigrations } from 'prisma-pglite-bridge';
+import { PGliteServer, hasMigrations } from 'prisma-pglite-bridge';
 
-const pglite = new PGlite('./data/pglite');
-if (!(await hasMigrations(pglite))) {
-  await pushMigrations(pglite, { migrationsPath: './prisma/migrations' });
+const server = new PGliteServer({ pglite: new PGlite('./data/pglite') });
+const url = await server.listen();
+if (!(await hasMigrations(server.pglite))) {
+  console.log(`run: DATABASE_URL=${url} prisma migrate deploy`);
 }
 ```
 
+It is **not** a guard for
+[`pushMigrations`](#pushmigrationspglite-options): that function
+executes the migration SQL without recording `_prisma_migrations`
+rows, and [`pushSchema`](#pushschemaadapter-options) records none
+either, so `hasMigrations` stays `false` after both. Guard those
+with [`hasSchema`](#hasschemapglite) instead.
+
 Awaits `pglite.waitReady` implicitly via `pglite.query(...)`, so it
-is safe to call immediately after `new PGlite(...)`. Detects only
-Prisma-managed migrations — [`pushSchema`](#pushschemaadapter-options)
-does not populate `_prisma_migrations`, so this returns `false` for
-adapter-applied schemas. Use [`hasSchema`](#hasschemapglite) for the
-broader check.
+is safe to call immediately after `new PGlite(...)`.
 
 ## `hasSchema(pglite)`
 
@@ -300,8 +307,9 @@ Returns `true` when the `public` schema contains at least one user
 table. Broader sibling of [`hasMigrations`](#hasmigrationspglite) —
 fires for any DDL, regardless of whether it came from
 [`pushMigrations`](#pushmigrationspglite-options),
-[`pushSchema`](#pushschemaadapter-options), or hand-rolled SQL. Use
-when migrations are not part of the workflow:
+[`pushSchema`](#pushschemaadapter-options), or hand-rolled SQL. The
+"first run" guard for persistent `dataDir` setups, whichever way the
+schema is applied:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';

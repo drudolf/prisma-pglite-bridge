@@ -639,7 +639,7 @@ looks like:
 ```typescript
 // scripts/db-dev.ts
 import { PGlite } from '@electric-sql/pglite';
-import { PGliteServer, hasMigrations, pushMigrations } from 'prisma-pglite-bridge';
+import { PGliteServer, hasSchema, pushMigrations } from 'prisma-pglite-bridge';
 
 // Caller-supplied PGlite because we need a persistent dataDir:
 const mainPglite = new PGlite('./data/pglite');
@@ -648,7 +648,7 @@ const shadowPglite = new PGlite('./data/shadow');
 const server = new PGliteServer({ pglite: mainPglite, port: 54321 });
 const shadow = new PGliteServer({ pglite: shadowPglite, port: 54322 });
 
-if (!(await hasMigrations(server.pglite))) {
+if (!(await hasSchema(server.pglite))) {
   await pushMigrations(server.pglite, { migrationsPath: './prisma/migrations' });
 }
 
@@ -693,8 +693,11 @@ psql "$DATABASE_URL"      # ad-hoc inspection
 ```
 
 Add `data/` to `.gitignore`. Delete the directory to start fresh or to
-pick up new migrations (`hasMigrations` returns `true` once any migration
-has been applied, so subsequent runs skip `pushMigrations`).
+pick up new migrations (`hasSchema` returns `true` once the first run has
+created tables, so subsequent runs skip `pushMigrations`). `hasMigrations`
+is not the right guard here: `pushMigrations` executes the migration SQL
+without recording `_prisma_migrations` rows, so it would stay `false` and
+the second start would fail on `CREATE TABLE`.
 
 ### Long-running script with clean shutdown
 
