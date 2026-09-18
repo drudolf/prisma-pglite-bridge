@@ -484,6 +484,11 @@ const callbackThrowProbe = `
   }));
 `;
 
+// The bridge child boots tsx + a fresh PGlite: ~7-9 s idle, 12 s+ on a
+// contended 4-vCPU runner. Keep the kill budget well above that.
+const CALLBACK_PROBE_TIMEOUT_MS = 30_000;
+const CALLBACK_PROBE_TEST_TIMEOUT_MS = 45_000;
+
 const runCallbackThrowProbe = async (
   implementation: CallbackThrowProbe['implementation'],
   outcome: CallbackThrowProbe['outcome'],
@@ -503,7 +508,7 @@ const runCallbackThrowProbe = async (
       bridgeClientUrl,
       sessionLockUrl,
     ],
-    { cwd: process.cwd(), encoding: 'utf8', timeout: 15_000 },
+    { cwd: process.cwd(), encoding: 'utf8', timeout: CALLBACK_PROBE_TIMEOUT_MS },
   );
   try {
     return JSON.parse(stdout) as CallbackThrowProbe;
@@ -519,37 +524,45 @@ const runCallbackThrowProbe = async (
 describe(`callback-throw channel parity with pg@${CALLBACK_THROW_PG_VERSION}`, () => {
   const outcomes = ['success', 'error'] as const;
 
-  it.each(outcomes)('pins stock pg asynchronous %s-callback throws', async (outcome) => {
-    const stock = await runCallbackThrowProbe('stock', outcome);
+  it.each(outcomes)(
+    'pins stock pg asynchronous %s-callback throws',
+    async (outcome) => {
+      const stock = await runCallbackThrowProbe('stock', outcome);
 
-    expect(stock).toMatchObject({
-      implementation: 'stock',
-      outcome,
-      pgVersion: CALLBACK_THROW_PG_VERSION,
-      returnedUndefined: true,
-      callback: {
-        hasError: outcome === 'error',
-        hasResult: outcome === 'success',
-      },
-    });
-    expect(stock.observed).toEqual([
-      { channel: 'uncaughtException', message: `callback ${outcome} boom` },
-    ]);
-  });
+      expect(stock).toMatchObject({
+        implementation: 'stock',
+        outcome,
+        pgVersion: CALLBACK_THROW_PG_VERSION,
+        returnedUndefined: true,
+        callback: {
+          hasError: outcome === 'error',
+          hasResult: outcome === 'success',
+        },
+      });
+      expect(stock.observed).toEqual([
+        { channel: 'uncaughtException', message: `callback ${outcome} boom` },
+      ]);
+    },
+    CALLBACK_PROBE_TEST_TIMEOUT_MS,
+  );
 
-  it.each(outcomes)('matches stock pg for asynchronous %s-callback throws', async (outcome) => {
-    const [stock, bridge] = await Promise.all([
-      runCallbackThrowProbe('stock', outcome),
-      runCallbackThrowProbe('bridge', outcome),
-    ]);
+  it.each(outcomes)(
+    'matches stock pg for asynchronous %s-callback throws',
+    async (outcome) => {
+      const [stock, bridge] = await Promise.all([
+        runCallbackThrowProbe('stock', outcome),
+        runCallbackThrowProbe('bridge', outcome),
+      ]);
 
-    expect(bridge).toMatchObject({
-      implementation: 'bridge',
-      outcome,
-      pgVersion: CALLBACK_THROW_PG_VERSION,
-      returnedUndefined: true,
-      callback: stock.callback,
-    });
-    expect(bridge.observed).toEqual(stock.observed);
-  });
+      expect(bridge).toMatchObject({
+        implementation: 'bridge',
+        outcome,
+        pgVersion: CALLBACK_THROW_PG_VERSION,
+        returnedUndefined: true,
+        callback: stock.callback,
+      });
+      expect(bridge.observed).toEqual(stock.observed);
+    },
+    CALLBACK_PROBE_TEST_TIMEOUT_MS,
+  );
 });
