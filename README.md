@@ -44,40 +44,76 @@ loads `@prisma/*` code at runtime. The Prisma packages still land in
 ## Quickstart
 
 ```typescript
+// tests/users.test.ts
+import { PrismaClient } from '@prisma/client';
+import { createBridgeTest } from 'prisma-pglite-bridge/vitest';
+import { expect } from 'vitest';
+
+const test = createBridgeTest({
+  client: (adapter) => new PrismaClient({ adapter }),
+  migrations: true, // applies prisma/migrations, resolved via prisma.config.ts
+  seed: async (prisma) => {
+    await prisma.user.create({ data: { email: 'ada@example.com', name: 'Ada' } });
+  },
+});
+
+test('starts from the seeded snapshot', async ({ prisma }) => {
+  expect(await prisma.user.count()).toBe(1);
+});
+```
+
+One call boots an in-memory PostgreSQL, applies your migrations, runs
+the seed once, snapshots the result, and hands every test a `prisma`
+client restored to that snapshot. No Docker, no database server —
+works in GitHub Actions, GitLab CI, and anywhere Node.js runs.
+
+- `migrations: true` reads the migrations directory from
+  `prisma.config.ts` (needs the optional `@prisma/config` peer). Pass
+  `migrations: { migrationsPath: './prisma/migrations' }` to skip config
+  resolution, or `schema: { schema }` with the contents of
+  `schema.prisma` when there is no migrations directory yet
+  ([`pushSchema`](./docs/api.md#pushschemaadapter-options)).
+- Using the `prisma-client` generator? Import `PrismaClient` from your
+  generator `output` path (for example
+  `./src/generated/prisma/client.js`) instead of `@prisma/client`.
+- Jest: `setupPGliteBridge` from `prisma-pglite-bridge/jest` takes the
+  same options ([cookbook](./docs/cookbook.md#jest-one-call)).
+- `createBridgeTest` needs vitest ≥ 3.2 (fixture scopes). Every option,
+  the `scope` dial (`'file'` / `'worker'` / `'test'`), and the fixtures
+  are in the
+  [API reference](./docs/api.md#the-vitest-and-jest-entries-prisma-testing-helpers).
+
+### By hand
+
+The helper composes four building blocks you can call directly — for
+other test runners, a custom lifecycle, or a long-lived dev database:
+
+```typescript
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 import { PrismaClient } from '@prisma/client';
-import seed from './seed.ts'; // user-provided: (prisma: PrismaClient) => Promise<void>
+import seed from './seed.ts'; // your own (prisma: PrismaClient) => Promise<void>
 
 const bridge = new PGliteBridge();
-// Have prisma/migrations/? Use pushMigrations (shown).
-// Only schema.prisma? Use pushSchema instead — see docs/api.md.
 await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
 
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 await seed(prisma);
-await bridge.snapshotDb();
+await bridge.snapshotDb(); // capture the seeded state once
 
-beforeEach(() => bridge.resetDb());
+beforeEach(() => bridge.resetDb()); // restore it before every test
+afterAll(() => bridge.close());
 ```
 
-`snapshotDb()` captures the seeded state once. `resetDb()` in
-`beforeEach` then restores each test to that snapshot — fast,
-deterministic, no re-seeding per test. Skip the snapshot/reset
-pair if your tests are read-only or you want state to carry
-over.
-
-That's it. Run `prisma migrate dev` first to generate migration
-files. No Docker, no database server — works in GitHub Actions,
-GitLab CI, and any environment where Node.js runs.
-
-For projects without a `prisma/migrations` directory (test
-fixtures, prototypes), see [Populating the
-database](./docs/api.md#populating-the-database) for the
-`pushSchema` alternative.
+Skip the snapshot/reset pair if your tests are read-only or you want
+state to carry over. Run `prisma migrate dev` first to generate
+migration files; for projects without a `prisma/migrations` directory
+see [Populating the database](./docs/api.md#populating-the-database).
 
 Running the Prisma CLI against this bridge (shadow DB for
-`migrate dev`, `psql`, SQL GUIs)? See
-[`PGliteServer`](./docs/server.md) for the TCP/Unix-socket front.
+`migrate dev`, `psql`, SQL GUIs), or an app in a separate process
+(end-to-end tests)? See [`PGliteServer`](./docs/server.md) for the
+TCP/Unix-socket front and the
+[end-to-end recipe](./docs/cookbook.md#end-to-end-run-your-app-against-the-bridge).
 
 ## When a test fails, see what it did to the database
 
