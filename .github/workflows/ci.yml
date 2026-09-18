@@ -20,7 +20,11 @@ jobs:
       - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm check
+      # LANG pins the ICU default locale for the migrations sort-order parity
+      # fixture (localeCompare, matching the Prisma CLI) — cli-compat project.
       - run: pnpm test:coverage
+        env:
+          LANG: en_US.UTF-8
       - run: pnpm check:exports
       - run: pnpm check:pack
       - run: pnpm check:pool-purity

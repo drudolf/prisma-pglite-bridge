@@ -59,12 +59,13 @@ project layout:
 
 `pushMigrations` works against any `PGlite` instance directly;
 `pushSchema` / `resetSchema` work against any `PrismaPg` adapter
-(typically `bridge.adapter`). If you reopen a persistent `dataDir`
-that already holds the schema, call neither — guard the call with
-[`hasSchema`](#hasschemapglite) so the apply step runs only on a fresh
-dataDir. [`hasMigrations`](#hasmigrationspglite) is not that guard: it
-detects migrations applied by the Prisma CLI, and `pushMigrations`
-records none.
+(typically `bridge.adapter`). On a persistent `dataDir`,
+`pushMigrations` with a migrations directory needs no guard: it keeps
+Prisma's `_prisma_migrations` history and skips migrations already
+applied, so reopening the database and calling it again is a no-op.
+`pushSchema` and `pushMigrations({ sql })` record nothing — guard
+those with [`hasSchema`](#hasschemapglite) so the apply step runs only
+on a fresh dataDir.
 
 Schema SQL is executed verbatim with no checksum or signature
 verification. Compose it from trusted, version-controlled source
@@ -145,7 +146,9 @@ Instance members:
   so the warm statement cache survives the reset).
   Call in `beforeEach` for per-test isolation.
   Note: this clears all data including seed data — re-seed after
-  reset (or use `snapshotDb()` first) if needed.
+  reset (or use `snapshotDb()` first) if needed. Prisma's `_prisma%`
+  tables (the migration history) are neither captured by
+  `snapshotDb()` nor truncated here, so the history survives resets.
 - `snapshotDb()` — captures the current DB contents into an internal
   snapshot so later `resetDb()` calls restore to that state instead of
   truncating to empty.
@@ -196,18 +199,79 @@ await pushMigrations(pglite, { configRoot: process.cwd() });
 
 Resolution order — first match wins:
 
-1. **`sql` option** — pre-generated SQL string, applied directly
-2. **`migrationsPath` option** — concatenates every
-   `migration.sql` found one directory level below, in
-   directory-name order
+1. **`sql` option** — pre-generated SQL string, applied as one
+   batch with no bookkeeping
+2. **`migrationsPath` option** — every directory one level below
+   that holds a `migration.sql`, in directory-name order (the same
+   listing the Prisma CLI uses)
 3. **Auto-discovered migrations** — uses `@prisma/config` to find
    migration files (same resolution as `prisma migrate dev`),
    triggered by passing `configRoot`. Requires `prisma` to be
    installed (which provides `@prisma/config` as a transitive
    dependency).
 
-Returns `{ durationMs }` — the wall-clock time PGlite spent applying
-the SQL, useful when you want to log schema-setup cost.
+Returns `{ durationMs, applied, skipped }`: the wall-clock time
+of the apply — the SQL alone on the `sql` path; history validation,
+bookkeeping rows, and scripts on the directory path (useful when you
+want to log schema-setup cost), the migration names this call applied, in order,
+and the names it found already recorded and skipped. Both arrays are
+empty on the `sql` path.
+
+### Migration history
+
+With a migrations directory (explicit or auto-discovered),
+`pushMigrations` keeps the same `_prisma_migrations` history that
+`prisma migrate deploy` writes, so the two are interchangeable on one
+database:
+
+- The table is created with Prisma's own DDL (`CREATE TABLE IF NOT
+  EXISTS _prisma_migrations`, unqualified, so it lands in the
+  session's default schema); a table the engine already created is
+  left as is.
+- Each migration is applied on its own, at Prisma's granularity: one
+  started row (`id`, `checksum`, `migration_name`, `started_at`),
+  then the script as a single `exec`, then `finished_at` and
+  `applied_steps_count = 1` — what `migrate deploy` records. A script
+  with explicit `BEGIN`/`COMMIT` or `CREATE INDEX CONCURRENTLY`
+  behaves as it does under Prisma's runner.
+- `checksum` is the SHA-256 hex of the raw `migration.sql` text, as
+  Prisma computes it; the comparison tolerates CRLF/LF differences,
+  as Prisma's does.
+- Migrations already recorded as applied are skipped, so the call is
+  idempotent on a persistent `dataDir`, and the Prisma CLI (`migrate
+  status` / `deploy` / `dev` through [`PGliteServer`](./server.md))
+  sees the history. Rows marked rolled back (`prisma migrate resolve
+  --rolled-back`) are re-applied, as `migrate deploy` does.
+- Before applying, the history is validated as the CLI validates it.
+  A migration started but never finished, more than one active row
+  for one name, a row applied in the database but missing from the
+  directory, or a script modified after it was applied throws
+  [`MIGRATIONS_HISTORY_INVALID`](./troubleshooting.md#migrations_history_invalid);
+  the message names the `prisma migrate resolve` repair.
+- When a script fails,
+  [`MIGRATIONS_APPLY_FAILED`](./troubleshooting.md#migrations_apply_failed)
+  names the migration and carries the PGlite error as `cause`. The
+  started row is kept — Prisma's failed-row model — so the next call
+  reports it as `MIGRATIONS_HISTORY_INVALID` instead of re-running
+  the script. Whether the DDL landed depends on where it failed: if
+  the `exec` threw, PGlite's implicit transaction rolled the script
+  back (unless the script contains its own `COMMIT`); if the process
+  died after the `exec` succeeded but before the finished update, the
+  DDL is in place and the row is still started. Resolve with `prisma
+  migrate resolve --rolled-back` or `--applied` accordingly — see
+  [troubleshooting](./troubleshooting.md#migrations_history_invalid).
+- `snapshotDb()` does not capture and `resetDb()` does not truncate
+  `_prisma%` tables, so the history survives resets.
+- Concurrent `pushMigrations` calls on one instance are unsupported;
+  run them one after another.
+- The bookkeeping follows the Prisma releases in the `@prisma/*` peer
+  range (`^7`); parity with the CLI is verified by the cli-compat
+  suite against the pinned Prisma version, which every
+  dependency-bump PR runs.
+
+The `sql` path is unchanged: one `exec`, no bookkeeping, not
+idempotent — guard it with [`hasSchema`](#hasschemapglite) on a
+persistent `dataDir`.
 
 ## `pushSchema(adapter, options)`
 
@@ -273,13 +337,15 @@ await resetSchema(bridge.adapter);
 
 ## `hasMigrations(pglite)`
 
-Returns `true` when the `_prisma_migrations` table exists on
-`pglite` and contains at least one row with
-`finished_at IS NOT NULL` — that is, when the Prisma CLI
+Returns `true` when the `_prisma_migrations` table exists in the
+session's default schema on `pglite` and contains at least one row
+with `finished_at IS NOT NULL` — that is, when the Prisma CLI
 (`migrate deploy` / `migrate dev`, e.g. through
-[`PGliteServer`](./server.md)) has applied migrations to this
-database. Use it to decide whether a persistent `dataDir` still
-needs a CLI migration run:
+[`PGliteServer`](./server.md)) or
+[`pushMigrations`](#pushmigrationspglite-options) has applied
+migrations to this database; both write the same history. Use it to
+decide whether a persistent `dataDir` still needs a CLI migration
+run:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
@@ -292,12 +358,11 @@ if (!(await hasMigrations(server.pglite))) {
 }
 ```
 
-It is **not** a guard for
-[`pushMigrations`](#pushmigrationspglite-options): that function
-executes the migration SQL without recording `_prisma_migrations`
-rows, and [`pushSchema`](#pushschemaadapter-options) records none
-either, so `hasMigrations` stays `false` after both. Guard those
-with [`hasSchema`](#hasschemapglite) instead.
+[`pushSchema`](#pushschemaadapter-options) (the WASM diff) records no
+`_prisma_migrations` rows, so `hasMigrations` stays `false` after it —
+guard that one with [`hasSchema`](#hasschemapglite) instead.
+`pushMigrations` with a migrations directory needs no guard at all: it
+skips the migrations already in the history.
 
 Awaits `pglite.waitReady` implicitly via `pglite.query(...)`, so it
 is safe to call immediately after `new PGlite(...)`.
@@ -305,12 +370,15 @@ is safe to call immediately after `new PGlite(...)`.
 ## `hasSchema(pglite)`
 
 Returns `true` when the `public` schema contains at least one user
-table. Broader sibling of [`hasMigrations`](#hasmigrationspglite) —
-fires for any DDL, regardless of whether it came from
+table other than Prisma's own `_prisma_migrations` bookkeeping
+(`_prisma%` tables are ignored). Broader sibling of
+[`hasMigrations`](#hasmigrationspglite) — fires for any DDL,
+regardless of whether it came from
 [`pushMigrations`](#pushmigrationspglite-options),
 [`pushSchema`](#pushschemaadapter-options), or hand-rolled SQL. The
-"first run" guard for persistent `dataDir` setups, whichever way the
-schema is applied:
+"first run" guard for `pushSchema` and for `pushMigrations({ sql })`
+on a persistent `dataDir` — the migrations-directory path of
+`pushMigrations` is idempotent and needs no guard:
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
@@ -779,7 +847,8 @@ links to its troubleshooting section.
 | [`PGLITE_CLOSED`](./troubleshooting.md#pglite_closed) | duplex startup / recovery (surfaces via connection or query rejection) | the PGlite instance was closed |
 | [`PGLITE_NOT_READY`](./troubleshooting.md#pglite_not_ready) | duplex startup / recovery (surfaces via connection or query rejection) | PGlite failed to become ready (includes the readiness timeout) |
 | [`MIGRATIONS_UNAVAILABLE`](./troubleshooting.md#migrations_unavailable) | `pushMigrations()` | no usable migrations source: no `sql`, no `migration.sql` files, no loadable `prisma.config.ts` |
-| [`MIGRATIONS_APPLY_FAILED`](./troubleshooting.md#migrations_apply_failed) | `pushMigrations()` | applying the SQL failed; the PGlite error is preserved as `cause` |
+| [`MIGRATIONS_APPLY_FAILED`](./troubleshooting.md#migrations_apply_failed) | `pushMigrations()` | applying the SQL failed; the PGlite error is preserved as `cause`. On the migrations-directory path the message names the migration and its started `_prisma_migrations` row is kept |
+| [`MIGRATIONS_HISTORY_INVALID`](./troubleshooting.md#migrations_history_invalid) | `pushMigrations()` | `_prisma_migrations` holds a failed, duplicate, orphaned, or modified migration, or tables exist with no history at all; the message names the `prisma migrate resolve` repair |
 | [`SNAPSHOT_INVALID`](./troubleshooting.md#snapshot_invalid) | `resetDb()` (snapshot restore) | the schema changed since `snapshotDb()` — re-run `snapshotDb()` |
 
 Argument-type validation keeps the JavaScript-idiomatic `TypeError` (for

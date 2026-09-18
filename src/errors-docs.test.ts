@@ -25,6 +25,7 @@ const errorCodes = [
   'PGLITE_NOT_READY',
   'MIGRATIONS_UNAVAILABLE',
   'MIGRATIONS_APPLY_FAILED',
+  'MIGRATIONS_HISTORY_INVALID',
   'SNAPSHOT_INVALID',
 ] as const satisfies readonly PgBridgeErrorCode[];
 

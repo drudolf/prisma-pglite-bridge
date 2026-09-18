@@ -696,23 +696,20 @@ PGlite and hand it to the bridge; a caller-supplied PGlite is
 caller-owned, so you control when it closes:
 
 ```typescript
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaClient } from '@prisma/client';
 import { PGliteBridge, pushMigrations } from 'prisma-pglite-bridge';
 
-const dataDir = './data/pglite';
-const firstRun = !existsSync(join(dataDir, 'PG_VERSION'));
-
-const pglite = new PGlite(dataDir);
+const pglite = new PGlite('./data/pglite');
 const bridge = new PGliteBridge({ pglite }); // caller owns pglite
-if (firstRun) await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
+await pushMigrations(bridge.pglite, { migrationsPath: './prisma/migrations' });
 const prisma = new PrismaClient({ adapter: bridge.adapter });
 ```
 
-**Add `data/pglite/` to `.gitignore`.** Delete the data directory after
-schema changes to pick up new migrations. This is a local PostgreSQL
+`pushMigrations` keeps Prisma's `_prisma_migrations` history, so every
+start applies only the migrations not yet recorded — no first-run
+guard needed. **Add `data/pglite/` to `.gitignore`.** Delete the data
+directory to start from an empty database. This is a local PostgreSQL
 without Docker — handy for offline development or where installing
 PostgreSQL is impractical.
 
@@ -729,7 +726,7 @@ looks like:
 ```typescript
 // scripts/db-dev.ts
 import { PGlite } from '@electric-sql/pglite';
-import { PGliteServer, hasSchema, pushMigrations } from 'prisma-pglite-bridge';
+import { PGliteServer, pushMigrations } from 'prisma-pglite-bridge';
 
 // Caller-supplied PGlite because we need a persistent dataDir:
 const mainPglite = new PGlite('./data/pglite');
@@ -738,9 +735,7 @@ const shadowPglite = new PGlite('./data/shadow');
 const server = new PGliteServer({ pglite: mainPglite, port: 54321 });
 const shadow = new PGliteServer({ pglite: shadowPglite, port: 54322 });
 
-if (!(await hasSchema(server.pglite))) {
-  await pushMigrations(server.pglite, { migrationsPath: './prisma/migrations' });
-}
+await pushMigrations(server.pglite, { migrationsPath: './prisma/migrations' });
 
 const [DATABASE_URL, SHADOW_DATABASE_URL] = await Promise.all([server.listen(), shadow.listen()]);
 
@@ -782,12 +777,12 @@ pnpm prisma studio        # connects to DATABASE_URL
 psql "$DATABASE_URL"      # ad-hoc inspection
 ```
 
-Add `data/` to `.gitignore`. Delete the directory to start fresh or to
-pick up new migrations (`hasSchema` returns `true` once the first run has
-created tables, so subsequent runs skip `pushMigrations`). `hasMigrations`
-is not the right guard here: `pushMigrations` executes the migration SQL
-without recording `_prisma_migrations` rows, so it would stay `false` and
-the second start would fail on `CREATE TABLE`.
+Add `data/` to `.gitignore`. `pushMigrations` needs no guard here: it
+keeps Prisma's `_prisma_migrations` history, so subsequent starts skip
+the migrations already applied and only apply new ones, and `prisma
+migrate dev` against the server sees that history — no drift prompt,
+no re-application. Delete the directory to start from an empty
+database.
 
 ### Long-running script with clean shutdown
 

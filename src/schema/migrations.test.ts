@@ -1,4 +1,5 @@
-import { symlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +11,7 @@ import {
   getMigrationSQL,
   hasMigrations,
   hasSchema,
+  listMigrations,
   pushMigrations,
   readMigrationFiles,
 } from './migrations.ts';
@@ -217,28 +219,79 @@ describe('migrations utilities', () => {
 const sharedPglite = new PGlite();
 await sharedPglite.waitReady;
 
-describe('pushMigrations', () => {
-  afterAll(async () => {
-    await sharedPglite.close();
-  });
+// Closed once at module teardown — several describes below share the instance.
+afterAll(async () => {
+  await sharedPglite.close();
+});
 
-  // Drop public and any user-created schemas, then recreate public. This
-  // handles tables, types, sequences, functions, and schemas that individual
-  // tests create. Fail loud on errors — dirty state must not silently corrupt
-  // the next test's starting conditions.
-  beforeEach(async () => {
-    const { rows } = await sharedPglite.query<{ nspname: string }>(
-      `SELECT nspname FROM pg_namespace
-       WHERE nspname NOT IN ('pg_catalog', 'information_schema')
-         AND nspname NOT LIKE 'pg_%'`,
-    );
-    for (const { nspname } of rows) {
-      await sharedPglite.exec(`DROP SCHEMA IF EXISTS "${nspname}" CASCADE`);
-    }
-    await sharedPglite.exec('CREATE SCHEMA public');
-    await sharedPglite.exec('GRANT ALL ON SCHEMA public TO public');
-    await sharedPglite.exec('DISCARD ALL');
-  });
+// Drop public and any user-created schemas, then recreate public. This
+// handles tables, types, sequences, functions, and schemas that individual
+// tests create. Fail loud on errors — dirty state must not silently corrupt
+// the next test's starting conditions.
+const wipeSharedPglite = async (): Promise<void> => {
+  const { rows } = await sharedPglite.query<{ nspname: string }>(
+    `SELECT nspname FROM pg_namespace
+     WHERE nspname NOT IN ('pg_catalog', 'information_schema')
+       AND nspname NOT LIKE 'pg_%'`,
+  );
+  for (const { nspname } of rows) {
+    await sharedPglite.exec(`DROP SCHEMA IF EXISTS "${nspname}" CASCADE`);
+  }
+  await sharedPglite.exec('CREATE SCHEMA public');
+  await sharedPglite.exec('GRANT ALL ON SCHEMA public TO public');
+  await sharedPglite.exec('DISCARD ALL');
+};
+
+/** A migrations directory holding `<name>/migration.sql` for each entry, in the given order. */
+const createMigrationsDir = (entries: Record<string, string>): string => {
+  const { path: migrationsPath } = createTempDir('migrations');
+  for (const [name, sql] of Object.entries(entries)) {
+    createTempFile('migration.sql', sql, createTempDir(name, migrationsPath).path);
+  }
+  return migrationsPath;
+};
+
+const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
+
+/** Prisma's own `_prisma_migrations` DDL — what `pushMigrations` and the engine both create. */
+const PRISMA_MIGRATIONS_DDL = `CREATE TABLE IF NOT EXISTS _prisma_migrations (
+  id                      VARCHAR(36) PRIMARY KEY NOT NULL,
+  checksum                VARCHAR(64) NOT NULL,
+  finished_at             TIMESTAMPTZ,
+  migration_name          VARCHAR(255) NOT NULL,
+  logs                    TEXT,
+  rolled_back_at          TIMESTAMPTZ,
+  started_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+  applied_steps_count     INTEGER NOT NULL DEFAULT 0
+)`;
+
+interface HistoryRow {
+  id: string;
+  checksum: string;
+  finished_at: string | null;
+  migration_name: string;
+  logs: string | null;
+  rolled_back_at: string | null;
+  applied_steps_count: number;
+}
+
+const readHistory = async (): Promise<HistoryRow[]> => {
+  const { rows } = await sharedPglite.query<HistoryRow>(
+    `SELECT id, checksum, finished_at::text, migration_name, logs, rolled_back_at::text,
+            applied_steps_count
+     FROM _prisma_migrations ORDER BY started_at, migration_name`,
+  );
+  return rows;
+};
+
+const catchError = (promise: Promise<unknown>): Promise<unknown> =>
+  promise.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+
+describe('pushMigrations', () => {
+  beforeEach(wipeSharedPglite);
 
   // Bridges backed by the shared pglite — bridge.close() leaves sharedPglite open.
   const cleanups: Array<() => Promise<void>> = [];
@@ -623,6 +676,408 @@ describe('pushMigrations durationMs mutation-kill pin', () => {
     } finally {
       await timingBridge.close();
       await timingPglite.close();
+    }
+  });
+});
+
+// ————— listMigrations: the CLI's own listing (name / sql / checksum, localeCompare) —————
+
+describe('listMigrations', () => {
+  it('returns name, raw sql and the sha256 hex checksum of the bytes as read', () => {
+    const lf = 'CREATE TABLE "A" ("id" TEXT PRIMARY KEY);\n';
+    const crlf = 'CREATE TABLE "B" ("id" TEXT PRIMARY KEY);\r\n';
+    const migrationsPath = createMigrationsDir({ '0001_lf': lf, '0002_crlf': crlf });
+    try {
+      const migrations = listMigrations(migrationsPath);
+
+      expect(migrations).toEqual([
+        { name: '0001_lf', sql: lf, checksum: sha256(lf) },
+        { name: '0002_crlf', sql: crlf, checksum: sha256(crlf) },
+      ]);
+      // A CRLF file hashes its CRLF bytes — no normalization on the way in.
+      expect(migrations[1]?.checksum).not.toBe(sha256(crlf.replaceAll('\r\n', '\n')));
+      expect(migrations[1]?.checksum).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+
+  it('orders entries with localeCompare (the Prisma CLI comparator), not code-point order', () => {
+    const migrationsPath = createMigrationsDir({
+      '20240101_B': 'SELECT 2;',
+      '20240101_ä': 'SELECT 3;',
+      '20240101_a': 'SELECT 1;',
+    });
+    try {
+      const names = listMigrations(migrationsPath).map((m) => m.name);
+      const fixture = ['20240101_a', '20240101_B', '20240101_ä'];
+
+      expect(names).toEqual([...fixture].sort((a, b) => a.localeCompare(b)));
+      // Code-point order puts 'B' (0x42) before 'a' (0x61); locale order does not.
+      // A regression to plain `.sort()` would satisfy the line below, so pin the
+      // two orders apart explicitly.
+      expect([...fixture].sort()).toEqual(['20240101_B', '20240101_a', '20240101_ä']);
+      expect(names).not.toEqual([...fixture].sort());
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+
+  it('ignores non-directory entries and directories without migration.sql', () => {
+    const migrationsPath = createMigrationsDir({ '0002_real': 'SELECT 1;' });
+    try {
+      createTempFile('migration_lock.toml', 'provider = "postgresql"\n', migrationsPath);
+      createTempFile('.DS_Store', '', migrationsPath);
+      createTempDir('0001_no_sql', migrationsPath);
+
+      expect(listMigrations(migrationsPath).map((m) => m.name)).toEqual(['0002_real']);
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+
+  it('returns an empty list when the directory does not exist', () => {
+    expect(listMigrations('/definitely/missing/migrations')).toEqual([]);
+  });
+});
+
+// ————— pushMigrations: `_prisma_migrations` bookkeeping on the migrationsPath path —————
+
+const INIT_SQL = 'CREATE TABLE "Widget" ("id" TEXT PRIMARY KEY);\n';
+const ADD_COLOR_SQL = 'ALTER TABLE "Widget" ADD COLUMN "color" TEXT NOT NULL DEFAULT \'red\';\n';
+
+describe('pushMigrations history bookkeeping', () => {
+  beforeEach(wipeSharedPglite);
+
+  let migrationsPath: string;
+  beforeEach(() => {
+    migrationsPath = createMigrationsDir({
+      '20240101000000_init': INIT_SQL,
+      '20240101000001_add_color': ADD_COLOR_SQL,
+    });
+  });
+  afterEach(() => {
+    removeTempDir(migrationsPath);
+  });
+
+  it('records one finished row per applied migration with Prisma-shaped values', async () => {
+    const result = await pushMigrations(sharedPglite, { migrationsPath });
+
+    expect(result.applied).toEqual(['20240101000000_init', '20240101000001_add_color']);
+    expect(result.skipped).toEqual([]);
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+
+    const rows = await readHistory();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.migration_name)).toEqual([
+      '20240101000000_init',
+      '20240101000001_add_color',
+    ]);
+    expect(rows.map((r) => r.checksum)).toEqual([sha256(INIT_SQL), sha256(ADD_COLOR_SQL)]);
+    for (const row of rows) {
+      expect(row.id).toHaveLength(36);
+      expect(row.finished_at).not.toBeNull();
+      expect(row.applied_steps_count).toBe(1);
+      expect(row.logs).toBeNull();
+      expect(row.rolled_back_at).toBeNull();
+    }
+  });
+
+  it('is idempotent: the second call applies nothing and skips every recorded migration', async () => {
+    await pushMigrations(sharedPglite, { migrationsPath });
+    const second = await pushMigrations(sharedPglite, { migrationsPath });
+
+    expect(second.applied).toEqual([]);
+    expect(second.skipped).toEqual(['20240101000000_init', '20240101000001_add_color']);
+    expect(await readHistory()).toHaveLength(2);
+
+    const { rows } = await sharedPglite.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'Widget' ORDER BY column_name`,
+    );
+    expect(rows.map((r) => r.column_name)).toEqual(['color', 'id']);
+  });
+
+  it('flips hasMigrations and hasSchema to true once migrations are applied', async () => {
+    await expect(hasMigrations(sharedPglite)).resolves.toBe(false);
+    await expect(hasSchema(sharedPglite)).resolves.toBe(false);
+
+    await pushMigrations(sharedPglite, { migrationsPath });
+
+    await expect(hasMigrations(sharedPglite)).resolves.toBe(true);
+    await expect(hasSchema(sharedPglite)).resolves.toBe(true);
+  });
+
+  it('hasSchema stays false when only the _prisma_migrations table exists', async () => {
+    await sharedPglite.exec(PRISMA_MIGRATIONS_DDL);
+    await expect(hasSchema(sharedPglite)).resolves.toBe(false);
+  });
+
+  it('applies a migration added to the directory later, skipping the recorded ones', async () => {
+    await pushMigrations(sharedPglite, { migrationsPath });
+    createTempFile(
+      'migration.sql',
+      'CREATE TABLE "Gadget" ("id" TEXT PRIMARY KEY);\n',
+      createTempDir('20240101000002_gadget', migrationsPath).path,
+    );
+
+    const result = await pushMigrations(sharedPglite, { migrationsPath });
+
+    expect(result.applied).toEqual(['20240101000002_gadget']);
+    expect(result.skipped).toEqual(['20240101000000_init', '20240101000001_add_color']);
+    expect((await readHistory()).map((r) => r.migration_name)).toEqual([
+      '20240101000000_init',
+      '20240101000001_add_color',
+      '20240101000002_gadget',
+    ]);
+  });
+
+  it('creates _prisma_migrations unqualified, so it lands in the session search_path schema', async () => {
+    await sharedPglite.exec('CREATE SCHEMA other');
+    await sharedPglite.exec('SET search_path TO other');
+    try {
+      await pushMigrations(sharedPglite, { migrationsPath });
+
+      const { rows } = await sharedPglite.query<{ other: boolean; pub: boolean }>(
+        `SELECT to_regclass('other._prisma_migrations') IS NOT NULL AS other,
+                to_regclass('public._prisma_migrations') IS NOT NULL AS pub`,
+      );
+      expect(rows[0]).toEqual({ other: true, pub: false });
+    } finally {
+      await sharedPglite.exec('RESET search_path');
+    }
+  });
+});
+
+// ————— pushMigrations: history validation (MIGRATIONS_HISTORY_INVALID) —————
+
+describe('pushMigrations history validation', () => {
+  beforeEach(wipeSharedPglite);
+
+  let migrationsPath: string;
+  beforeEach(async () => {
+    migrationsPath = createMigrationsDir({ '20240101000000_init': INIT_SQL });
+    await pushMigrations(sharedPglite, { migrationsPath });
+  });
+  afterEach(() => {
+    removeTempDir(migrationsPath);
+  });
+
+  const expectHistoryInvalid = async (pattern: RegExp): Promise<void> => {
+    const caught = await catchError(pushMigrations(sharedPglite, { migrationsPath }));
+    expect(caught).toBeInstanceOf(PgBridgeError);
+    expect((caught as PgBridgeError).code).toBe('MIGRATIONS_HISTORY_INVALID');
+    expect((caught as PgBridgeError).message).toMatch(pattern);
+  };
+
+  it('rejects a started-but-unfinished row and points at both migrate resolve forms', async () => {
+    await sharedPglite.query(
+      `INSERT INTO _prisma_migrations (id, checksum, migration_name) VALUES ('f', $1, '20240101000001_half')`,
+      [sha256('x')],
+    );
+    await expectHistoryInvalid(
+      /20240101000001_half started but never finished.*migrate resolve --applied.*--rolled-back/s,
+    );
+  });
+
+  it('rejects two active rows for one migration name', async () => {
+    await sharedPglite.query(
+      `INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at, applied_steps_count)
+       VALUES ('dup', $1, '20240101000000_init', now(), 1)`,
+      [sha256(INIT_SQL)],
+    );
+    await expectHistoryInvalid(/20240101000000_init has more than one active history row/);
+  });
+
+  it('rejects an active row whose migration directory is missing, naming the migrationsPath', async () => {
+    await sharedPglite.query(
+      `INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at, applied_steps_count)
+       VALUES ('ghost', $1, '20240101000001_ghost', now(), 1)`,
+      [sha256('x')],
+    );
+    const caught = await catchError(pushMigrations(sharedPglite, { migrationsPath }));
+    expect((caught as PgBridgeError).code).toBe('MIGRATIONS_HISTORY_INVALID');
+    expect((caught as PgBridgeError).message).toContain(
+      `20240101000001_ghost is applied in the database but missing from ${migrationsPath}`,
+    );
+  });
+
+  it('rejects a migration.sql edited after it was applied', async () => {
+    writeFileSync(
+      join(migrationsPath, '20240101000000_init', 'migration.sql'),
+      `${INIT_SQL}-- edited\n`,
+    );
+    await expectHistoryInvalid(/20240101000000_init was modified after it was applied/);
+  });
+
+  it('tolerates a line-ending change: LF stored, CRLF on disk', async () => {
+    writeFileSync(
+      join(migrationsPath, '20240101000000_init', 'migration.sql'),
+      INIT_SQL.replaceAll('\n', '\r\n'),
+    );
+    const result = await pushMigrations(sharedPglite, { migrationsPath });
+    expect(result).toMatchObject({ applied: [], skipped: ['20240101000000_init'] });
+  });
+
+  it('tolerates a line-ending change: CRLF stored, LF on disk', async () => {
+    const crlfSql = 'CREATE TABLE "Crlf" ("id" TEXT PRIMARY KEY);\r\n';
+    createTempFile(
+      'migration.sql',
+      crlfSql,
+      createTempDir('20240101000005_crlf', migrationsPath).path,
+    );
+    await pushMigrations(sharedPglite, { migrationsPath });
+    expect((await readHistory()).map((r) => r.checksum)).toContain(sha256(crlfSql));
+
+    writeFileSync(
+      join(migrationsPath, '20240101000005_crlf', 'migration.sql'),
+      crlfSql.replaceAll('\r\n', '\n'),
+    );
+    const result = await pushMigrations(sharedPglite, { migrationsPath });
+    expect(result).toMatchObject({
+      applied: [],
+      skipped: ['20240101000000_init', '20240101000005_crlf'],
+    });
+  });
+
+  it('re-applies a rolled-back migration and keeps the rolled-back row', async () => {
+    await sharedPglite.exec('UPDATE _prisma_migrations SET rolled_back_at = now()');
+    await sharedPglite.exec('DROP TABLE "Widget"');
+
+    const result = await pushMigrations(sharedPglite, { migrationsPath });
+
+    expect(result.applied).toEqual(['20240101000000_init']);
+    expect(result.skipped).toEqual([]);
+    const rows = await readHistory();
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((r) => r.rolled_back_at === null)).toHaveLength(1);
+    await expect(hasSchema(sharedPglite)).resolves.toBe(true);
+  });
+});
+
+// ————— pushMigrations: failure model (MIGRATIONS_APPLY_FAILED keeps the started row) —————
+
+describe('pushMigrations apply failure on the migrationsPath path', () => {
+  beforeEach(wipeSharedPglite);
+
+  it('throws MIGRATIONS_APPLY_FAILED naming the migration, keeps its started row, and reports it next time', async () => {
+    const migrationsPath = createMigrationsDir({
+      '20240101000000_init': INIT_SQL,
+      '20240101000001_broken': 'CREATE TABLE "Broken" ("id" TEXT REFERENCES "Missing"("id"));\n',
+      '20240101000002_unreached': 'CREATE TABLE "Unreached" ("id" TEXT PRIMARY KEY);\n',
+    });
+    try {
+      const caught = await catchError(pushMigrations(sharedPglite, { migrationsPath }));
+
+      expect(caught).toBeInstanceOf(PgBridgeError);
+      expect((caught as PgBridgeError).code).toBe('MIGRATIONS_APPLY_FAILED');
+      expect((caught as PgBridgeError).message).toMatch(
+        /^Failed to apply migration 20240101000001_broken to in-memory PGlite\./,
+      );
+      const cause = (caught as PgBridgeError).cause;
+      expect(cause).toBeInstanceOf(Error);
+      expect((cause as Error).message.toLowerCase()).toContain('missing');
+
+      const rows = await readHistory();
+      expect(rows.map((r) => [r.migration_name, r.finished_at === null])).toEqual([
+        ['20240101000000_init', false],
+        ['20240101000001_broken', true],
+      ]);
+
+      const again = await catchError(pushMigrations(sharedPglite, { migrationsPath }));
+      expect((again as PgBridgeError).code).toBe('MIGRATIONS_HISTORY_INVALID');
+      expect((again as PgBridgeError).message).toMatch(
+        /20240101000001_broken started but never finished.*migrate resolve --applied/s,
+      );
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+
+  it('names the dataDir in the failure message for persistent instances', async () => {
+    const { parent, path: dataDir } = createTempDir('persist-mig');
+    const migrationsPath = createMigrationsDir({ '20240101000000_bad': 'NOT VALID SQL' });
+    const dataDirPglite = new PGlite(dataDir);
+    try {
+      await dataDirPglite.waitReady;
+      const caught = await catchError(pushMigrations(dataDirPglite, { migrationsPath }));
+      expect((caught as PgBridgeError).code).toBe('MIGRATIONS_APPLY_FAILED');
+      expect((caught as PgBridgeError).message).toContain(
+        `Failed to apply migration 20240101000000_bad to PGlite(dataDir=${dataDir}).`,
+      );
+    } finally {
+      await dataDirPglite.close();
+      removeTempDir(migrationsPath);
+      removeTempDir(parent);
+    }
+  });
+});
+
+describe('pushMigrations baseline check (schema not empty, no history)', () => {
+  beforeEach(wipeSharedPglite);
+
+  it('refuses to apply over existing tables without history and names the baseline repair', async () => {
+    await sharedPglite.exec('CREATE TABLE "Legacy" ("id" TEXT PRIMARY KEY)');
+    const migrationsPath = createMigrationsDir({
+      '0001_init': 'CREATE TABLE "Legacy" ("id" TEXT PRIMARY KEY);',
+    });
+    try {
+      const error = await catchError(pushMigrations(sharedPglite, { migrationsPath }));
+      expect(error).toBeInstanceOf(PgBridgeError);
+      expect((error as PgBridgeError).code).toBe('MIGRATIONS_HISTORY_INVALID');
+      expect((error as Error).message).toContain('schema is not empty');
+      expect((error as Error).message).toContain('migrate resolve --applied');
+      // Refused before any apply: no started row was written.
+      const { rows } = await sharedPglite.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM _prisma_migrations',
+      );
+      expect(rows[0]?.n).toBe(0);
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+
+  it('sees tables in non-default schemas (multiSchema dataDirs)', async () => {
+    await sharedPglite.exec(
+      'CREATE SCHEMA audit; CREATE TABLE audit."Log" ("id" TEXT PRIMARY KEY)',
+    );
+    const migrationsPath = createMigrationsDir({ '0001_init': 'SELECT 1;' });
+    try {
+      const error = await catchError(pushMigrations(sharedPglite, { migrationsPath }));
+      expect((error as PgBridgeError).code).toBe('MIGRATIONS_HISTORY_INVALID');
+      expect((error as Error).message).toContain('schema is not empty');
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+
+  it('does not count the bridge snapshot schema as user tables', async () => {
+    await sharedPglite.exec(
+      'CREATE SCHEMA _pglite_snapshot; CREATE TABLE _pglite_snapshot.__tables (snap_name text)',
+    );
+    const migrationsPath = createMigrationsDir({ '0001_init': 'SELECT 1;' });
+    try {
+      const result = await pushMigrations(sharedPglite, { migrationsPath });
+      expect(result.applied).toEqual(['0001_init']);
+    } finally {
+      removeTempDir(migrationsPath);
+    }
+  });
+
+  it('ignores rolled-back rows when deciding the history is empty', async () => {
+    await sharedPglite.exec('CREATE TABLE "Legacy" ("id" TEXT PRIMARY KEY)');
+    await sharedPglite.exec(PRISMA_MIGRATIONS_DDL);
+    await sharedPglite.exec(
+      `INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at, rolled_back_at)
+       VALUES ('r', 'c', '0001_init', now(), now())`,
+    );
+    const migrationsPath = createMigrationsDir({ '0001_init': 'SELECT 1;' });
+    try {
+      const error = await catchError(pushMigrations(sharedPglite, { migrationsPath }));
+      expect((error as PgBridgeError).code).toBe('MIGRATIONS_HISTORY_INVALID');
+      expect((error as Error).message).toContain('schema is not empty');
+    } finally {
+      removeTempDir(migrationsPath);
     }
   });
 });

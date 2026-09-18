@@ -81,9 +81,10 @@ the bridge" (`PGliteServer` + `DATABASE_URL`).
 - `test.concurrent` is safe only with `scope: 'test'`.
 - `resetDb()` / `snapshotDb()` need an idle pool: await every query and
   end open transactions first.
-- Persistent `dataDir`: guard `pushMigrations` / `pushSchema` with
-  `hasSchema`, not `hasMigrations` (that one detects CLI-applied
-  migrations only).
+- `pushMigrations` with a migrations directory is idempotent
+  (Prisma-compatible `_prisma_migrations` bookkeeping; `migrate status`
+  sees it); guard only `pushSchema` and `pushMigrations({ sql })` with
+  `hasSchema` on a persistent `dataDir`.
 - A failing vitest test prints the SQL it ran (query trail) to stderr.
   `PGLITE_BRIDGE_QUERY_TRAIL=0` disables it; `PGLITE_BRIDGE_TRAIL_FORMAT=json`
   switches to JSONL; `queryTrail: { redactParams: true }` hides params.
@@ -109,6 +110,7 @@ carries the same pointer.
 | `PGLITE_NOT_READY` | PGlite never became ready (readiness timeout) |
 | `MIGRATIONS_UNAVAILABLE` | no `sql`, no `migration.sql` files, no loadable `prisma.config.ts` |
 | `MIGRATIONS_APPLY_FAILED` | schema SQL failed; PGlite error in `cause` |
+| `MIGRATIONS_HISTORY_INVALID` | failed, duplicate, orphaned, or modified migration in `_prisma_migrations`, or tables without history — message names the `prisma migrate resolve` repair |
 | `SNAPSHOT_INVALID` | schema changed since `snapshotDb()` — snapshot again |
 
 Warnings (`process.emitWarning`, by `name`):

@@ -236,11 +236,65 @@ package that owns `prisma.config.ts`.
 
 ### `MIGRATIONS_APPLY_FAILED`
 
-The schema SQL failed inside PGlite; the PGlite error is attached as
-`cause`. Common causes: the schema was already applied to a persistent
-`dataDir` (guard with `hasSchema`), a migration relies on an extension
-PGlite does not bundle, or the SQL was hand-edited. Fix the SQL or the
-guard and re-run.
+A migration script or the schema SQL failed inside PGlite; the PGlite
+error is attached as `cause`. Common causes: a migration relies on an
+extension PGlite does not bundle, the SQL was hand-edited, or — on the
+`sql` path only — the schema was already applied to a persistent
+`dataDir` (guard that path with `hasSchema`; the migrations-directory
+path skips applied migrations on its own). On the migrations-directory
+path the message names the migration and its started
+`_prisma_migrations` row is kept, as under Prisma's own runner, so the
+next run reports it as
+[`MIGRATIONS_HISTORY_INVALID`](#migrations_history_invalid) instead of
+re-running the script. Fix the SQL, repair the history as described
+there, and re-run.
+
+### `MIGRATIONS_HISTORY_INVALID`
+
+Before applying anything from a migrations directory, `pushMigrations`
+validates `_prisma_migrations` the way `prisma migrate deploy` does
+and refuses to continue when the history and the directory disagree.
+The message names the migration and the repair; the five cases:
+
+- **Started but never finished.** A row has no `finished_at` and is
+  not rolled back: a script failed, and its row was kept on purpose
+  (see [`MIGRATIONS_APPLY_FAILED`](#migrations_apply_failed)). Whether
+  its DDL landed depends on where it failed. If the `exec` threw,
+  PGlite's implicit transaction rolled the whole script back — unless
+  the script contains its own `COMMIT` — so run
+  `prisma migrate resolve --rolled-back <name>` and the next
+  `pushMigrations` re-applies it. If the process crashed after the
+  `exec` succeeded but before the finished update was written, the
+  DDL is in place and only the row is stale, so run
+  `prisma migrate resolve --applied <name>`. Check the database (is
+  the migration's table or column there?) before choosing;
+  `--rolled-back` is safe only for a script that did not partially
+  apply.
+- **More than one active row for one name.** The history was written
+  by hand or by concurrent runs (concurrent `pushMigrations` calls on
+  one instance are unsupported). Repair with `prisma migrate resolve`
+  or delete the extra rows.
+- **Applied in the database but missing from the directory.** The
+  migrations directory is behind the database — a migration was
+  deleted or renamed, or the wrong directory was passed. Restore the
+  directory or reset the database.
+- **Modified after it was applied.** The stored checksum does not
+  match the `migration.sql` on disk (the comparison tolerates CRLF/LF
+  differences). Restore the original file, or put the change in a
+  new migration.
+- **Schema not empty, no history.** Tables exist but `_prisma_migrations`
+  records no applied migration — Prisma's own P3005 case. Typical for a
+  persistent `dataDir` populated by `pushMigrations` before 1.9 (which
+  recorded nothing), by `pushSchema`, or by raw SQL. Applying would fail
+  on the first `CREATE TABLE` and leave a started row behind, so the call
+  refuses up front. Baseline it: `prisma migrate resolve --applied <name>`
+  for each migration, run through a `PGliteServer` over the same
+  `dataDir`, or start from an empty `dataDir`.
+
+Rows resolved as rolled back are not an error: `pushMigrations`
+re-applies those migrations, as `migrate deploy` does.
+`prisma migrate resolve` needs a connection URL — run it against a
+[`PGliteServer`](./server.md) over the same `dataDir`.
 
 ### `SNAPSHOT_INVALID`
 
