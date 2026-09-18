@@ -150,9 +150,11 @@ Instance members:
   leaves the data untouched.
   Call in `beforeEach` for per-test isolation.
   Note: this clears all data including seed data — re-seed after
-  reset (or use `snapshotDb()` first) if needed. Prisma's `_prisma%`
-  tables (the migration history) are neither captured by
-  `snapshotDb()` nor truncated here, so the history survives resets.
+  reset (or use `snapshotDb()` first) if needed. Covers every
+  non-system schema, not only `public`, so a Prisma `multiSchema`
+  setup resets as a whole. Prisma's `_prisma%` tables (the migration
+  history) are neither captured by `snapshotDb()` nor truncated here,
+  so the history survives resets.
 - `snapshotDb()` — captures the current DB contents into an internal
   snapshot so later `resetDb()` calls restore to that state instead of
   truncating to empty.

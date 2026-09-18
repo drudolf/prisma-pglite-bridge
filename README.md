@@ -213,7 +213,8 @@ cost](./benchmark/BENCHMARK.md#per-test-isolation-cost).
 - **[Cookbook](./docs/cookbook.md)** — one-call Vitest / Jest
   setup (`prisma-pglite-bridge/vitest`,
   `prisma-pglite-bridge/jest`), per-test isolation, seed sharing,
-  extensions, persistent dev database, clean shutdown.
+  raw SQL next to Prisma, end-to-end via `PGliteServer`, running in
+  CI, extensions, persistent dev database, clean shutdown.
 - **[`PGliteServer`](./docs/server.md)** — TCP / Unix-socket
   front for PGlite. Use for the Prisma CLI shadow database, `psql`,
   and SQL GUIs.

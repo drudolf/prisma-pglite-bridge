@@ -12,8 +12,10 @@ For the underlying API, see the [API reference](./api.md).
   - [Choosing an isolation model](#choosing-an-isolation-model)
   - [Wiring the bridge into your app](#wiring-the-bridge-into-your-app)
   - [Schema and seed](#schema-and-seed)
+  - [Raw SQL next to Prisma](#raw-sql-next-to-prisma)
   - [On-failure query trail](#on-failure-query-trail)
   - [End-to-end: run your app against the bridge](#end-to-end-run-your-app-against-the-bridge)
+  - [Running in CI](#running-in-ci)
 - [Other ORMs](#other-orms)
   - [Wiring recipes](#wiring-recipes)
   - [Testing with any ORM](#testing-with-any-orm)
@@ -334,6 +336,22 @@ The trade-off dial:
   mirrors the singleton pattern in [Wiring the bridge into your
   app](#wiring-the-bridge-into-your-app).
 
+**Transaction rollback per test is not offered.** The classic "open a
+transaction in `beforeEach`, roll it back in `afterEach`" pattern is not
+on the dial, by design. Prisma opens its own transactions for nested
+writes and `$transaction`, and Postgres has no nested transactions — a
+rollback-per-test wrapper would have to intercept every `BEGIN` and turn
+it into a savepoint, which changes the semantics under test (isolation
+level, `COMMIT`-time constraint checks, `LISTEN`/`NOTIFY`, and anything
+the app does on a second connection). The snapshot model keeps the real
+transaction behavior and is cheap because PGlite is in-process: the
+reset is a truncate plus a restore from the in-memory snapshot, tens of
+milliseconds on the reference machines (see [CI](#running-in-ci) for the
+measured figures). It is the right trade whenever the code under test
+uses transactions itself; if it never does and the suite is dominated by
+thousands of tiny tests, `scope: 'file'` still applies and the reset
+cost is the price of fidelity.
+
 **Don't use `test.concurrent` with a shared context**: concurrent tests
 would interleave on one single-session PGlite, and `resetDb` deliberately
 throws while pool clients are checked out. The exception is
@@ -592,6 +610,53 @@ To re-seed every test (when seed data varies per spec), drop
 `snapshotDb()` and re-invoke `seed(prisma)` inside `beforeEach` after
 `resetDb()`.
 
+### Raw SQL next to Prisma
+
+Two ways to run SQL Prisma will not express, with different rules:
+
+- **`bridge.pglite.query(...)` / `bridge.pglite.exec(...)`** — straight
+  into PGlite, bypassing the pool and its session lock. Cheapest, but
+  the lock cannot see it: run it only while the pool is idle — no
+  query in flight, no client checked out, never inside a Prisma
+  `$transaction` — or it lands in the middle of Prisma's statements on
+  the one session. Right for setup and for assertions between
+  `await`ed Prisma calls (`seed` runs in exactly that state).
+- **A second `PgBridgePool({ pglite: bridge.pglite })`** — a real
+  `pg.Pool` over the same instance, for use alongside Prisma and with
+  `pg` tooling (`COPY`, cursors, `LISTEN`). PGlite executes one
+  statement at a time, and each pool's own session lock keeps its own
+  transactions intact, so plain queries from both sides are safe to
+  overlap. What the locks do not cover is each other: a transaction on
+  this pool and a Prisma transaction can interleave on the one session,
+  so await one side's transaction before starting the other's. Session
+  state is shared the same way: a `SET`, temp table, or advisory lock
+  taken through one pool is visible to, and held against, the other.
+  Constructing the pool emits `PGliteBridgeSharedInstanceWarning`, the
+  advisory saying exactly that. Statement caches are per client, so
+  pools over one PGlite cache safely side by side. `end()` it before
+  `bridge.close()`, and keep it idle across `resetDb()`.
+
+There is no `bridge.pool` accessor: the pool under the adapter is
+Prisma's, and reaching into it mid-flight would break the idle
+guarantee `resetDb()` relies on.
+
+```typescript
+import { PgBridgePool } from 'prisma-pglite-bridge/pool';
+
+const { bridge, prisma } = await setupPGliteBridge({ /* ... */ });
+
+// Between Prisma calls, pool idle: direct.
+await bridge.pglite.exec('ALTER TABLE "User" ADD COLUMN nickname text');
+const { rows } = await bridge.pglite.query<{ n: number }>(
+  'SELECT count(*)::int AS n FROM "User"',
+);
+
+// Alongside Prisma, or with pg tooling: a second pool, closed before the bridge.
+const raw = new PgBridgePool({ pglite: bridge.pglite });
+await raw.query('INSERT INTO "User" (email, name) VALUES ($1, $2)', ['grace@example.com', 'Grace']);
+await raw.end();
+```
+
 ### On-failure query trail
 
 The `vitest` and `pool/vitest` fixture helpers capture the SQL each test
@@ -777,6 +842,66 @@ What this setup does and does not give you:
   reach the object directly.
 - **No auth, loopback only.** The server accepts any user, no
   password, and rejects SSL — see [Security](./server.md#security).
+
+### Running in CI
+
+Nothing to provision: PGlite is a dependency, so the job is the plain
+install-and-test job. A GitHub Actions job on the Node 24 action
+runtime (every action pinned to a major that runs on it):
+
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm prisma generate
+      - run: pnpm vitest run
+        env:
+          NODE_OPTIONS: --disable-warning=ExperimentalWarning
+```
+
+- **`--disable-warning=ExperimentalWarning`** silences Node's
+  WASM-module warning, which `pushSchema` triggers once per worker
+  (harmless — see [troubleshooting](./troubleshooting.md)).
+  `pushMigrations` never triggers it.
+- **The query trail lands in the job log.** A failing test prints the
+  SQL it ran, parameters included. If test data holds anything you
+  would not paste into that log, set `queryTrail: { redactParams: true }`
+  on the helper, or `PGLITE_BRIDGE_QUERY_TRAIL=0` to turn the trail off
+  — see [On-failure query trail](#on-failure-query-trail).
+- **Workers and memory.** Each vitest worker holds its own PGlite: one
+  WASM instance plus an in-memory data directory per live instance.
+  Cold start is paid per file (`scope: 'file'`), once per worker
+  (`'worker'`), or once per file with cheap per-test loads (`'test'`).
+  Start with vitest's default worker count and cap `maxWorkers` only
+  if the runner swaps; on a small shared runner, fewer workers with
+  `scope: 'worker'` usually beats many workers each paying the cold
+  start. Budget memory by measuring one worker on your runner —
+  absolute RSS is not comparable across machines.
+
+What the trade costs, from the reference run (`pnpm bench:isolation`,
+n=20 per strategy after a warmup, macOS, bridge 1.7.0, PGlite 0.5.3
+with a 0.5.4 re-run reproducing it, the repository's integration
+schema and seed — two tenants and a few dozen rows; full conditions
+and the memory tables in
+[BENCHMARK.md](../benchmark/BENCHMARK.md#per-test-isolation-cost)):
+
+| Strategy | `scope` | Apple M3 Max, Node 24.18.0 — p50 / p99 | Intel i9-9980HK MacBook Pro, Node 24.14.1 — p50 / p99 | One-time per file (M3 Max / i9) |
+| --- | --- | --- | --- | --- |
+| snapshot reset | `file` / `worker` | 12 ms / 23 ms | 42 ms / 48 ms | 0.64 s / 2.51 s |
+| template load | `test` | 147 ms / 226 ms | 333 ms / 364 ms | 0.68 s / 1.86 s |
+| cold start | per-test bridge (pre-1.6) | 634 ms / 803 ms | 1.88 s / 3.43 s | — |
+
+Cold start is the most variance-prone strategy, so read the ratios as
+the signal and the tails as indicative; each live instance in that run
+kept an in-memory data directory of about 40 MB for that seed.
 
 ## Other ORMs
 
