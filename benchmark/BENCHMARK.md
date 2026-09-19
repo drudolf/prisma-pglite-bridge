@@ -469,7 +469,7 @@ the signal and the absolute tail as indicative.
 ### Snapshot reset scaling
 
 `pnpm bench:reset --json` measures the shared snapshot manager at 1, 10,
-50, and 100 tables. Each table has 20 seed rows, an identity primary key,
+50, and 100 tables. By default each table has 20 seed rows, an identity primary key,
 and a stored generated column. Before each reset, one table receives an
 extra row; verification runs outside the timer. Cold start and snapshot
 creation are excluded from reset latency. Override with `-n 100 -w 10
@@ -504,6 +504,13 @@ A capacity smoke test with `pnpm bench:reset --tables 1000 -n 3 -w 1
 --json` also passed: 1,000 tables, 20,000 seed rows, and verification of
 every table's row count, generated values, and next identity value.
 That run overlapped other tests, so its timings are not used above.
+
+For larger data workloads, `--rows` sets seed rows per table, `--indexes`
+adds B-tree expression indexes beyond the primary key, and
+`--payload-bytes` adds JSON with that many bytes in its `data` field.
+The payload repeats an MD5 string per row: it is deterministic and
+compressible, not a model of incompressible blobs. Validation uses bigint
+aggregates so large row counts do not overflow the checksum.
 
 ### Snapshot creation scaling
 
@@ -545,6 +552,67 @@ The snapshot mode also passed `--tables 1000 -n 3 -w 1 --json`, including
 repeated snapshot replacement and verification of every table's seed
 rows, generated values, and next identity. This is a capacity smoke test,
 not enough samples for a latency claim.
+
+### WAL retention with large datasets
+
+PGlite's single-user backend has no automatic checkpoint process, and its
+in-memory filesystem retains WAL alongside table data. Repeated resets
+can therefore grow memory even when every reset restores the same rows.
+Snapshot/reset now check WAL progress in an existing call and issue
+`CHECKPOINT` before their data transaction after a 64 MiB interval. A
+checkpoint adds one `exec` when due; it does not change the usual
+snapshot/reset call counts documented above. See
+[maintenance behavior and limits](../docs/troubleshooting.md#memory-growth-during-repeated-snapshots-or-resets).
+
+Reproduce the indexed JSON workload in a fresh process:
+
+```bash
+pnpm exec node --expose-gc --import tsx benchmark/snapshot-reset.ts \
+  --tables 1 --rows 100000 --indexes 2 --payload-bytes 256 \
+  --memory -n 10 -w 2 --json
+# Repeat with --operation snapshot to measure snapshot replacement.
+```
+
+`--memory` requires a single table-count case so the RSS high-water mark
+cannot carry over from an earlier case. It records RSS, JS heap, and
+ArrayBuffer usage after GC, plus database and WAL sizes, at startup,
+after seeding/capture, and after every cycle (including warmup). The
+process RSS high-water mark includes startup and all verification work;
+it is not attributed to only the timed operation. Snapshot-mode cycles
+also perform an untimed reset to verify restoration. All memory queries,
+GC, and data/identity verification are outside the latency timer.
+
+Local comparison against `1e007b6`, using the same extended benchmark
+driver in separate, sequential processes: i9-9980HK, macOS x64,
+Node 24.14.1, PGlite 0.5.8, 10 measured iterations after 2 warmups.
+The table has an identity primary key, two additional indexes, a stored
+generated column, and 100,000 rows with a 256-byte JSON data field.
+
+| Operation | Before p50 | After p50 | Before p95 | After p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Reset | 1065.57ms | 882.60ms | 1550.17ms | 949.59ms |
+| Snapshot replacement | 281.40ms | 207.16ms | 335.18ms | 235.01ms |
+
+| Workload | Before peak RSS | After peak RSS | Before final WAL | After final WAL |
+| --- | ---: | ---: | ---: | ---: |
+| Reset cycles | 2936.0 MiB | 1982.6 MiB | 784 MiB | 128 MiB |
+| Snapshot + verification-reset cycles | 3392.2 MiB | 1946.9 MiB | 1200 MiB | 112 MiB |
+
+This run reduced peak RSS by about 32% for reset cycles and 43% for
+snapshot cycles. These are local measurements, not guarantees or a hard
+memory bound. RSS includes WASM and allocator retention; reclaimed WAL
+need not immediately lower RSS. Ten samples give only an indicative tail.
+
+A separate 30-iteration small-schema check (five warmups, default 20-row
+seed) had essentially unchanged reset medians: 1 table 6.76→6.69ms,
+10 tables 15.53→15.44ms, 100 tables 95.28→93.63ms.
+
+The same benchmark also passed a one-million-row capacity check with
+`--tables 1 --rows 1000000 --indexes 2 --memory -n 3 -w 1` (no JSON payload).
+All row, generated-column, and next-identity assertions passed. Peak RSS
+fell from 3939.8 to 2519.9 MiB, and final WAL from 1440 to 336 MiB.
+Reset medians were 9.04s before and 9.23s after; three samples are too few
+for a speed claim. Large restores still pay for row and index rebuilding.
 
 ## Adapters
 

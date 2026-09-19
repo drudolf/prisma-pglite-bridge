@@ -40,6 +40,11 @@ export interface ResetDbOptions {
 
 const SNAPSHOT_SCHEMA_IDENT = quoteIdent(SNAPSHOT_SCHEMA);
 const SNAPSHOT_SCHEMA_NEW_IDENT = quoteIdent(SNAPSHOT_SCHEMA_NEW);
+// PGlite has no background checkpointer. Repeated restores otherwise retain
+// their WAL files in memory even when the live database stays the same size.
+const CHECKPOINT_INTERVAL_BYTES = 64n * 1024n * 1024n;
+const WAL_STATE_SQL = `pg_current_wal_insert_lsn()::text AS wal_lsn,
+       pg_has_role(current_user, 'pg_checkpoint', 'USAGE') AS can_checkpoint`;
 // SNAPSHOT_SCHEMA is a fixed internal identifier (no quotes) — safe to embed
 // as a SQL string literal. Dynamic catalog values (schema/table names) are
 // never escaped by hand: they go through bind parameters or the DB's own
@@ -65,6 +70,7 @@ export class SnapshotManager {
   readonly #pglite: PGlite | PGliteInterface;
   /** Tail of the serialized operation chain — see {@link #serialize}. */
   #chain: Promise<unknown> = Promise.resolve();
+  #lastCheckpointLsn = 0n;
 
   constructor(pglite: PGlite | PGliteInterface) {
     this.#pglite = pglite;
@@ -99,7 +105,10 @@ export class SnapshotManager {
 
   async #snapshotDb(): Promise<void> {
     // Clear staging leftovers from a hard crash mid-build (persisted dataDir).
-    await this.#pglite.exec(`DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_NEW_IDENT} CASCADE`);
+    const startup = await this.#pglite.exec(
+      `DROP SCHEMA IF EXISTS ${SNAPSHOT_SCHEMA_NEW_IDENT} CASCADE; SELECT ${WAL_STATE_SQL}`,
+    );
+    await this.#checkpointIfNeeded(startup?.at(-1)?.rows[0]);
 
     try {
       await this.#pglite.exec('BEGIN');
@@ -214,7 +223,7 @@ export class SnapshotManager {
   }
 
   async #resetDb(scrubSession: boolean): Promise<void> {
-    const hasSnapshot = await this.#snapshotSchemaExists();
+    const hasSnapshot = await this.#prepareReset();
 
     const tables = await this.#getTables();
 
@@ -340,15 +349,39 @@ export class SnapshotManager {
   }
 
   /**
-   * Whether `_pglite_snapshot` exists right now — read from the catalog on
+   * Checkpoint before changing snapshot/live data, never inside its transaction:
+   * a maintenance failure must leave the prior state intact and remain retryable.
+   * The LSN probe shares an existing call. Small databases pay no extra API call;
+   * a large operation's WAL is reclaimed on a later snapshot/reset, not mid-query.
+   * This is an interval, not a memory cap (WAL recycling and live data also count).
+   */
+  async #checkpointIfNeeded(state: Record<string, unknown> | undefined): Promise<void> {
+    // Snapshot capture also works for callers without checkpoint privileges.
+    if (state?.can_checkpoint !== true || typeof state.wal_lsn !== 'string') return;
+    const [high, low] = state.wal_lsn.split('/');
+    const lsn = (BigInt(`0x${high}`) << 32n) + BigInt(`0x${low}`);
+    if (lsn - this.#lastCheckpointLsn < CHECKPOINT_INTERVAL_BYTES) return;
+    await this.#pglite.exec('CHECKPOINT');
+    // Advance only on success so a failed checkpoint is retried next time.
+    this.#lastCheckpointLsn = lsn;
+  }
+
+  /**
+   * Probe snapshot presence and checkpoint before resetting. Read the catalog on
    * every reset. External SQL (a caller's raw `DROP SCHEMA`, a
    * `prisma migrate reset`) may drop it, and another manager over the same
    * PGlite may create it; caching either answer would desynchronize them.
    */
-  async #snapshotSchemaExists(): Promise<boolean> {
-    const { rows } = await this.#pglite.query<{ exists: boolean }>(
-      `SELECT to_regnamespace(${SNAPSHOT_SCHEMA_LITERAL}) IS NOT NULL AS exists`,
+  async #prepareReset(): Promise<boolean> {
+    const { rows } = await this.#pglite.query<{
+      exists: boolean;
+      wal_lsn: string;
+      can_checkpoint: boolean;
+    }>(
+      `SELECT to_regnamespace(${SNAPSHOT_SCHEMA_LITERAL}) IS NOT NULL AS exists,
+              ${WAL_STATE_SQL}`,
     );
+    await this.#checkpointIfNeeded(rows[0]);
     return rows[0]?.exists === true;
   }
 }

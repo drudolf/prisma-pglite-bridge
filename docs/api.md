@@ -160,6 +160,9 @@ Instance members:
   truncating to empty. Partitioned and inherited tables retain each row
   in its original physical table. Sequence values and their `is_called`
   flags are saved, including unused and standalone sequences.
+  Snapshot and reset periodically checkpoint accumulated WAL before
+  their data transaction to limit log retention during long test runs;
+  see [memory growth](./troubleshooting.md#memory-growth-during-repeated-snapshots-or-resets).
 - `resetSnapshot()` — discards the current snapshot so later
   `resetDb()` calls truncate back to empty again.
 

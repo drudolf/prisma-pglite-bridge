@@ -38,6 +38,36 @@ the anchor is the error code or warning name, lowercased.
   `schema.prisma` directly). `new PGliteBridge(...)` alone wraps
   an empty database.
 
+## Memory growth during repeated snapshots or resets
+
+PGlite's default filesystem keeps database files, including the write-ahead
+log (WAL), in memory. PostgreSQL's single-user mode has no automatic
+checkpoints, so repeated bulk restores can accumulate WAL even when the
+tables stay the same size. See [PGlite filesystems](https://pglite.dev/docs/filesystems)
+and [PostgreSQL single-user mode](https://www.postgresql.org/docs/17/app-postgres.html#APP-POSTGRES-SINGLE-USER).
+
+The bridge periodically runs `CHECKPOINT` before `snapshotDb()` and
+`resetDb()` when WAL has advanced by 64 MiB since that manager's last
+successful checkpoint. The first operation also checks WAL generated
+before the manager was created. This lets PostgreSQL recycle old log
+segments across a long test run. The position/permission probe shares an
+existing database call; a checkpoint adds work only when due.
+
+64 MiB is a maintenance interval, **not a memory cap**. A single large
+query can generate more WAL before the next reset; PostgreSQL retains
+recyclable segments, and live data, indexes, snapshot copies, and WASM
+allocations also consume memory. Snapshot replacement temporarily keeps
+both the old and new copies to preserve atomicity. RSS need not fall
+immediately after a checkpoint.
+
+Checkpointing is skipped when the session lacks checkpoint privileges.
+It runs before the snapshot/restore transaction, so a checkpoint failure
+rejects the operation before the live data or saved snapshot changes and
+can be retried. Direct-query workloads that never call snapshot/reset
+still need their own maintenance: at an idle transaction boundary, use
+`await pglite.exec('CHECKPOINT')` with a permitted role. See
+[CHECKPOINT](https://www.postgresql.org/docs/17/sql-checkpoint.html).
+
 ## `this.pglite.execProtocolRawStream is not a function`
 
 The bridge uses the streaming protocol API introduced in PGlite 0.4

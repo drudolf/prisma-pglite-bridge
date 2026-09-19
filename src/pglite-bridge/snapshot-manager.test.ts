@@ -17,7 +17,7 @@ describe('snapshot manager', () => {
 
     await expect(snapshot.snapshotDb()).rejects.toThrow(error);
     expect(vi.mocked(pglite.exec).mock.calls).toEqual([
-      [`DROP SCHEMA IF EXISTS "_pglite_snapshot_new" CASCADE`],
+      [expect.stringContaining('DROP SCHEMA IF EXISTS "_pglite_snapshot_new" CASCADE; SELECT')],
       ['BEGIN'],
       [`CREATE SCHEMA "_pglite_snapshot_new"`],
       [expect.stringContaining('CREATE TABLE "_pglite_snapshot_new".__tables AS')],
