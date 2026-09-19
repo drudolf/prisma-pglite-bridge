@@ -508,10 +508,12 @@ That run overlapped other tests, so its timings are not used above.
 ### Snapshot creation scaling
 
 Snapshot creation now builds its table mapping in SQL and copies the
-tables in one protocol call. For schemas with tables and sequences, the
-PGlite API call count falls from `2 * tables + 11` to 12. Table data still
-has to be copied, and SQL batch size grows with the schema; this removes
-per-table API overhead rather than making database work constant-time.
+tables in one protocol call. Compared with `2db4cb0`, where sequence
+capture was already batched into one `exec`, the PGlite API call count
+falls from `2 * tables + 11` to 12 for schemas with tables and sequences.
+Table data still has to be copied, and SQL batch size grows with the
+schema; this removes per-table API overhead rather than making database
+work constant-time.
 The existing staging-schema transaction and snapshot format are retained.
 
 ```bash
