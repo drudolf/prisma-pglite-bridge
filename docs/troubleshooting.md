@@ -49,7 +49,9 @@ and [PostgreSQL single-user mode](https://www.postgresql.org/docs/17/app-postgre
 The bridge periodically runs `CHECKPOINT` before `snapshotDb()` and
 `resetDb()` when WAL has advanced by 64 MiB since that manager's last
 successful checkpoint. The first operation also checks WAL generated
-before the manager was created. This lets PostgreSQL recycle old log
+before the manager was created; a new manager sharing an existing PGlite
+can therefore perform one redundant checkpoint after a peer just did.
+This lets PostgreSQL recycle old log
 segments across a long test run. The position/permission probe shares an
 existing database call; a checkpoint adds work only when due.
 

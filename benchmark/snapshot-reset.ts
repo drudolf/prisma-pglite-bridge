@@ -87,6 +87,8 @@ const memory = async (db: PGlite) => {
     rssBytes: usage.rss,
     heapUsedBytes: usage.heapUsed,
     arrayBuffersBytes: usage.arrayBuffers,
+    // Node/libuv reports maxRSS in KiB, including on macOS.
+    // https://nodejs.org/docs/latest-v24.x/api/process.html#processresourceusage
     processPeakRssBytes: process.resourceUsage().maxRSS * 1024,
     walBytes: Number(rows[0]?.wal_bytes),
     databaseBytes: Number(rows[0]?.database_bytes),

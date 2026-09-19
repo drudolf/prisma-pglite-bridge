@@ -577,7 +577,7 @@ pnpm exec node --expose-gc --import tsx benchmark/snapshot-reset.ts \
 cannot carry over from an earlier case. It records RSS, JS heap, and
 ArrayBuffer usage after GC, plus database and WAL sizes, at startup,
 after seeding/capture, and after every cycle (including warmup). The
-process RSS high-water mark includes startup and all verification work;
+process RSS high-water mark includes startup and untimed work up to each sample;
 it is not attributed to only the timed operation. Snapshot-mode cycles
 also perform an untimed reset to verify restoration. All memory queries,
 GC, and data/identity verification are outside the latency timer.

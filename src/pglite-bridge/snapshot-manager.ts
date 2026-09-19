@@ -70,6 +70,7 @@ export class SnapshotManager {
   readonly #pglite: PGlite | PGliteInterface;
   /** Tail of the serialized operation chain — see {@link #serialize}. */
   #chain: Promise<unknown> = Promise.resolve();
+  // Per manager: a new manager may checkpoint once even if a peer just did.
   #lastCheckpointLsn = 0n;
 
   constructor(pglite: PGlite | PGliteInterface) {
