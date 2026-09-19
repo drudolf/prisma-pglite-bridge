@@ -28,22 +28,22 @@ jobs:
       # changesets 3 runs `pnpm publish --json` with piped stdio and discards
       # the prepublishOnly output. The steps above already cover everything
       # that hook runs, so skip its blind re-run.
-      - uses: changesets/action@v1
+      - uses: changesets/action@v2
         id: changesets
         with:
-          publish: pnpm changeset publish
-          commit: "release: version packages"
+          publish-script: pnpm changeset publish
+          commit-message: "release: version packages"
+          push-with-git-cli: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
           HUSKY: "0"
           RELEASE_CHECKS_DONE: "1"
       - name: Update release PR with version
-        if: steps.changesets.outputs.pullRequestNumber
+        if: steps.changesets.outputs.pr-number
         run: |
           git fetch origin changeset-release/main
           VERSION=$(git show origin/changeset-release/main:package.json | jq -r .version)
-          gh pr edit ${{ steps.changesets.outputs.pullRequestNumber }} --title "release: $VERSION"
+          gh pr edit ${{ steps.changesets.outputs.pr-number }} --title "release: $VERSION"
           git checkout changeset-release/main
           git commit --amend -m "release: $VERSION" --no-verify
           git push --force-with-lease origin changeset-release/main
