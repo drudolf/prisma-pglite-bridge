@@ -20,6 +20,7 @@ describe('snapshot manager', () => {
       [`DROP SCHEMA IF EXISTS "_pglite_snapshot_new" CASCADE`],
       ['BEGIN'],
       [`CREATE SCHEMA "_pglite_snapshot_new"`],
+      [expect.stringContaining('CREATE TABLE "_pglite_snapshot_new".__tables AS')],
       ['ROLLBACK'],
       [`DROP SCHEMA IF EXISTS "_pglite_snapshot_new" CASCADE`],
     ]);

@@ -32,7 +32,7 @@ import type { PrismaPg } from '@prisma/adapter-pg';
 import { seed } from '../src/__tests__/integration/utils/seed.ts';
 import { PrismaClient } from '../src/generated/prisma/client.ts';
 import { PGliteBridge, pushMigrations } from '../src/index.ts';
-import { createBridgeContextFromDump, createBridgeTemplate } from '../src/testing/core.ts';
+import { createBridgeTemplate, loadBridgeTemplate } from '../src/testing/core.ts';
 
 const repoRoot = join(import.meta.dirname, '..');
 const client = (adapter: PrismaPg): PrismaClient => new PrismaClient({ adapter });
@@ -114,7 +114,7 @@ const measureTemplate = async (n: number): Promise<{ perTest: number[]; oneTime:
   const oneTime = now() - o0;
 
   const loadOnce = async (): Promise<void> => {
-    const ctx = await createBridgeContextFromDump(dump, { client });
+    const ctx = await loadBridgeTemplate(dump, { client });
     await ctx.prisma.tenant.count(); // force the load + WASM boot
     await ctx.prisma.$disconnect();
     await ctx.close();

@@ -505,6 +505,45 @@ A capacity smoke test with `pnpm bench:reset --tables 1000 -n 3 -w 1
 every table's row count, generated values, and next identity value.
 That run overlapped other tests, so its timings are not used above.
 
+### Snapshot creation scaling
+
+Snapshot creation now builds its table mapping in SQL and copies the
+tables in one protocol call. For schemas with tables and sequences, the
+PGlite API call count falls from `2 * tables + 11` to 12. Table data still
+has to be copied, and SQL batch size grows with the schema; this removes
+per-table API overhead rather than making database work constant-time.
+The existing staging-schema transaction and snapshot format are retained.
+
+```bash
+pnpm bench:reset --operation snapshot --tables 1,10,100 -n 20 -w 5 --json
+```
+
+This mode measures replacement of an existing snapshot. Each iteration
+then mutates and resets the database outside the timer to verify the
+snapshot. The report's `snapshotMs` remains the initial capture, while
+`p50Ms` and `p95Ms` describe the selected operation.
+
+Local before/after comparison against the manager at `2db4cb0`, using
+the same snapshot-mode benchmark driver: macOS x64, i9-9980HK, Node
+24.14.1, PGlite 0.5.8, 20 measured iterations after 5 warmups. Each table
+has the same 20-row seed, identity primary key, and generated column as
+the reset benchmark above.
+
+| Tables | Before p50 | After p50 | Before p95 | After p95 |
+| -----: | ---------: | --------: | ---------: | --------: |
+| 1 | 9.85ms | 9.89ms | 13.72ms | 12.95ms |
+| 10 | 22.42ms | 16.32ms | 30.89ms | 17.77ms |
+| 100 | 151.60ms | 87.38ms | 191.37ms | 114.48ms |
+
+The benefit grows with table count: roughly 27% lower median latency
+at ten tables and 42% at 100, with no meaningful change for one table.
+These are single-machine measurements, not cross-platform guarantees.
+
+The snapshot mode also passed `--tables 1000 -n 3 -w 1 --json`, including
+repeated snapshot replacement and verification of every table's seed
+rows, generated values, and next identity. This is a capacity smoke test,
+not enough samples for a latency claim.
+
 ## Adapters
 
 | Flag value                        | What it benchmarks                                                   |

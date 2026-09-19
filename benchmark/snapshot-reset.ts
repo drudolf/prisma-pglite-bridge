@@ -6,6 +6,9 @@
  *
  * pnpm bench:reset                         # 1, 10, 50, 100 tables; 50 resets each
  * pnpm bench:reset -n 100 -w 10 --tables 10,100 --json
+ * pnpm bench:reset --operation snapshot -n 20 --tables 1,10,100 --json
+ * Snapshot mode times replacement of an existing snapshot; reset and
+ * verification run outside the timer. snapshotMs is the first capture.
  */
 import assert from 'node:assert/strict';
 import { cpus } from 'node:os';
@@ -20,6 +23,8 @@ const arg = (name: string, fallback: string): string => {
 const iterations = Number(arg('-n', '50'));
 const warmup = Number(arg('-w', '5'));
 const tableCounts = arg('--tables', '1,10,50,100').split(',').map(Number);
+const operation = arg('--operation', 'reset');
+assert(operation === 'reset' || operation === 'snapshot', 'invalid --operation');
 assert(Number.isSafeInteger(iterations) && iterations > 0, '-n must be a positive integer');
 assert(Number.isSafeInteger(warmup) && warmup >= 0, '-w must be a nonnegative integer');
 assert(
@@ -50,11 +55,16 @@ for (const tables of tableCounts) {
     const snapshotMs = performance.now() - snapshotStart;
     const samples: number[] = [];
     for (let i = 0; i < warmup + iterations; i++) {
-      await db.exec('INSERT INTO bench_0 (value) VALUES (999)');
-      const resetStart = performance.now();
-      await manager.resetDb();
-      const elapsed = performance.now() - resetStart;
+      if (operation === 'reset') await db.exec('INSERT INTO bench_0 (value) VALUES (999)');
+      const operationStart = performance.now();
+      if (operation === 'snapshot') await manager.snapshotDb();
+      else await manager.resetDb();
+      const elapsed = performance.now() - operationStart;
       if (i >= warmup) samples.push(elapsed);
+      if (operation === 'snapshot') {
+        await db.exec('INSERT INTO bench_0 (value) VALUES (999)');
+        await manager.resetDb();
+      }
       const { rows } = await db.query(
         'SELECT count(*)::int AS n, sum(doubled)::int AS total FROM bench_0',
       );
@@ -88,6 +98,7 @@ for (const tables of tableCounts) {
 
 const report = {
   benchmark: 'snapshot-reset',
+  operation,
   machine: {
     node: process.version,
     platform: process.platform,
@@ -102,6 +113,6 @@ const report = {
 if (args.includes('--json')) {
   console.log(JSON.stringify(report, null, 2));
 } else {
-  console.log(`Snapshot reset — ${report.machine.cpu}, ${process.version}, n=${iterations}`);
+  console.log(`Snapshot ${operation} — ${report.machine.cpu}, ${process.version}, n=${iterations}`);
   console.table(results);
 }

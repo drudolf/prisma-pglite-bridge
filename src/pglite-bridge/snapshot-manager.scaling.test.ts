@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setupPGlite } from '../__tests__/pglite.ts';
 import { SnapshotManager } from './snapshot-manager.ts';
 
@@ -6,11 +6,84 @@ const db = await setupPGlite({ reset: false });
 const snapshot = new SnapshotManager(db);
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await snapshot.resetSnapshot();
   await db.exec('DROP SCHEMA IF EXISTS reset_cases CASCADE');
 });
 
 describe('snapshot restore edge cases', () => {
+  it('keeps snapshot protocol-call count independent of the number of tables', async () => {
+    await db.exec(`CREATE SCHEMA reset_cases;
+      CREATE TABLE reset_cases.t0 (id serial PRIMARY KEY, value int);
+      INSERT INTO reset_cases.t0 (value) VALUES (1)`);
+    const exec = vi.spyOn(db, 'exec');
+    const query = vi.spyOn(db, 'query');
+    await snapshot.snapshotDb();
+    const small = { exec: exec.mock.calls.length, query: query.mock.calls.length };
+
+    await db.exec(
+      Array.from(
+        { length: 19 },
+        (_, i) => `
+      CREATE TABLE reset_cases.t${i + 1} (id serial PRIMARY KEY, value int);
+      INSERT INTO reset_cases.t${i + 1} (value) VALUES (${i + 2});
+    `,
+      ).join('\n'),
+    );
+    exec.mockClear();
+    query.mockClear();
+    await snapshot.snapshotDb();
+    expect({ exec: exec.mock.calls.length, query: query.mock.calls.length }).toEqual(small);
+    exec.mockRestore();
+    query.mockRestore();
+
+    await snapshot.resetDb();
+    for (let i = 0; i < 20; i++) {
+      expect((await db.query(`SELECT * FROM reset_cases.t${i}`)).rows).toEqual([
+        { id: 1, value: i + 1 },
+      ]);
+    }
+  });
+
+  it('rolls back earlier table copies when a later copy in the batch fails', async () => {
+    await db.exec(`CREATE SCHEMA reset_cases;
+      CREATE TABLE reset_cases.a (value int);
+      CREATE TABLE reset_cases.z (value int);
+      INSERT INTO reset_cases.a VALUES (1);
+      INSERT INTO reset_cases.z VALUES (2)`);
+    await snapshot.snapshotDb();
+    await db.exec('UPDATE reset_cases.a SET value = 9; UPDATE reset_cases.z SET value = 9');
+
+    const originalExec = db.exec.bind(db);
+    let injected = false;
+    const exec = vi.spyOn(db, 'exec').mockImplementation(async (sql, options) => {
+      if (sql.includes('CREATE TABLE') && sql.includes('AS SELECT * FROM ONLY reset_cases.z')) {
+        injected = true;
+        return originalExec(
+          sql.replace('AS SELECT * FROM ONLY reset_cases.z', 'AS SELECT 1 / 0 AS value'),
+          options,
+        );
+      }
+      return originalExec(sql, options);
+    });
+    try {
+      await expect(snapshot.snapshotDb()).rejects.toThrow('division by zero');
+      expect(injected).toBe(true);
+    } finally {
+      exec.mockRestore();
+    }
+    expect(
+      (await db.query(`SELECT to_regnamespace('_pglite_snapshot_new') IS NULL AS clean`)).rows,
+    ).toEqual([{ clean: true }]);
+    // The failed build must leave the previously captured rows restorable.
+    await snapshot.resetDb();
+    expect((await db.query('SELECT * FROM reset_cases.a')).rows).toEqual([{ value: 1 }]);
+    expect((await db.query('SELECT * FROM reset_cases.z')).rows).toEqual([{ value: 2 }]);
+    // And the serialized operation chain must still accept a fresh build.
+    await snapshot.snapshotDb();
+    await snapshot.resetDb();
+  });
+
   it('restores multilevel partitions without duplicating rows', async () => {
     await db.exec(`
       CREATE SCHEMA reset_cases;

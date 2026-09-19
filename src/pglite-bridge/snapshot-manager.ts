@@ -105,33 +105,40 @@ export class SnapshotManager {
       await this.#pglite.exec('BEGIN');
       await this.#pglite.exec(`CREATE SCHEMA ${SNAPSHOT_SCHEMA_NEW_IDENT}`);
 
+      // Build the mapping in SQL instead of issuing one parameterized
+      // INSERT per table. Keep its existing text-column layout so snapshots
+      // remain readable by other managers and earlier bridge versions.
+      await this.#pglite.exec(
+        `CREATE TABLE ${SNAPSHOT_SCHEMA_NEW_IDENT}.__tables AS
+         SELECT '_snap_' || (row_number() OVER (ORDER BY schemaname, tablename) - 1) AS snap_name,
+                schemaname::text AS source_schema, tablename::text AS source_table
+         FROM pg_tables
+         WHERE ${USER_TABLES_WHERE}`,
+      );
+
       const { rows: tables } = await this.#pglite.query<{
-        schemaname: string;
-        tablename: string;
+        snap_name_ident: string;
         qualified: string;
       }>(
-        `SELECT schemaname, tablename,
-                quote_ident(schemaname) || '.' || quote_ident(tablename) AS qualified
-         FROM pg_tables
-         WHERE ${USER_TABLES_WHERE}
-         ORDER BY schemaname, tablename`,
+        `SELECT quote_ident(snap_name) AS snap_name_ident,
+                quote_ident(source_schema) || '.' || quote_ident(source_table) AS qualified
+         FROM ${SNAPSHOT_SCHEMA_NEW_IDENT}.__tables
+         ORDER BY source_schema, source_table`,
       );
 
-      await this.#pglite.exec(
-        `CREATE TABLE ${SNAPSHOT_SCHEMA_NEW_IDENT}.__tables (snap_name text, source_schema text, source_table text)`,
-      );
-
-      for (const [i, { schemaname, tablename, qualified }] of tables.entries()) {
-        const snapName = `_snap_${i}`;
+      if (tables.length > 0) {
+        // One protocol call copies every table. Each physical table is listed
+        // separately, including partition leaves and inheritance children;
+        // ONLY avoids capturing descendant rows a second time in the parent.
+        // A failed copy aborts the enclosing transaction, including earlier
+        // copies in this batch, and leaves the old snapshot intact.
         await this.#pglite.exec(
-          // Each physical table is listed separately, including partition
-          // leaves and inheritance children. Scanning descendants here would
-          // snapshot their rows twice and restore them into the parent too.
-          `CREATE TABLE ${SNAPSHOT_SCHEMA_NEW_IDENT}.${quoteIdent(snapName)} AS SELECT * FROM ONLY ${qualified}`,
-        );
-        await this.#pglite.query(
-          `INSERT INTO ${SNAPSHOT_SCHEMA_NEW_IDENT}.__tables VALUES ($1, $2, $3)`,
-          [snapName, schemaname, tablename],
+          tables
+            .map(
+              ({ snap_name_ident, qualified }) =>
+                `CREATE TABLE ${SNAPSHOT_SCHEMA_NEW_IDENT}.${snap_name_ident} AS SELECT * FROM ONLY ${qualified}`,
+            )
+            .join(';\n'),
         );
       }
 
