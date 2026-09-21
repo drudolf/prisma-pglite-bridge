@@ -55,22 +55,28 @@ if (measureMemory) {
   assert(typeof globalThis.gc === 'function', '--memory requires node --expose-gc');
 }
 
+const payloadColumns =
+  payloadBytes > 0
+    ? {
+        definition: ", payload jsonb NOT NULL DEFAULT '{}'::jsonb",
+        names: ', payload',
+        values: `, jsonb_build_object('key', n, 'data', left(repeat(md5(n::text), ${Math.ceil(payloadBytes / 32)}), ${payloadBytes}))`,
+        aggregates: `, COALESCE(sum(octet_length(payload->>'data')), 0)::text AS payload_bytes,
+        count(*) FILTER (WHERE (payload->>'key')::int IS DISTINCT FROM value)::text AS invalid_payload`,
+        expected: {
+          payload_bytes: String(BigInt(seedRows) * BigInt(payloadBytes)),
+          invalid_payload: '0',
+        },
+      }
+    : { definition: '', names: '', values: '', aggregates: '', expected: {} };
 const expectedContents = {
   n: String(seedRows),
   total: String(BigInt(seedRows) * BigInt(seedRows + 1)),
-  ...(payloadBytes > 0
-    ? { payload_bytes: String(BigInt(seedRows) * BigInt(payloadBytes)), invalid_payload: '0' }
-    : {}),
+  ...payloadColumns.expected,
 };
 const contentsQuery = (table: number): string => `
   SELECT count(*)::text AS n, COALESCE(sum(doubled), 0)::text AS total
-  ${
-    payloadBytes > 0
-      ? `,
-    COALESCE(sum(octet_length(payload->>'data')), 0)::text AS payload_bytes,
-    count(*) FILTER (WHERE (payload->>'key')::int IS DISTINCT FROM value)::text AS invalid_payload`
-      : ''
-  }
+  ${payloadColumns.aggregates}
   FROM bench_${table}`;
 
 const memory = async (db: PGlite) => {
@@ -108,20 +114,15 @@ for (const tables of tableCounts) {
           id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
           value int NOT NULL,
           doubled int GENERATED ALWAYS AS (value * 2) STORED
-          ${payloadBytes > 0 ? ", payload jsonb NOT NULL DEFAULT '{}'::jsonb" : ''}
+          ${payloadColumns.definition}
         );
         ${Array.from(
           { length: extraIndexes },
           (_, index) =>
             `CREATE INDEX bench_${i}_extra_${index} ON bench_${i} ((value % ${997 + index}), value);`,
         ).join('\n')}
-        INSERT INTO bench_${i} (value ${payloadBytes > 0 ? ', payload' : ''})
-        SELECT n ${
-          payloadBytes > 0
-            ? `,
-          jsonb_build_object('key', n, 'data', left(repeat(md5(n::text), ${Math.ceil(payloadBytes / 32)}), ${payloadBytes}))`
-            : ''
-        }
+        INSERT INTO bench_${i} (value ${payloadColumns.names})
+        SELECT n ${payloadColumns.values}
         FROM generate_series(1, ${seedRows}) n;
       `,
       ).join('\n'),

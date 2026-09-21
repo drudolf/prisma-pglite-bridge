@@ -161,7 +161,9 @@ Instance members:
   in its original physical table. Sequence values and their `is_called`
   flags are saved, including unused and standalone sequences.
   Snapshot and reset periodically checkpoint accumulated WAL before
-  their data transaction to limit log retention during long test runs;
+  their data transaction to limit log retention during long test runs.
+  They observe the database's checkpoint state, including checkpoints
+  issued manually or by another manager;
   see [memory growth](./troubleshooting.md#memory-growth-during-repeated-snapshots-or-resets).
 - `resetSnapshot()` — discards the current snapshot so later
   `resetDb()` calls truncate back to empty again.

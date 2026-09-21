@@ -489,8 +489,8 @@ the realistic integration seed above.
 
 The change reads column metadata directly from `pg_attribute`, batches
 the restore transaction into one `exec`, and restores all sequences in
-one SQL statement. A seeded reset now needs three catalog queries and
-two `exec` calls, independent of table count; previously it needed four
+one SQL statement. At that revision, a seeded reset needed three catalog
+queries and two `exec` calls, independent of table count; previously it needed four
 queries and `tables + sequences + 5` `exec` calls. Schema drift is still
 checked on every reset, and the session scrub stays after commit.
 
@@ -560,8 +560,8 @@ in-memory filesystem retains WAL alongside table data. Repeated resets
 can therefore grow memory even when every reset restores the same rows.
 Snapshot/reset now check WAL progress in an existing call and issue
 `CHECKPOINT` before their data transaction after a 64 MiB interval. A
-checkpoint adds one `exec` when due; it does not change the usual
-snapshot/reset call counts documented above. See
+checkpoint adds one `exec` when due. The subsequent stateless probe
+optimization below also batches reset metadata into one call. See
 [maintenance behavior and limits](../docs/troubleshooting.md#memory-growth-during-repeated-snapshots-or-resets).
 
 Reproduce the indexed JSON workload in a fresh process:
@@ -613,6 +613,34 @@ All row, generated-column, and next-identity assertions passed. Peak RSS
 fell from 3939.8 to 2519.9 MiB, and final WAL from 1440 to 336 MiB.
 Reset medians were 9.04s before and 9.23s after; three samples are too few
 for a speed claim. Large restores still pay for row and index rebuilding.
+
+### Stateless checkpoint probes and reset metadata
+
+Checkpoint eligibility uses the database's current redo LSN, so manual and
+peer checkpoints are observed without per-manager state. Direct record-field
+access avoids a scalar subquery, and a SQL boolean avoids numeric parsing in
+JavaScript. Reset reads checkpoint state, snapshot presence, and user tables
+in one `exec` call before any checkpoint or restore transaction.
+
+A seeded reset now uses one catalog `query` (the restore plan) and three
+`exec` calls (metadata, restore, session scrub), independent of table count.
+A due checkpoint adds one `exec`. Snapshot capture's call count is unchanged.
+
+Local comparison against `7d18402`, on the same i9-9980HK/macOS x64 machine,
+Node 24.14.1 and PGlite 0.5.8: one table, an identity primary key, a generated
+column, and 20 seed rows. Each variant ran 500 measured resets, interleaved
+on the same PGlite instance per filesystem with rotating execution order.
+Each reset followed an untimed mutation. Data and next-identity assertions,
+three warmup passes, and explicit checkpoints between 20-sample rounds were
+outside timing; these measurements exclude scheduled checkpoint latency.
+
+| Filesystem | Before p50 | Stateless + batched metadata p50 | Change |
+| --- | ---: | ---: | ---: |
+| MemoryFS | 5.88ms | 5.51ms | -6.3% |
+| NodeFS | 9.04ms | 8.75ms | -3.3% |
+
+These local steady-state results measure reset overhead, not large-data
+checkpoint cost or a cross-platform speed guarantee.
 
 ## Adapters
 

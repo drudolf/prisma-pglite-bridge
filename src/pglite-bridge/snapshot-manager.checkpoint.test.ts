@@ -6,10 +6,10 @@ const db = await setupPGlite({ reset: false });
 
 // Advance through five 16 MiB WAL segments without constructing a large seed.
 // A message ensures each switch sees new WAL rather than reusing an empty segment.
-const growWal = async () => {
+const growWal = async (segments = 5) => {
   await db.exec(
     Array.from(
-      { length: 5 },
+      { length: segments },
       () => `SELECT pg_logical_emit_message(false, 'checkpoint-test', 'advance');
              SELECT pg_switch_wal();`,
     ).join('\n'),
@@ -46,6 +46,46 @@ describe('snapshot WAL checkpoints', () => {
     await manager.resetDb();
     expect(exec.mock.calls.filter(([sql]) => sql === 'CHECKPOINT')).toHaveLength(1);
     expect((await db.query('SELECT * FROM checkpoint_cases.data')).rows).toEqual([{ value: 1 }]);
+  });
+
+  it('waits for 64 MiB since the database checkpoint, independent of its absolute LSN', async () => {
+    await seed();
+    await growWal();
+    await db.exec('CHECKPOINT');
+    const exec = vi.spyOn(db, 'exec');
+    const manager = new SnapshotManager(db);
+    await growWal(3);
+    await manager.snapshotDb();
+    expect(exec.mock.calls.some(([sql]) => sql === 'CHECKPOINT')).toBe(false);
+    await growWal(2);
+    await manager.resetDb();
+    expect(exec.mock.calls.filter(([sql]) => sql === 'CHECKPOINT')).toHaveLength(1);
+  });
+
+  it('observes repeated peer and manual checkpoints without recreating managers', async () => {
+    await seed();
+    const a = new SnapshotManager(db);
+    const b = new SnapshotManager(db);
+    await a.snapshotDb();
+    const exec = vi.spyOn(db, 'exec');
+    for (let cycle = 0; cycle < 2; cycle++) {
+      await growWal();
+      exec.mockClear();
+      await a.resetDb();
+      await b.snapshotDb();
+      await b.resetDb();
+      expect(exec.mock.calls.filter(([sql]) => sql === 'CHECKPOINT')).toHaveLength(1);
+
+      await growWal();
+      await db.exec('CHECKPOINT');
+      exec.mockClear();
+      await a.snapshotDb();
+      await a.resetDb();
+      await b.resetDb();
+      await new SnapshotManager(db).snapshotDb();
+      expect(exec.mock.calls.some(([sql]) => sql === 'CHECKPOINT')).toBe(false);
+      expect((await db.query('SELECT * FROM checkpoint_cases.data')).rows).toEqual([{ value: 1 }]);
+    }
   });
 
   it.each(['snapshotDb', 'resetDb'] as const)(
@@ -95,7 +135,6 @@ describe('snapshot WAL checkpoints', () => {
       ]);
     } finally {
       await db.exec('RESET ROLE');
-      await new SnapshotManager(db).resetSnapshot();
       await db.exec('DROP OWNED BY checkpoint_limited; DROP ROLE checkpoint_limited');
     }
   });

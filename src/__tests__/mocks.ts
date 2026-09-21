@@ -19,7 +19,7 @@ export const createMockPGlite = (overrides: Partial<MockPGlite> = {}): PGlite =>
   ({
     close: vi.fn().mockResolvedValue(undefined),
     closed: false,
-    exec: vi.fn().mockResolvedValue(undefined),
+    exec: vi.fn().mockResolvedValue([]),
     execProtocolRawStream: vi.fn(),
     execProtocolStream: vi.fn().mockResolvedValue([]),
     query: vi.fn().mockResolvedValue({ fields: [], rows: [] }),

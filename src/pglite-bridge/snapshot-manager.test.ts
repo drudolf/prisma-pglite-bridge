@@ -7,6 +7,10 @@ import { PgBridgeError } from '../errors.ts';
 import { SnapshotManager } from './snapshot-manager.ts';
 
 const pglite = await setupPGlite();
+const resetMetadata = (exists: boolean | undefined = false) => [
+  { fields: [], rows: [{ exists, checkpoint_due: false }] },
+  { fields: [], rows: [{ qualified: 'public.t' }] },
+];
 
 describe('snapshot manager', () => {
   it('rolls back and drops the staging schema if snapshot creation fails', async () => {
@@ -134,9 +138,9 @@ describe('snapshot manager', () => {
 
     const execCalls = vi.mocked(pglite.exec).mock.calls.map((call) => String(call[0]));
     // No user table → nothing to truncate → no transaction at all; the
-    // session scrub is the only statement issued.
-    expect(execCalls).toHaveLength(1);
-    const executed = execCalls[0] ?? '';
+    // metadata batch and session scrub are the only calls issued.
+    expect(execCalls).toHaveLength(2);
+    const executed = execCalls[1] ?? '';
     expect(executed).not.toContain('BEGIN');
     expect(executed).not.toContain('COMMIT');
     expect(executed).not.toContain('TRUNCATE');
@@ -152,12 +156,11 @@ describe('snapshot manager', () => {
     expect(executed).toContain('DISCARD TEMP');
     expect(executed).not.toContain('DEALLOCATE');
     expect(executed).not.toContain('DISCARD ALL');
-    // Snapshot-presence probe + user-table listing; no restore plan without
-    // a snapshot schema.
-    const sqls = vi.mocked(pglite.query).mock.calls.map((call) => String(call[0]));
-    expect(sqls).toHaveLength(2);
-    expect(sqls[0]).toContain('to_regnamespace');
-    expect(sqls[1]).toContain('pg_tables');
+    // Snapshot presence, checkpoint state, and user tables share one call.
+    expect(execCalls[0]).toContain('to_regnamespace');
+    expect(execCalls[0]).toContain('pg_control_checkpoint');
+    expect(execCalls[0]).toContain('pg_tables');
+    expect(pglite.query).not.toHaveBeenCalled();
   });
 
   it('resetDb({ scrubSession: false }) leaves the session settings of a real PGlite untouched', async () => {
@@ -557,6 +560,7 @@ describe('snapshot manager', () => {
       const error = new Error('build boom');
       const exec = vi.fn(async (sql: string) => {
         if (sql.includes('CREATE TABLE') && sql.includes('_pglite_snapshot_new')) throw error;
+        return [];
       });
       const pglite = createMockPGlite({ exec });
 
@@ -591,6 +595,7 @@ describe('snapshot manager', () => {
       const exec = vi.fn(async (sql: string) => {
         if (sql.includes('CREATE SCHEMA')) throw buildError;
         if (sql.includes('ROLLBACK')) throw rollbackError;
+        return [];
       });
       const pglite = createMockPGlite({ exec });
 
@@ -638,6 +643,7 @@ describe('snapshot manager', () => {
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 0);
         });
+        return [];
       });
       const pglite = createMockPGlite({ exec });
 
@@ -804,16 +810,15 @@ describe('SnapshotManager mutation survivors', () => {
   // path (`__tables` plan + `__sequences` read) must follow the live answer.
   it('probes the snapshot schema on every resetDb: absent then present', async () => {
     const probeAnswers = [false, true];
-    const query = vi.fn(async (sql: string) => {
-      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
-      if (sql.includes('to_regnamespace')) return { rows: [{ exists: probeAnswers.shift() }] };
-      return { rows: [] };
-    });
-    const pglite = createMockPGlite({ query });
+    const exec = vi.fn(async (sql: string) =>
+      sql.includes('to_regnamespace') ? resetMetadata(probeAnswers.shift()) : [],
+    );
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const pglite = createMockPGlite({ exec, query });
     const snapshot = new SnapshotManager(pglite);
 
     await snapshot.resetDb();
-    const first = query.mock.calls.map((call) => String(call[0]));
+    const first = [...exec.mock.calls, ...query.mock.calls].map((call) => String(call[0]));
     expect(first.filter((sql) => sql.includes('to_regnamespace'))).toHaveLength(1);
     expect(first.some((sql) => sql.includes('__tables'))).toBe(false);
     expect(vi.mocked(pglite.exec).mock.calls.some(([sql]) => sql.includes('__sequences'))).toBe(
@@ -823,7 +828,7 @@ describe('SnapshotManager mutation survivors', () => {
     query.mockClear();
     vi.mocked(pglite.exec).mockClear();
     await snapshot.resetDb();
-    const second = query.mock.calls.map((call) => String(call[0]));
+    const second = [...exec.mock.calls, ...query.mock.calls].map((call) => String(call[0]));
     expect(second.filter((sql) => sql.includes('to_regnamespace'))).toHaveLength(1);
     expect(second.some((sql) => sql.includes('__tables'))).toBe(true);
     expect(vi.mocked(pglite.exec).mock.calls.some(([sql]) => sql.includes('__sequences'))).toBe(
@@ -834,16 +839,15 @@ describe('SnapshotManager mutation survivors', () => {
 
   it('probes the snapshot schema on every resetDb: present then dropped externally', async () => {
     const probeAnswers = [true, false];
-    const query = vi.fn(async (sql: string) => {
-      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
-      if (sql.includes('to_regnamespace')) return { rows: [{ exists: probeAnswers.shift() }] };
-      return { rows: [] };
-    });
-    const pglite = createMockPGlite({ query });
+    const exec = vi.fn(async (sql: string) =>
+      sql.includes('to_regnamespace') ? resetMetadata(probeAnswers.shift()) : [],
+    );
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const pglite = createMockPGlite({ exec, query });
     const snapshot = new SnapshotManager(pglite);
 
     await snapshot.resetDb();
-    const first = query.mock.calls.map((call) => String(call[0]));
+    const first = [...exec.mock.calls, ...query.mock.calls].map((call) => String(call[0]));
     expect(first.some((sql) => sql.includes('__tables'))).toBe(true);
     expect(vi.mocked(pglite.exec).mock.calls.some(([sql]) => sql.includes('__sequences'))).toBe(
       true,
@@ -853,7 +857,7 @@ describe('SnapshotManager mutation survivors', () => {
     query.mockClear();
     vi.mocked(pglite.exec).mockClear();
     await snapshot.resetDb();
-    const second = query.mock.calls.map((call) => String(call[0]));
+    const second = [...exec.mock.calls, ...query.mock.calls].map((call) => String(call[0]));
     expect(second.filter((sql) => sql.includes('to_regnamespace'))).toHaveLength(1);
     expect(second.some((sql) => sql.includes('__tables'))).toBe(false);
     expect(vi.mocked(pglite.exec).mock.calls.some(([sql]) => sql.includes('__sequences'))).toBe(
@@ -863,15 +867,13 @@ describe('SnapshotManager mutation survivors', () => {
   });
 
   it('treats an empty probe result as "no snapshot"', async () => {
-    const query = vi.fn(async (sql: string) => {
-      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
-      return { rows: [] };
-    });
-    const pglite = createMockPGlite({ query });
+    const exec = vi.fn().mockResolvedValue([{ fields: [], rows: [] }, resetMetadata()[1]]);
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const pglite = createMockPGlite({ exec, query });
     const snapshot = new SnapshotManager(pglite);
 
     await expect(snapshot.resetDb()).resolves.toBeUndefined();
-    const sqls = query.mock.calls.map((call) => String(call[0]));
+    const sqls = [...exec.mock.calls, ...query.mock.calls].map((call) => String(call[0]));
     expect(sqls.some((sql) => sql.includes('__tables'))).toBe(false);
   });
 
@@ -879,19 +881,18 @@ describe('SnapshotManager mutation survivors', () => {
     // Presence lives in the database, not in the manager: after
     // resetSnapshot the next resetDb still asks the catalog (and follows its
     // answer — the mock keeps the schema "present").
-    const query = vi.fn(async (sql: string) => {
-      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
-      if (sql.includes('to_regnamespace')) return { rows: [{ exists: true }] };
-      return { rows: [] };
-    });
-    const pglite = createMockPGlite({ query });
+    const exec = vi.fn(async (sql: string) =>
+      sql.includes('to_regnamespace') ? resetMetadata(true) : [],
+    );
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const pglite = createMockPGlite({ exec, query });
     const snapshot = new SnapshotManager(pglite);
 
     await snapshot.resetSnapshot();
     query.mockClear();
     await snapshot.resetDb();
 
-    const sqls = query.mock.calls.map((call) => String(call[0]));
+    const sqls = [...exec.mock.calls, ...query.mock.calls].map((call) => String(call[0]));
     expect(sqls.filter((sql) => sql.includes('to_regnamespace'))).toHaveLength(1);
     expect(sqls.some((sql) => sql.includes('__tables'))).toBe(true);
   });
@@ -983,10 +984,10 @@ describe('SnapshotManager mutation survivors', () => {
   // The restore runs as one protocol call, with a transaction-local
   // replication-role bypass. The session scrub stays outside that call.
   it('restores inside BEGIN / SET LOCAL / TRUNCATE / … / COMMIT and never resets the role at session level', async () => {
-    const exec = vi.fn(async (_sql: string) => {});
+    const exec = vi.fn(async (sql: string) =>
+      sql.includes('to_regnamespace') ? resetMetadata(true) : [],
+    );
     const query = vi.fn(async (sql: string) => {
-      if (sql.includes('to_regnamespace')) return { rows: [{ exists: true }] };
-      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
       if (sql.includes('__tables')) {
         return {
           rows: [
@@ -1009,8 +1010,8 @@ describe('SnapshotManager mutation survivors', () => {
     await snapshot.resetDb();
 
     const execCalls = exec.mock.calls.map((call) => String(call[0]));
-    expect(execCalls).toHaveLength(2);
-    expect(execCalls[0]?.split(';\n')).toEqual([
+    expect(execCalls).toHaveLength(3);
+    expect(execCalls[1]?.split(';\n')).toEqual([
       'BEGIN',
       'SET LOCAL session_replication_role = replica',
       'TRUNCATE TABLE public.t RESTART IDENTITY CASCADE',
@@ -1026,19 +1027,17 @@ describe('SnapshotManager mutation survivors', () => {
     expect(scrub).toContain('RESET ALL');
     expect(scrub).toContain('DISCARD TEMP');
     expect(scrub).not.toContain('COMMIT');
-    expect(execCalls[0]).toContain('FROM "_pglite_snapshot".__sequences s');
+    expect(execCalls[1]).toContain('FROM "_pglite_snapshot".__sequences s');
   });
 
   it('rolls back and propagates the error when the restore batch fails, without scrubbing', async () => {
     const boom = new Error('truncate boom');
     const exec = vi.fn(async (sql: string) => {
+      if (sql.includes('to_regnamespace')) return resetMetadata();
       if (sql.includes('TRUNCATE')) throw boom;
+      return [];
     });
-    const query = vi.fn(async (sql: string) => {
-      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
-      return { rows: [] };
-    });
-    const pglite = createMockPGlite({ exec, query });
+    const pglite = createMockPGlite({ exec });
     const snapshot = new SnapshotManager(pglite);
 
     const error = await snapshot.resetDb().then(
@@ -1049,6 +1048,7 @@ describe('SnapshotManager mutation survivors', () => {
 
     const execCalls = exec.mock.calls.map((call) => String(call[0]));
     expect(execCalls).toEqual([
+      expect.stringContaining('to_regnamespace'),
       expect.stringContaining('TRUNCATE TABLE public.t RESTART IDENTITY CASCADE'),
       'ROLLBACK',
     ]);
@@ -1057,11 +1057,11 @@ describe('SnapshotManager mutation survivors', () => {
   it('rolls back and propagates a failing restore insert', async () => {
     const boom = new Error('insert boom');
     const exec = vi.fn(async (sql: string) => {
+      if (sql.includes('to_regnamespace')) return resetMetadata(true);
       if (sql.includes('INSERT INTO')) throw boom;
+      return [];
     });
     const query = vi.fn(async (sql: string) => {
-      if (sql.includes('to_regnamespace')) return { rows: [{ exists: true }] };
-      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
       if (sql.includes('__tables')) {
         return {
           rows: [
@@ -1085,6 +1085,7 @@ describe('SnapshotManager mutation survivors', () => {
 
     const execCalls = exec.mock.calls.map((call) => String(call[0]));
     expect(execCalls).toEqual([
+      expect.stringContaining('to_regnamespace'),
       expect.stringContaining('INSERT INTO public.t SELECT * FROM "_pglite_snapshot"."_snap_0"'),
       'ROLLBACK',
     ]);
@@ -1094,14 +1095,12 @@ describe('SnapshotManager mutation survivors', () => {
     const boom = new Error('truncate boom');
     const rollbackBoom = new Error('rollback boom');
     const exec = vi.fn(async (sql: string) => {
+      if (sql.includes('to_regnamespace')) return resetMetadata();
       if (sql.includes('TRUNCATE')) throw boom;
       if (sql === 'ROLLBACK') throw rollbackBoom;
+      return [];
     });
-    const query = vi.fn(async (sql: string) => {
-      if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
-      return { rows: [] };
-    });
-    const pglite = createMockPGlite({ exec, query });
+    const pglite = createMockPGlite({ exec });
     const snapshot = new SnapshotManager(pglite);
 
     const error = await snapshot.resetDb().then(
@@ -1116,12 +1115,10 @@ describe('SnapshotManager mutation survivors', () => {
   // and `if (scrubSession)` -> `if (true)` / `if (false)`.
   describe('scrubSession', () => {
     const scrubbedDb = () => {
-      const exec = vi.fn(async (_sql: string) => {});
-      const query = vi.fn(async (sql: string) => {
-        if (sql.includes('pg_tables')) return { rows: [{ qualified: 'public.t' }] };
-        return { rows: [] };
-      });
-      return { exec, snapshot: new SnapshotManager(createMockPGlite({ exec, query })) };
+      const exec = vi.fn(async (sql: string) =>
+        sql.includes('to_regnamespace') ? resetMetadata() : [],
+      );
+      return { exec, snapshot: new SnapshotManager(createMockPGlite({ exec })) };
     };
     const execSql = (exec: ReturnType<typeof scrubbedDb>['exec']): string[] =>
       exec.mock.calls.map((call) => String(call[0]));
@@ -1131,8 +1128,8 @@ describe('SnapshotManager mutation survivors', () => {
       await snapshot.resetDb({ scrubSession: false });
 
       const execCalls = execSql(exec);
-      expect(execCalls).toHaveLength(1);
-      expect(execCalls[0]?.split(';\n')).toEqual([
+      expect(execCalls).toHaveLength(2);
+      expect(execCalls[1]?.split(';\n')).toEqual([
         'BEGIN',
         'SET LOCAL session_replication_role = replica',
         'TRUNCATE TABLE public.t RESTART IDENTITY CASCADE',
@@ -1155,10 +1152,10 @@ describe('SnapshotManager mutation survivors', () => {
       await snapshot.resetDb(options);
 
       const execCalls = execSql(exec);
-      expect(execCalls).toHaveLength(2);
-      expect(execCalls[0]).toMatch(/;\nCOMMIT$/);
-      expect(execCalls[1]).toContain('RESET ALL');
-      expect(execCalls[1]).toContain('DISCARD TEMP');
+      expect(execCalls).toHaveLength(3);
+      expect(execCalls[1]).toMatch(/;\nCOMMIT$/);
+      expect(execCalls[2]).toContain('RESET ALL');
+      expect(execCalls[2]).toContain('DISCARD TEMP');
     });
   });
 });
