@@ -10,6 +10,12 @@ import { describe, expect, it } from 'vitest';
 import { sniffCopyIn } from './copy-in.ts';
 
 describe('sniffCopyIn', () => {
+  it('finds a COPY after a large non-COPY statement', () => {
+    const prefix = `SELECT '${'x'.repeat(1024 * 1024)}'`;
+    expect(sniffCopyIn(`${prefix}; cOpY t FROM STDIN`)).toBe('reject-multi');
+    expect(sniffCopyIn(`${prefix}; SELECT 'cOpY t FROM STDIN'`)).toBe('not-copy-in');
+  });
+
   describe('classifies a single-statement COPY ... FROM STDIN as capture', () => {
     it.each([
       ['a bare statement', 'COPY t FROM STDIN'],

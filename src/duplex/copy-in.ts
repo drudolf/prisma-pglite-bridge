@@ -89,6 +89,16 @@ const stripQuotedAndComments = (text: string): string => {
       const escaping = ch !== "'"; // E'…' honors backslash escapes
       i += escaping ? 2 : 1;
       while (i < n) {
+        // Standard strings only end at a quote. Skip their often-large body
+        // with a native search; E-strings still inspect backslash escapes.
+        if (!escaping) {
+          const quote = text.indexOf("'", i);
+          if (quote === -1) {
+            i = n;
+            break;
+          }
+          i = quote;
+        }
         if (escaping && text[i] === '\\') {
           i += 2;
           continue;
@@ -162,6 +172,12 @@ const isCopyInStatement = (statement: string): boolean => {
 export type CopyInVerdict = 'capture' | 'reject-multi' | 'not-copy-in';
 
 export const sniffCopyIn = (text: string): CopyInVerdict => {
+  // COPY and STDIN must occur literally somewhere in the SQL, even when
+  // comments or other statements precede them. Most queries skip the lexer.
+  // A substring check deliberately admits identifiers, comments and literals:
+  // only the quote-aware scan below may decide that those are harmless.
+  if (!/copy/i.test(text) || !/stdin/i.test(text)) return 'not-copy-in';
+
   const stripped = stripQuotedAndComments(text);
   const statements = stripped
     .split(';')

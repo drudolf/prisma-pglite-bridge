@@ -347,6 +347,44 @@ describe('QueryTrailRecorder', () => {
   });
 
   describe('ring overflow', () => {
+    it.each([1, 3, 500])(
+      'keeps submission order across repeated wraps at capacity %i',
+      (capacity) => {
+        spyStderr();
+        const recorder = new QueryTrailRecorder({ maxEntries: capacity });
+        for (let i = 0; i < capacity * 3 + 2; i++) {
+          recorder.begin(0, `SELECT ${i}`).settle({ rowCount: i });
+          const entries = recorder.entries();
+          const first = Math.max(0, i - capacity + 1);
+          expect(entries.map((entry) => entry.seq)).toEqual(
+            Array.from({ length: i - first + 1 }, (_, offset) => first + offset),
+          );
+          expect(entries.every((entry) => entry.rowCount === entry.seq)).toBe(true);
+          expect(recorder.meta().droppedCount).toBe(first);
+        }
+        recorder.clear();
+        recorder.begin(0, 'SELECT after_clear');
+        expect(recorder.entries().map((entry) => entry.seq)).toEqual([0]);
+        expect(recorder.meta().droppedCount).toBe(0);
+      },
+    );
+
+    it('settles the original pending entry after its slot is reused', () => {
+      spyStderr();
+      const recorder = new QueryTrailRecorder({ maxEntries: 2 });
+      const first = recorder.begin(0, 'SELECT first');
+      const retained = recorder.entries();
+      recorder.begin(0, 'SELECT second');
+      const latest = recorder.begin(0, 'SELECT third');
+
+      first.settle({ rowCount: 1 });
+      expect(retained[0]?.rowCount).toBe(1);
+      expect(recorder.entries().map((entry) => entry.status)).toEqual(['pending', 'pending']);
+      latest.settle({ rowCount: 3 });
+      expect(recorder.entries().at(-1)?.rowCount).toBe(3);
+      expect(retained.map((entry) => entry.sql)).toEqual(['SELECT first']);
+    });
+
     it('drops the oldest entries and tracks droppedCount accurately', () => {
       const recorder = new QueryTrailRecorder({ maxEntries: 3 });
       const clientId = recorder.registerClient();

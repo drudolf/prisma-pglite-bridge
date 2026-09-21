@@ -139,7 +139,9 @@ const stripLeadingNoise = (sql: string): string => sql.replace(LEADING_NOISE, ''
  *  vocabulary is distinct: ROLLBACK TO and RELEASE are their own kinds, not
  *  mis-bucketed rollbacks/queries. DDL is `'query'`. */
 const deriveKind = (sql: string): QueryTrailKind => {
-  const head = stripLeadingNoise(sql).toUpperCase();
+  // START TRANSACTION is the longest prefix checked below. Bulk statements
+  // can be megabytes long; their bodies need no case conversion.
+  const head = stripLeadingNoise(sql).slice(0, 17).toUpperCase();
   if (head.startsWith('BEGIN') || head.startsWith('START TRANSACTION')) return 'begin';
   if (head.startsWith('COMMIT') || head.startsWith('END')) return 'commit';
   if (head.startsWith('ROLLBACK TO')) return 'rollback-to';
@@ -174,6 +176,7 @@ export class QueryTrailRecorder {
   readonly #redactParams: boolean;
 
   #ring: QueryTrailEntry[] = [];
+  #oldestIndex = 0;
   #nextSeq = 0;
   #nextClientId = 0;
   #droppedCount = 0;
@@ -230,7 +233,7 @@ export class QueryTrailRecorder {
   /** Snapshot of the current entries — a copy of the internal ring, so a
    *  retained reference is not mutated by later captures. */
   entries(): readonly QueryTrailEntry[] {
-    return [...this.#ring];
+    return this.#ring.slice(this.#oldestIndex).concat(this.#ring.slice(0, this.#oldestIndex));
   }
 
   meta(): QueryTrailMeta {
@@ -244,6 +247,7 @@ export class QueryTrailRecorder {
    *  overflow warning. */
   clear(): void {
     this.#ring = [];
+    this.#oldestIndex = 0;
     this.#nextSeq = 0;
     this.#droppedCount = 0;
     this.#startMs = performance.now();
@@ -264,7 +268,10 @@ export class QueryTrailRecorder {
    *  ring is at capacity. The FIRST overflow warns once on stderr. */
   #push(entry: QueryTrailEntry): void {
     if (this.#ring.length >= this.#maxEntries) {
-      this.#ring.shift();
+      // Overwrite in place: overflow stays constant-time even for large
+      // trails. entries() restores submission order only when requested.
+      this.#ring[this.#oldestIndex] = entry;
+      this.#oldestIndex = (this.#oldestIndex + 1) % this.#ring.length;
       this.#droppedCount++;
       if (!this.#overflowWarned) {
         this.#overflowWarned = true;
@@ -273,8 +280,9 @@ export class QueryTrailRecorder {
             'oldest entries are being dropped.\n',
         );
       }
+    } else {
+      this.#ring.push(entry);
     }
-    this.#ring.push(entry);
   }
 
   /** Append the sentinel entry, disable further capture for the run, and warn

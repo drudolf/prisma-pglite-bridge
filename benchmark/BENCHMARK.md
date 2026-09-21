@@ -642,6 +642,55 @@ outside timing; these measurements exclude scheduled checkpoint latency.
 These local steady-state results measure reset overhead, not large-data
 checkpoint cost or a cross-platform speed guarantee.
 
+### Large SQL and query-trail scaling
+
+`pnpm bench:sql` measures COPY detection, query-trail capture, and actual
+simple-protocol pool queries. Pass another checkout to compare source versions
+in the same process:
+
+```sh
+pnpm bench:sql --baseline /path/to/baseline-checkout --rounds 5 > sql-overhead.json
+```
+
+The JSON includes source hashes, environment, and raw timings. Scanner and
+trail results are medians of per-round average call times after one warmup
+round. Pool results are per-query p50s: both versions share one PGlite instance,
+queries alternate with rotating order, and correctness checks plus 30 warmup
+queries per version are outside timing. Trail overflow is warmed before its
+isolated measurements. Pool cases use `queryTrail: true` and
+`statementCaching: false` to exercise the simple-query path on every call.
+
+Local comparison against `757bc2d`, 2026-09-21, i9-9980HK/macOS x64,
+Node 24.14.1, PGlite 0.5.8, five rounds:
+
+| Pool query | Before p50 | After p50 | Change |
+| --- | ---: | ---: | ---: |
+| `SELECT 1` | 0.102ms | 0.098ms | -3.7% |
+| Length of a 256 KiB string literal | 3.59ms | 2.82ms | -21.3% |
+| Length of a 4 MiB string literal | 53.39ms | 40.75ms | -23.7% |
+| `IN` list with about 64 KiB of numeric literals | 8.37ms | 4.27ms | -49.0% |
+
+COPY detection first checks for its required keywords before allocating a
+stripped SQL string and token arrays. Possible matches still use the existing
+quote-aware classifier, including COPY in later statements. Standard quoted
+strings skip directly to their next quote. The 64 KiB numeric-list scanner
+fell from 6.12ms to 0.013ms; COPY after a 256 KiB literal fell from 0.845ms to
+0.097ms. Small actual COPY statements paid for the additional keyword checks:
+1.74µs to 1.82µs in this run.
+
+Trail classification uppercases only the statement prefix, and its ring
+overwrites the oldest slot without shifting the array. Recording a short
+query at 100,000-entry capacity fell from 226µs to 0.93µs; at the default
+500-entry capacity it moved from 1.35µs to 1.25µs. Recording 1 MiB SQL at the
+default capacity fell from 922µs to 1.72µs. Reading the trail still copies its
+entries in submission order and costs O(capacity).
+
+These are targeted stress cases, not a general ORM throughput claim. Warm
+prepared statements bypass simple-query COPY detection; parameterized payloads
+also avoid the large SQL literals exercised here. Small-query timing varies
+more than the large-input gains. The changes preserve the COPY grammar and
+existing protocol limits.
+
 ## Adapters
 
 | Flag value                        | What it benchmarks                                                   |
