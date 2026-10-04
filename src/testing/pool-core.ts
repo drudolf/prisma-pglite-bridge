@@ -11,7 +11,7 @@
  */
 import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import { SnapshotManager } from '../pglite-bridge/snapshot-manager.ts';
-import { PgBridgePool, type PgBridgePoolOptions } from '../pool';
+import { assertPoolMax, PgBridgePool, type PgBridgePoolOptions } from '../pool';
 import { assertPoolIdle } from '../utils/assert-pool-idle.ts';
 import { loadTemplatePglite, rejectPglite, type TemplateCompression } from './template.ts';
 
@@ -166,6 +166,9 @@ export const createPoolContext = async <TClient>(
 ): Promise<PGlitePoolTestContext<TClient>> => {
   const suppliedPglite = options.pool?.pglite;
   const ownsPglite = suppliedPglite === undefined;
+  // Validate before creating the PGlite: the pool constructor below runs
+  // outside the containment try, so a throw there would leak the instance.
+  assertPoolMax(options.pool?.max ?? 1);
   const pglite = suppliedPglite ?? new PGlite();
   const pool = new PgBridgePool({ ...options.pool, pglite });
   const snapshot = new SnapshotManager(pglite);
@@ -245,6 +248,7 @@ export const loadPoolTemplate = async <TClient>(
   options: LoadPoolTemplateOptions<TClient>,
 ): Promise<PGlitePoolTestContext<TClient>> => {
   rejectPglite('loadPoolTemplate', 'loaded context', options.pool);
+  assertPoolMax(options.pool?.max ?? 1);
   const pglite = await loadTemplatePglite(template, options.compression ?? 'none');
   const pool = new PgBridgePool({ ...options.pool, pglite });
   try {

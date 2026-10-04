@@ -27,6 +27,28 @@ import {
 } from './pool-core.ts';
 import type { TemplateCompression } from './template.ts';
 
+// Counts every PGlite the code under test constructs, so validation failures
+// can be pinned as "no instance created" (an unreachable instance cannot be
+// asserted closed). Otherwise the real class.
+const { pgliteCount } = vi.hoisted(() => ({ pgliteCount: { value: 0 } }));
+vi.mock('@electric-sql/pglite', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@electric-sql/pglite')>();
+  class CountingPGlite extends actual.PGlite {
+    constructor(...args: ConstructorParameters<typeof actual.PGlite>) {
+      super(...args);
+      pgliteCount.value += 1;
+    }
+
+    // The template loader goes through create(), which constructs the base
+    // class directly.
+    static override create = (async (...args: Parameters<typeof actual.PGlite.create>) => {
+      pgliteCount.value += 1;
+      return actual.PGlite.create(...args);
+    }) as typeof actual.PGlite.create;
+  }
+  return { ...actual, PGlite: CountingPGlite };
+});
+
 const pglite = await setupPGlite({ reset: false });
 
 /** Read a table's `label` column in id order — the assertion currency below. */
@@ -281,6 +303,16 @@ describe('createPoolContext — dispose', () => {
 });
 
 describe('createPoolContext — failure containment', () => {
+  it('invalid pool max: rejects before creating a PGlite', async () => {
+    const before = pgliteCount.value;
+
+    await expect(
+      createPoolContext({ pool: { max: 0 }, setup: async () => {}, client: (pool) => ({ pool }) }),
+    ).rejects.toThrow(TypeError);
+
+    expect(pgliteCount.value).toBe(before);
+  });
+
   it('setup error: rejects, closes the pool, never calls client or dispose', async () => {
     const client = vi.fn((pool: PgBridgePool) => ({ pool }));
     const dispose = vi.fn(async () => {});
@@ -412,6 +444,16 @@ describe('loadPoolTemplate', () => {
         await pool.query("INSERT INTO dump_items (label) VALUES ('from-template')");
       },
     });
+  });
+
+  it('invalid pool max: rejects before loading a PGlite', async () => {
+    const before = pgliteCount.value;
+
+    await expect(
+      loadPoolTemplate(template, { pool: { max: 0 }, client: (pool) => ({ pool }) }),
+    ).rejects.toThrow(TypeError);
+
+    expect(pgliteCount.value).toBe(before);
   });
 
   it('loads a fresh instance at the template state; close() shuts it down', async () => {
