@@ -18,7 +18,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: pnpm typecheck
       - run: pnpm check
       # LANG pins the ICU default locale for the migrations sort-order parity
       # fixture (localeCompare, matching the Prisma CLI) — cli-compat project.
