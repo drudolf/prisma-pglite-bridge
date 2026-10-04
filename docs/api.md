@@ -609,7 +609,9 @@ omits `registerHooks`):
 
 - `scope?: 'test' | 'file' | 'worker'` — bridge lifetime; default
   `'file'`. `'worker'` shares one bridge across every file a worker
-  runs (`threads` / `forks` pools only). `'test'` builds a per-file
+  runs — only with vitest's `isolate: false` on the `threads` / `forks`
+  pools; under the default `isolate: true` each file gets a fresh
+  worker, so `'worker'` behaves like `'file'`. `'test'` builds a per-file
   template and loads a fresh PGlite from it for every test — the only
   scope safe for `test.concurrent`; `seed` still runs once per file. A
   template must own the instance it dumps, so `scope: 'test'` rejects a

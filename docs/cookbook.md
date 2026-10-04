@@ -312,14 +312,17 @@ The trade-off dial:
 - **One bridge per file (both APIs' default)** — maximum isolation; each
   file pays the cold start (WASM init + migrations + seed, roughly
   0.5–2s depending on hardware).
-- **`createBridgeTest({ scope: 'worker', ... })`** — one warm bridge
-  shared across all files a worker runs, with default isolation left ON:
-  the cold start, migrations, and seed are paid once per worker, and the
+- **`createBridgeTest({ scope: 'worker', ... })` with `isolate: false`**
+  — one warm bridge shared across all files a worker runs: the cold
+  start, migrations, and seed are paid once per worker, and the
   per-test snapshot reset still applies. All files in the worker share
   one seeded snapshot, so this fits projects with one global fixture set.
-  (Uses vitest worker-scoped fixtures; on the `vmThreads`/`vmForks` pools
-  these initialize per file, so the amortization applies to the default
-  `threads`/`forks` pools.)
+  It needs `isolate: false`: under vitest's default `isolate: true`
+  every file runs in a fresh worker, so `scope: 'worker'` initializes
+  once per file — the same cost as `'file'`. (On the
+  `vmThreads`/`vmForks` pools worker-scoped fixtures initialize per
+  file regardless.) If you keep isolation on, the per-file template
+  recipe above is the way to cut the per-file cost.
 - **`createBridgeTest({ scope: 'test', ... })`** — a fresh, independent
   PGlite per test, the only configuration where `test.concurrent` is safe
   (each test owns its own session). Rather than repeat the full cold
@@ -331,8 +334,8 @@ The trade-off dial:
   its own in-memory data directory, so many concurrent tests trade memory
   for isolation.
 - **`setupPGliteBridge` in a `setupFiles` entry with `isolate: false`** —
-  the pre-fixture equivalent of worker scope; still works, but
-  `scope: 'worker'` achieves the same without giving up isolation. This
+  the pre-fixture equivalent of worker scope; both need
+  `isolate: false`, so pick whichever API the rest of the suite uses. This
   mirrors the singleton pattern in [Wiring the bridge into your
   app](#wiring-the-bridge-into-your-app).
 
@@ -879,10 +882,11 @@ jobs:
 - **Workers and memory.** Each vitest worker holds its own PGlite: one
   WASM instance plus an in-memory data directory per live instance.
   Cold start is paid per file (`scope: 'file'`), once per worker
-  (`'worker'`), or once per file with cheap per-test loads (`'test'`).
+  (`'worker'` with `isolate: false`; per file otherwise), or once per
+  file with cheap per-test loads (`'test'`).
   Start with vitest's default worker count and cap `maxWorkers` only
   if the runner swaps; on a small shared runner, fewer workers with
-  `scope: 'worker'` usually beats many workers each paying the cold
+  `scope: 'worker'` and `isolate: false` usually beats many workers each paying the cold
   start. Budget memory by measuring one worker on your runner —
   absolute RSS is not comparable across machines.
 

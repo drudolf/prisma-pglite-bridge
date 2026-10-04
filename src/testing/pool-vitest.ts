@@ -69,7 +69,7 @@ export interface CreatePoolTestOptions<TClient>
   /**
    * Pool-context lifetime. `'file'` (default) creates one context per
    * test file; `'worker'` shares one context across all files a worker
-   * runs; `'test'` gives every test its own fresh instance — the only
+   * runs (with `isolate: false` only — see `createBridgeTest`); `'test'` gives every test its own fresh instance — the only
    * option safe for `test.concurrent`. To keep that affordable, `'test'`
    * builds one template per file (cold start + setup + seed, paid once)
    * and loads a fresh, independent PGlite from it per test. Same scope

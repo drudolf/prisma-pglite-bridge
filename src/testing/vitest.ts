@@ -72,7 +72,9 @@ export interface CreateBridgeTestOptions<TClient>
    * Bridge lifetime. `'file'` (default) creates one bridge per test
    * file; `'worker'` shares one bridge across all files a worker runs —
    * the WASM cold start, migrations, and seed are paid once per worker
-   * instead of once per file; `'test'` gives every test its own fresh
+   * instead of once per file, but only with vitest's `isolate: false`
+   * (under the default `isolate: true` every file runs in a fresh worker,
+   * so `'worker'` costs the same as `'file'`); `'test'` gives every test its own fresh
    * bridge — the only option safe for `test.concurrent`. To keep that
    * affordable, `'test'` builds one template per file (cold start +
    * migrations + seed, paid once) and loads a fresh, independent PGlite
@@ -82,8 +84,7 @@ export interface CreateBridgeTestOptions<TClient>
    * in-memory data dir, so many concurrent tests trade memory for
    * isolation. Requires vitest >= 3.2.
    * Note vitest's `vmThreads`/`vmForks` pools initialize worker-scoped
-   * fixtures per file, so `'worker'` amortizes only on the default
-   * `threads`/`forks` pools.
+   * fixtures per file regardless of `isolate`.
    */
   scope?: 'test' | 'file' | 'worker';
 
