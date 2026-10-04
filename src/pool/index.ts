@@ -83,6 +83,8 @@ export interface PgBridgePoolOptions
     // the client-level field is the resolved `QueryTrailRecorder`. Omit the
     // client's so the pool's own declaration below is authoritative.
     | 'queryTrail'
+    // Pool-internal: the pool installs its own close-barrier hook.
+    | 'onTeardownCreated'
   > {
   /**
    * PGlite instance to back the pool. When omitted the pool creates its own
@@ -261,7 +263,7 @@ export interface PgBridgePoolOptions
    * queries the app issued at the SQL boundary. `true` enables with defaults;
    * an object overrides ring capacity, param preview cap, and redaction. Off
    * by default; the `PGLITE_BRIDGE_QUERY_TRAIL=0` env var only ever disables.
-   * See {@link QueryTrailOptions} and `.claude/plans/query-trail-design.md`.
+   * See {@link QueryTrailOptions} and docs/api.md § Query trail.
    */
   queryTrail?: boolean | QueryTrailOptions;
 }

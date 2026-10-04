@@ -333,8 +333,7 @@ describe('PgBridgePool — connect-time statement cleanup', () => {
       // query rejects — the listener must swallow it (a broken session
       // surfaces on real queries instead). No teardown stub: end()'s
       // close-barrier handles are registered at client construction via
-      // onTeardownCreated, so the 'connect' listener no longer reads
-      // client.teardown.
+      // onTeardownCreated, not by the 'connect' listener.
       pool.emit('connect', fakeClient({ query }));
       await new Promise((resolve) => setImmediate(resolve));
       expect(query).toHaveBeenCalledWith('DEALLOCATE ALL');

@@ -2644,9 +2644,9 @@ describe('PgBridgeClient — call-time query-config snapshot (promise forms)', (
 
 // The duplex-teardown handle contract. pg runs the client's stream factory
 // synchronously inside the PgBridgeClient constructor, so the duplex — and
-// its teardown — exist long before any connect attempt. `teardown` (getter)
-// is the public view; `onTeardownCreated` hands the caller the same handle
-// synchronously AT CONSTRUCTION, which is what lets PgBridgePool's end()
+// its teardown — exist long before any connect attempt. `onTeardownCreated`
+// hands the caller that handle synchronously AT CONSTRUCTION, which is what
+// lets PgBridgePool's end()
 // close barrier cover a client whose connect fails before pg-pool ever
 // emits 'connect'.
 describe('PgBridgeClient — duplex teardown handle', () => {
@@ -2657,43 +2657,6 @@ describe('PgBridgeClient — duplex teardown handle', () => {
     if (!(stream instanceof PGliteDuplex)) throw new Error('expected a PGliteDuplex stream');
     return stream;
   };
-
-  it('teardown.settled is the created duplex onClose, and abort(reason) destroys the duplex', async () => {
-    const client = new PgBridgeClient({
-      [PgBridgeClient.OptionsKey]: {
-        pglite,
-        bridgeId: Symbol('bridge'),
-        syncToFs: false,
-      },
-    });
-    const duplex = duplexOf(client);
-    try {
-      // `settled` IS the duplex's resolve-only close promise — identity, not
-      // just same-settlement, so a barrier awaiting it can never observe an
-      // earlier-resolving proxy.
-      const teardown = client.teardown;
-      expect(teardown.settled).toBe(duplex.onClose);
-
-      // A never-connected duplex has no 'error' listener (pg's Connection
-      // attaches its stream listeners in connect()), so capture the destroy
-      // error — this keeps the emit from crashing the worker AND pins that
-      // abort forwards its reason into destroy().
-      const errors: unknown[] = [];
-      duplex.on('error', (err) => {
-        errors.push(err);
-      });
-      const reason = new Error('teardown abort probe');
-      teardown.abort(reason);
-      expect(duplex.destroyed).toBe(true);
-      await expect(settledOrPending(teardown.settled, 2_000)).resolves.toBeUndefined();
-      expect(errors).toHaveLength(1);
-      expect(errors[0]).toBe(reason);
-    } finally {
-      client.deregisterLiveClient();
-      if (!duplex.destroyed) duplex.destroy();
-      await settledOrPending(duplex.onClose, 2_000).catch(() => {});
-    }
-  });
 
   it('invokes onTeardownCreated exactly once, synchronously at construction, with the duplex teardown handle', async () => {
     const handles: TeardownHandle[] = [];
@@ -2715,10 +2678,10 @@ describe('PgBridgeClient — duplex teardown handle', () => {
       expect(handles).toHaveLength(1);
       const [handle] = handles;
       if (handle === undefined) throw new Error('unreachable: length asserted above');
-      // The callback handle exposes the SAME duplex teardown as the public
-      // getter: `settled` is the created duplex's onClose.
+      // `settled` IS the duplex's resolve-only close promise — identity, not
+      // just same-settlement, so a barrier awaiting it can never observe an
+      // earlier-resolving proxy.
       expect(handle.settled).toBe(duplex.onClose);
-      expect(client.teardown.settled).toBe(handle.settled);
 
       // And the handle's abort destroys the duplex, settling `settled`.
       const errors: unknown[] = [];

@@ -50,7 +50,7 @@ export interface PgBridgeClientOptions {
   /**
    * Pool-owned on-failure query trail. When present, this client registers a
    * stable ordinal at construction and captures every `query()` submission at
-   * the SQL boundary (design: .claude/plans/query-trail-design.md §4). Absent
+   * the SQL boundary (see docs/api.md § Query trail). Absent
    * when the `queryTrail` option is off or the env kill switch disabled it —
    * capture then costs nothing.
    */
@@ -427,27 +427,6 @@ export class PgBridgeClient extends pg.Client {
     };
     chainTail = prior.then(cleanup).then(releaseChainTail, releaseChainTail);
     this.querySubmissionChain = chainTail;
-  }
-
-  /** Duplex-teardown handle for `PgBridgePool.end()`'s close barrier:
-   *  `settled` resolves once the duplex has fully torn down — after the
-   *  awaited `_destroy`/`_final` rollback, so no PGlite call from this
-   *  client can still be in flight — and `abort` force-destroys a
-   *  straggling duplex when the barrier's drain bound expires. Settled
-   *  immediately when the stream factory never ran (client never
-   *  connected). */
-  get teardown(): DuplexTeardown {
-    const duplex = this.#duplexBox.current;
-    return {
-      /* v8 ignore start — pg runs the stream factory synchronously in super(), so a constructed client always has a duplex */
-      // Stryker disable next-line OptionalChaining: accept — `duplex?.onClose`→non-optional in the teardown getter: `/* v8 ignore */` — pg runs the stream factory synchronously in super() so a constructed client always has a duplex; the `?.` undefined arm is unreachable post-construction.
-      settled: duplex?.onClose ?? Promise.resolve(),
-      /* v8 ignore stop */
-      /* v8 ignore start — same guarantee: the `?.` undefined arm is unreachable post-construction */
-      // Stryker disable next-line OptionalChaining: accept — `duplex?.destroy`→non-optional in the teardown getter's abort: same `/* v8 ignore */` guarantee as 2077 — the undefined arm is unreachable post-construction.
-      abort: (reason) => duplex?.destroy(reason),
-      /* v8 ignore stop */
-    };
   }
 
   /**
