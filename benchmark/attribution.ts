@@ -50,6 +50,11 @@ const driverAdapterInstrumentedSymbol = Symbol.for(
 const resultLabelSymbol = Symbol.for('prisma-pglite-bridge.stackProbe.resultLabel');
 
 type ProbeQuery = pg.Query & {
+  _result?: unknown;
+  handleRowDescription: (...args: unknown[]) => unknown;
+  handleDataRow: (...args: unknown[]) => unknown;
+  handleCommandComplete: (...args: unknown[]) => unknown;
+  handleReadyForQuery: (...args: unknown[]) => unknown;
   [queryLabelSymbol]?: string;
   [firstRowSeenSymbol]?: boolean;
   [queryConnectionSymbol]?: ProbeConnection;
@@ -120,9 +125,8 @@ class StackProbe {
     const record = this.records.get(label);
     if (!record) return null;
     this.records.delete(label);
-    if (record.stages.length === 0) return null;
-
     let peakStage = record.stages[0];
+    if (!peakStage) return null;
     for (const stage of record.stages) {
       if (stage.snapshot.rss >= peakStage.snapshot.rss) peakStage = stage;
     }
@@ -141,14 +145,14 @@ class StackProbe {
     this.pgPatched = true;
 
     const probe = this;
-    const clientProto = pg.Client.prototype as pg.Client['prototype'] & {
+    const clientProto = pg.Client.prototype as Omit<pg.Client, 'query'> & {
       query: (...args: unknown[]) => unknown;
     };
     const queryProto = pg.Query.prototype as ProbeQuery;
-    const connectionProto = Connection.prototype as {
+    const connectionProto = Connection.prototype as pg.Connection & {
       attachListeners: (...args: unknown[]) => unknown;
     };
-    const resultProto = Result.prototype as ProbeResult['prototype'] & {
+    const resultProto = Result.prototype as ProbeResult & {
       addFields: (...args: unknown[]) => unknown;
       addRow: (...args: unknown[]) => unknown;
       parseRow: (...args: unknown[]) => unknown;

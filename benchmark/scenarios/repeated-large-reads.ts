@@ -6,6 +6,7 @@
  * Intended invocation:
  *   pnpm bench --scenario repeated-large-reads -n 100 -w 10
  */
+import type { PrismaClient } from '../../src/generated/prisma/client.ts';
 import type { Scenario } from '../adapters/types.ts';
 
 const ONE_MB = 1024 * 1024;
@@ -28,7 +29,7 @@ const timeOp = async (fn: () => Promise<unknown>): Promise<number> => {
   return performance.now() - start;
 };
 
-const resetTenants = async (prisma: typeof import('@prisma/client').PrismaClient) => {
+const resetTenants = async (prisma: PrismaClient) => {
   await prisma.tenant.deleteMany();
 };
 

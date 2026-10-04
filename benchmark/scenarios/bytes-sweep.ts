@@ -9,16 +9,17 @@
  * runner's `-n` flag.
  */
 import { performance } from 'node:perf_hooks';
+import type { PrismaClient } from '../../src/generated/prisma/client.ts';
 import type { Scenario, ScenarioResult } from '../adapters/types.ts';
 
-const resetBlobs = async (prisma: typeof import('@prisma/client').PrismaClient) => {
+const resetBlobs = async (prisma: PrismaClient) => {
   await prisma.blob.deleteMany();
 };
 
 const fillBuffer = (size: number, byte: number) => Buffer.alloc(size, byte);
 
 const runScalarSweep = async (
-  prisma: typeof import('@prisma/client').PrismaClient,
+  prisma: PrismaClient,
   iterations: number,
   label: string,
   size: number,
@@ -38,7 +39,7 @@ const runScalarSweep = async (
 };
 
 const runArraySweep = async (
-  prisma: typeof import('@prisma/client').PrismaClient,
+  prisma: PrismaClient,
   iterations: number,
   label: string,
   chunkCount: number,

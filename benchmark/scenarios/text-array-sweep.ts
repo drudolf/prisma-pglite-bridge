@@ -11,10 +11,10 @@
  * against any adapter without schema additions.
  */
 import { performance } from 'node:perf_hooks';
-import { Prisma } from '../../src/generated/prisma/client.ts';
+import { Prisma, type PrismaClient } from '../../src/generated/prisma/client.ts';
 import type { Scenario, ScenarioResult } from '../adapters/types.ts';
 
-const setupTempTable = async (prisma: typeof import('@prisma/client').PrismaClient) => {
+const setupTempTable = async (prisma: PrismaClient) => {
   await prisma.$executeRawUnsafe(
     'CREATE TEMP TABLE IF NOT EXISTS text_arr_t (id int PRIMARY KEY, tags text[])',
   );
@@ -22,7 +22,7 @@ const setupTempTable = async (prisma: typeof import('@prisma/client').PrismaClie
 };
 
 const runTextArraySweep = async (
-  prisma: typeof import('@prisma/client').PrismaClient,
+  prisma: PrismaClient,
   iterations: number,
   label: string,
   count: number,

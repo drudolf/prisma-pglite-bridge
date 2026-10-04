@@ -1,0 +1,10 @@
+{
+  // Typechecks the benchmark harness and maintenance scripts, which the root
+  // tsconfig.json leaves out. `src/**/*.d.ts` brings in the ambient deep-import
+  // declarations (e.g. pg/lib/utils.js) that benchmark-imported src code needs.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["benchmark", "scripts", "src/**/*.d.ts"]
+}

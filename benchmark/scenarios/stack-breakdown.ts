@@ -9,6 +9,7 @@
  */
 import { performance } from 'node:perf_hooks';
 import type { Pool } from 'pg';
+import type { PrismaClient } from '../../src/generated/prisma/client.ts';
 import type { MemoryDelta, MemorySnapshot, Scenario, StackAttribution } from '../adapters/types.ts';
 
 const gc = () => {
@@ -55,7 +56,7 @@ const makeLargeJson = (run: number) => ({
   },
 });
 
-const resetTenants = async (prisma: typeof import('@prisma/client').PrismaClient) => {
+const resetTenants = async (prisma: PrismaClient) => {
   await prisma.tenant.deleteMany();
   await settleMemory();
 };
@@ -87,13 +88,13 @@ type PendingTrace = {
 type Operation = {
   name: string;
   label: string;
-  execute: (tenantId: string | number) => Promise<unknown>;
+  execute: (tenantId: string) => Promise<unknown>;
 };
 
 const repeated = (
   name: string,
   label: string,
-  executeOnce: (tenantId: string | number) => Promise<unknown>,
+  executeOnce: (tenantId: string) => Promise<unknown>,
 ): Operation => ({
   name: `${name} ×${REPEATED_READ_COUNT}`,
   label: `${label}-x${REPEATED_READ_COUNT}`,
@@ -158,11 +159,13 @@ const runSampledQuery = async (
 };
 
 export const stackBreakdown: Scenario = async (prisma, iterations) => {
-  const stackProbe = (prisma as Record<string, unknown>).__stackProbe as Probe | undefined;
-  const stackAdapterName = (prisma as Record<string, unknown>).__stackAdapterName as
+  const stackProbe = (prisma as unknown as Record<string, unknown>).__stackProbe as
+    | Probe
+    | undefined;
+  const stackAdapterName = (prisma as unknown as Record<string, unknown>).__stackAdapterName as
     | string
     | undefined;
-  const driverAdapter = (prisma as Record<string, unknown>).__driverAdapter as
+  const driverAdapter = (prisma as unknown as Record<string, unknown>).__driverAdapter as
     | {
         queryRaw: (query: {
           sql: string;
@@ -171,8 +174,8 @@ export const stackBreakdown: Scenario = async (prisma, iterations) => {
         }) => Promise<unknown>;
       }
     | undefined;
-  const pool = (prisma as Record<string, unknown>).__pool as Pool | undefined;
-  const pglite = (prisma as Record<string, unknown>).__pglite as
+  const pool = (prisma as unknown as Record<string, unknown>).__pool as Pool | undefined;
+  const pglite = (prisma as unknown as Record<string, unknown>).__pglite as
     | {
         query: <T>(sql: string, params?: unknown[]) => Promise<{ rows: T[]; fields: unknown[] }>;
       }
@@ -181,7 +184,7 @@ export const stackBreakdown: Scenario = async (prisma, iterations) => {
   const operations: Operation[] = [];
 
   if (pglite) {
-    const rawPGlite = {
+    const rawPGlite: Operation = {
       name: 'raw pglite.query 1MB JSON',
       label: 'raw-pglite',
       execute: (tenantId) => pglite.query(SQL, [tenantId]),
@@ -190,12 +193,12 @@ export const stackBreakdown: Scenario = async (prisma, iterations) => {
   }
 
   if (pool) {
-    const pgPoolObject = {
+    const pgPoolObject: Operation = {
       name: 'pg pool.query object rows 1MB JSON',
       label: 'pg-pool-object',
       execute: (tenantId) => pool.query(SQL, [tenantId]),
     };
-    const pgPoolArray = {
+    const pgPoolArray: Operation = {
       name: 'pg pool.query array rows 1MB JSON',
       label: 'pg-pool-array',
       execute: (tenantId) => pool.query({ text: SQL, values: [tenantId], rowMode: 'array' }),
@@ -212,7 +215,7 @@ export const stackBreakdown: Scenario = async (prisma, iterations) => {
     const adapterQueryRaw = {
       name: 'driver adapter.queryRaw 1MB JSON',
       label: 'driver-adapter-query-raw',
-      execute: (tenantId: string | number) =>
+      execute: (tenantId: string) =>
         driverAdapter.queryRaw({
           sql: `
             SELECT id, name, slug, config, labels, "createdAt"
@@ -229,12 +232,12 @@ export const stackBreakdown: Scenario = async (prisma, iterations) => {
     );
   }
 
-  const prismaQueryRaw = {
+  const prismaQueryRaw: Operation = {
     name: 'prisma $queryRaw 1MB JSON',
     label: 'prisma-query-raw',
     execute: (tenantId) => prisma.$queryRawUnsafe(SQL, tenantId),
   };
-  const prismaFindUnique = {
+  const prismaFindUnique: Operation = {
     name: 'prisma findUnique 1MB JSON',
     label: 'prisma-find-unique',
     execute: (tenantId) =>

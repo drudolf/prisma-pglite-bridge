@@ -9,6 +9,7 @@
  * `--expose-gc`.
  */
 import { performance } from 'node:perf_hooks';
+import type { PrismaClient } from '../../src/generated/prisma/client.ts';
 import type {
   MemoryDelta,
   MemorySnapshot,
@@ -60,7 +61,7 @@ const makeLargeJson = (run: number) => ({
   },
 });
 
-const resetTenants = async (prisma: typeof import('@prisma/client').PrismaClient) => {
+const resetTenants = async (prisma: PrismaClient) => {
   await prisma.tenant.deleteMany();
   await settleMemory();
 };
@@ -135,13 +136,13 @@ export const singleQuery: Scenario = async (prisma, iterations) => {
   const iterationRetainedDelta: MemoryDelta[] = [];
   const attribution: StackAttribution[] = [];
 
-  const stackProbe = (prisma as Record<string, unknown>).__stackProbe as
+  const stackProbe = (prisma as unknown as Record<string, unknown>).__stackProbe as
     | {
         run: <T>(label: string, adapter: string, fn: () => Promise<T>) => Promise<T>;
         take: (label: string) => StackAttribution | null;
       }
     | undefined;
-  const stackAdapterName = (prisma as Record<string, unknown>).__stackAdapterName as
+  const stackAdapterName = (prisma as unknown as Record<string, unknown>).__stackAdapterName as
     | string
     | undefined;
 

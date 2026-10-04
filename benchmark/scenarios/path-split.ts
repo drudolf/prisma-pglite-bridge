@@ -6,8 +6,9 @@
  * scenario and you need to answer which layer is actually retaining bytes.
  */
 import { performance } from 'node:perf_hooks';
-import type { DriverAdapter } from '@prisma/driver-adapter-utils';
+import type { SqlDriverAdapter } from '@prisma/driver-adapter-utils';
 import type { Pool } from 'pg';
+import type { PrismaClient } from '../../src/generated/prisma/client.ts';
 import type { MemoryDelta, MemorySnapshot, Scenario, ScenarioResult } from '../adapters/types.ts';
 
 const gc = () => {
@@ -60,7 +61,7 @@ const makeLargeJson = (run: number) => ({
   },
 });
 
-const resetTenants = async (prisma: typeof import('@prisma/client').PrismaClient) => {
+const resetTenants = async (prisma: PrismaClient) => {
   await prisma.tenant.deleteMany();
   await settleMemory();
 };
@@ -73,7 +74,7 @@ type PGliteLike = {
   exec: (sql: string) => Promise<void>;
 };
 
-type DriverAdapterLike = Pick<DriverAdapter, 'queryRaw'>;
+type DriverAdapterLike = Pick<SqlDriverAdapter, 'queryRaw'>;
 
 type Operation = {
   name: string;
@@ -111,9 +112,9 @@ const samplePeakWhile = async (label: string, execute: () => Promise<void>) => {
 };
 
 export const pathSplit: Scenario = async (prisma, iterations) => {
-  const pglite = (prisma as Record<string, unknown>).__pglite as PGliteLike | undefined;
-  const pool = (prisma as Record<string, unknown>).__pool as Pool | undefined;
-  const driverAdapter = (prisma as Record<string, unknown>).__driverAdapter as
+  const pglite = (prisma as unknown as Record<string, unknown>).__pglite as PGliteLike | undefined;
+  const pool = (prisma as unknown as Record<string, unknown>).__pool as Pool | undefined;
+  const driverAdapter = (prisma as unknown as Record<string, unknown>).__driverAdapter as
     | DriverAdapterLike
     | undefined;
 

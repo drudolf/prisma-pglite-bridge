@@ -12,6 +12,7 @@
  */
 import { once } from 'node:events';
 import pg from 'pg';
+import type { PrismaClient } from '../../src/generated/prisma/client.ts';
 import type {
   Attribution,
   BridgeAttributionSpan,
@@ -82,7 +83,7 @@ const settleMemory = async () => {
   gc();
 };
 
-const resetScenarioRows = async (prisma: typeof import('@prisma/client').PrismaClient) => {
+const resetScenarioRows = async (prisma: PrismaClient) => {
   await prisma.blob.deleteMany();
   await prisma.tenant.deleteMany();
   await settleMemory();
@@ -256,20 +257,20 @@ const detectLeak = (
 export const memory: Scenario = async (prisma, iterations) => {
   const results: ScenarioResult[] = [];
   const hasGc = typeof globalThis.gc === 'function';
-  const stackProbe = (prisma as Record<string, unknown>).__stackProbe as
+  const stackProbe = (prisma as unknown as Record<string, unknown>).__stackProbe as
     | {
         run: <T>(label: string, adapter: string, fn: () => Promise<T>) => Promise<T>;
         take: (label: string) => StackAttribution | null;
       }
     | undefined;
-  const stackAdapterName = (prisma as Record<string, unknown>).__stackAdapterName as
+  const stackAdapterName = (prisma as unknown as Record<string, unknown>).__stackAdapterName as
     | string
     | undefined;
   const stackAttribution = process.env.STACK_ATTRIBUTION === '1';
-  const bridgeAttribution = (prisma as Record<string, unknown>).__bridgeAttribution as
+  const bridgeAttribution = (prisma as unknown as Record<string, unknown>).__bridgeAttribution as
     | BridgeAttributionProbeLike
     | undefined;
-  const bridgePool = (prisma as Record<string, unknown>).__pool as
+  const bridgePool = (prisma as unknown as Record<string, unknown>).__pool as
     | {
         query: (config: {
           text: string;
@@ -299,7 +300,14 @@ export const memory: Scenario = async (prisma, iterations) => {
     if (!bridgePool) return;
     const client = await bridgePool.connect();
     try {
-      const query = new Query({ text, queryMode: 'simple', rowMode: 'array', types });
+      // `queryMode` is a pg runtime option @types/pg omits from QueryConfig.
+      const config: pg.QueryArrayConfig & { queryMode: 'simple' } = {
+        text,
+        queryMode: 'simple',
+        rowMode: 'array',
+        types,
+      };
+      const query = new Query(config);
       client.query(query);
       query.on('row', () => {});
       await Promise.race([
