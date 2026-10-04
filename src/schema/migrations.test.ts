@@ -7,16 +7,13 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { createTempDir, createTempFile, removeTempDir } from '../__tests__/file-system.ts';
 import { PgBridgeError } from '../errors.ts';
 import { PGliteBridge } from '../pglite-bridge';
-import {
-  getMigrationSQL,
-  hasMigrations,
-  hasSchema,
-  listMigrations,
-  pushMigrations,
-  readMigrationFiles,
-} from './migrations.ts';
+import { hasMigrations, hasSchema, listMigrations, pushMigrations } from './migrations.ts';
 
 type MigrationsModule = typeof import('./migrations.ts');
+
+/** Migration resolution fails before pushMigrations touches PGlite, so the
+ *  resolution-error tests pass this placeholder instead of booting one. */
+const unusedPglite = {} as PGlite;
 
 const importMigrationsWithConfig = async (
   loadConfigFromFile: (args: { configRoot: string }) => Promise<unknown>,
@@ -40,71 +37,11 @@ afterEach(() => {
 });
 
 describe('migrations utilities', () => {
-  it('prefers explicit sql over filesystem resolution', async () => {
-    await expect(getMigrationSQL({ sql: 'SELECT 1', migrationsPath: '/missing' })).resolves.toBe(
-      'SELECT 1',
-    );
-  });
-
-  it('returns undefined when the migrations directory does not exist', () => {
-    expect(readMigrationFiles('/definitely/missing')).toBeUndefined();
-  });
-
-  it('reads migration files in directory order', () => {
-    const { path: migrationsPath } = createTempDir('migrations');
-
-    try {
-      createTempFile(
-        'migration.sql',
-        'SELECT 2;',
-        createTempDir('0002_second', migrationsPath).path,
-      );
-      createTempFile(
-        'migration.sql',
-        'SELECT 1;',
-        createTempDir('0002_first', migrationsPath).path,
-      );
-
-      expect(readMigrationFiles(migrationsPath)).toBe('SELECT 1;\nSELECT 2;');
-    } finally {
-      removeTempDir(migrationsPath);
-    }
-  });
-
-  it('skips migration directories that do not contain migration.sql', () => {
-    const { path: migrationsPath } = createTempDir('migrations');
-
-    try {
-      createTempDir('0001_empty', migrationsPath);
-      createTempFile(
-        'migration.sql',
-        'SELECT 2;',
-        createTempDir('0002_second', migrationsPath).path,
-      );
-
-      expect(readMigrationFiles(migrationsPath)).toBe('SELECT 2;');
-    } finally {
-      removeTempDir(migrationsPath);
-    }
-  });
-
-  it('returns SQL when an explicit migrations path contains migration files', async () => {
-    const { path: migrationsPath } = createTempDir('migrations');
-
-    try {
-      createTempFile('migration.sql', 'SELECT 1;', createTempDir('0001_init', migrationsPath).path);
-
-      await expect(getMigrationSQL({ migrationsPath })).resolves.toBe('SELECT 1;');
-    } finally {
-      removeTempDir(migrationsPath);
-    }
-  });
-
   it('throws an error when an explicit migrations path has no files', async () => {
     const { path: migrationsPath } = createTempDir('migrations');
 
     try {
-      await expect(getMigrationSQL({ migrationsPath })).rejects.toThrow(
+      await expect(pushMigrations(unusedPglite, { migrationsPath })).rejects.toThrow(
         `No migration.sql files found in ${migrationsPath}. Run \`prisma migrate dev\` to generate migration files.`,
       );
     } finally {
@@ -151,37 +88,18 @@ describe('migrations utilities', () => {
     await expect(getMigrationsPath('/repo')).resolves.toBeUndefined();
   });
 
-  it('uses the auto-discovered migrations path from prisma config', async () => {
-    const { path: migrationsPath } = createTempDir('migrations');
-
-    try {
-      createTempFile('migration.sql', 'SELECT 1;', createTempDir('0001_init', migrationsPath).path);
-
-      const { getMigrationSQL: getMigrationSQLWithMock } = await importMigrationsWithConfig(
-        vi.fn().mockResolvedValue({
-          config: { migrations: { path: migrationsPath } },
-          error: undefined,
-        }),
-      );
-
-      await expect(getMigrationSQLWithMock({})).resolves.toBe('SELECT 1;');
-    } finally {
-      removeTempDir(migrationsPath);
-    }
-  });
-
   it('throws when the auto-discovered migrations path has no migration files', async () => {
     const { path: migrationsPath } = createTempDir('migrations');
 
     try {
-      const { getMigrationSQL: getMigrationSQLWithMock } = await importMigrationsWithConfig(
+      const { pushMigrations: pushMigrationsWithMock } = await importMigrationsWithConfig(
         vi.fn().mockResolvedValue({
           config: { migrations: { path: migrationsPath } },
           error: undefined,
         }),
       );
 
-      await expect(getMigrationSQLWithMock({})).rejects.toThrow(
+      await expect(pushMigrationsWithMock(unusedPglite, {})).rejects.toThrow(
         `No migration.sql files found in auto-discovered path ${migrationsPath}. Run \`prisma migrate dev\` to generate migration files, or pass pre-generated SQL via the \`sql\` option.`,
       );
     } finally {
@@ -190,22 +108,22 @@ describe('migrations utilities', () => {
   });
 
   it('throws a configRoot-specific error when prisma config resolves no schema or migrations', async () => {
-    const { getMigrationSQL: getMigrationSQLWithMock } = await importMigrationsWithConfig(
+    const { pushMigrations: pushMigrationsWithMock } = await importMigrationsWithConfig(
       vi.fn().mockResolvedValue({
         config: {},
         error: undefined,
       }),
     );
 
-    await expect(getMigrationSQLWithMock({ configRoot: '/repo' })).rejects.toThrow(
+    await expect(pushMigrationsWithMock(unusedPglite, { configRoot: '/repo' })).rejects.toThrow(
       'prisma.config.ts loaded from configRoot (/repo) but no schema or migrations path could be resolved. Ensure your config specifies a schema path, or pass pre-generated SQL via the `sql` option.',
     );
   });
 
   it('throws the final fallback error when no prisma config can be loaded', async () => {
-    const { getMigrationSQL: getMigrationSQLWithMock } = await importMigrationsWithBrokenConfig();
+    const { pushMigrations: pushMigrationsWithMock } = await importMigrationsWithBrokenConfig();
 
-    await expect(getMigrationSQLWithMock({})).rejects.toThrow(
+    await expect(pushMigrationsWithMock(unusedPglite, {})).rejects.toThrow(
       'No migration files found and no prisma.config.ts could be loaded. Run `prisma migrate dev` to generate them, or pass pre-generated SQL via the `sql` option.',
     );
   });
@@ -322,6 +240,26 @@ describe('pushMigrations', () => {
       `SELECT COUNT(*)::text AS count FROM information_schema.tables WHERE table_name = 'Demo'`,
     );
     expect(rows[0]?.count).toBe('1');
+  });
+
+  it('uses the auto-discovered migrations path from prisma config', async () => {
+    const { path: migrationsPath } = createTempDir('migrations');
+
+    try {
+      createTempFile('migration.sql', 'SELECT 1;', createTempDir('0001_init', migrationsPath).path);
+
+      const { pushMigrations: pushMigrationsWithMock } = await importMigrationsWithConfig(
+        vi.fn().mockResolvedValue({
+          config: { migrations: { path: migrationsPath } },
+          error: undefined,
+        }),
+      );
+
+      const { applied } = await pushMigrationsWithMock(sharedPglite, {});
+      expect(applied).toEqual(['0001_init']);
+    } finally {
+      removeTempDir(migrationsPath);
+    }
   });
 
   it('applies SQL from a migrationsPath', async () => {
@@ -463,12 +401,12 @@ describe('pushMigrations', () => {
 // ————— Tier A site pins: schema/migrations.ts —————
 
 // Sites :96 and :106 — MIGRATIONS_UNAVAILABLE (two of the four)
-describe('getMigrationSQL Tier A site pins — MIGRATIONS_UNAVAILABLE', () => {
+describe('pushMigrations resolution Tier A site pins — MIGRATIONS_UNAVAILABLE', () => {
   // Site :96 — explicit migrationsPath that exists but has no migration files
   it('rejects with PgBridgeError (code MIGRATIONS_UNAVAILABLE) when explicit path has no files', async () => {
     const { path: migrationsPath } = createTempDir('tier-a-pin-empty');
     try {
-      const caught = await getMigrationSQL({ migrationsPath }).then(
+      const caught = await pushMigrations(unusedPglite, { migrationsPath }).then(
         () => undefined,
         (e: unknown) => e,
       );
@@ -490,9 +428,9 @@ describe('getMigrationSQL Tier A site pins — MIGRATIONS_UNAVAILABLE', () => {
   it('rejects with PgBridgeError (code MIGRATIONS_UNAVAILABLE) for the final fallback (no config, no path)', async () => {
     // Reuses the established importMigrationsWithBrokenConfig helper so that
     // prisma/config cannot be imported, forcing the final throw site (:121).
-    const { getMigrationSQL: getMigrationSQLBroken } = await importMigrationsWithBrokenConfig();
+    const { pushMigrations: pushMigrationsBroken } = await importMigrationsWithBrokenConfig();
 
-    const caught = await getMigrationSQLBroken({}).then(
+    const caught = await pushMigrationsBroken(unusedPglite, {}).then(
       () => undefined,
       (e: unknown) => e,
     );
@@ -568,13 +506,13 @@ describe('getMigrationsPath mutation-kill pins', () => {
   });
 });
 
-describe('readMigrationFiles mutation-kill pins', () => {
+describe('listMigrations mutation-kill pins', () => {
   // :69 filter-drop — `.filter(isDirectory)` removed. The filter's presence is
   // observable via a broken symlink at the migrations root: with the filter,
   // statSync(brokenlink) throws (ENOENT) inside the callback and the read fails;
   // without the filter, the non-directory entry is never stat'd, its
-  // `<entry>/migration.sql` does not exist, and the real migration still reads,
-  // so the mutant returns SQL instead of throwing.
+  // `<entry>/migration.sql` does not exist, and the real migration still lists,
+  // so the mutant returns it instead of throwing.
   it('throws (does not silently skip) when a non-directory entry cannot be stat-ed', () => {
     const { path: migrationsPath } = createTempDir('migrations');
 
@@ -583,25 +521,7 @@ describe('readMigrationFiles mutation-kill pins', () => {
       // Dangling symlink — a non-directory entry whose statSync throws ENOENT.
       symlinkSync(join(migrationsPath, 'nonexistent-target'), join(migrationsPath, 'zz_broken'));
 
-      expect(() => readMigrationFiles(migrationsPath)).toThrow();
-    } finally {
-      removeTempDir(migrationsPath);
-    }
-  });
-
-  // :81 ConditionalExpression (`... ? ... : undefined` -> `true ? ...`) and
-  // :81 EqualityOperator (`length > 0` -> `length >= 0`) both make an EMPTY
-  // sqlParts return '' (the join of no parts) instead of undefined. A directory
-  // that exists but has no migration.sql anywhere must yield undefined, not ''.
-  it('returns undefined (not an empty string) when an existing dir has no migration.sql', () => {
-    const { path: migrationsPath } = createTempDir('migrations');
-
-    try {
-      createTempDir('0001_no_sql', migrationsPath);
-
-      const result = readMigrationFiles(migrationsPath);
-      expect(result).toBeUndefined();
-      expect(result).not.toBe('');
+      expect(() => listMigrations(migrationsPath)).toThrow();
     } finally {
       removeTempDir(migrationsPath);
     }
@@ -610,19 +530,19 @@ describe('readMigrationFiles mutation-kill pins', () => {
 
 // :109 (auto-discovered path) and :118 (configRoot resolves nothing):
 // `'MIGRATIONS_UNAVAILABLE'` -> `''`. Pin the thrown error's `.code`.
-describe('getMigrationSQL MIGRATIONS_UNAVAILABLE code pins', () => {
+describe('pushMigrations resolution MIGRATIONS_UNAVAILABLE code pins', () => {
   // :109 — auto-discovered migrations path exists but has no migration files.
   it('throws with code MIGRATIONS_UNAVAILABLE for an empty auto-discovered path', async () => {
     const { path: migrationsPath } = createTempDir('auto-empty');
     try {
-      const { getMigrationSQL: getMigrationSQLWithMock } = await importMigrationsWithConfig(
+      const { pushMigrations: pushMigrationsWithMock } = await importMigrationsWithConfig(
         vi.fn().mockResolvedValue({
           config: { migrations: { path: migrationsPath } },
           error: undefined,
         }),
       );
 
-      const caught = await getMigrationSQLWithMock({}).then(
+      const caught = await pushMigrationsWithMock(unusedPglite, {}).then(
         () => undefined,
         (e: unknown) => e,
       );
@@ -636,14 +556,14 @@ describe('getMigrationSQL MIGRATIONS_UNAVAILABLE code pins', () => {
 
   // :118 — config loads under configRoot but resolves no schema or path.
   it('throws with code MIGRATIONS_UNAVAILABLE for a configRoot that resolves nothing', async () => {
-    const { getMigrationSQL: getMigrationSQLWithMock } = await importMigrationsWithConfig(
+    const { pushMigrations: pushMigrationsWithMock } = await importMigrationsWithConfig(
       vi.fn().mockResolvedValue({
         config: {},
         error: undefined,
       }),
     );
 
-    const caught = await getMigrationSQLWithMock({ configRoot: '/repo' }).then(
+    const caught = await pushMigrationsWithMock(unusedPglite, { configRoot: '/repo' }).then(
       () => undefined,
       (e: unknown) => e,
     );

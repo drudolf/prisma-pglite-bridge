@@ -122,29 +122,6 @@ export const listMigrations = (migrationsPath: string): MigrationFile[] => {
     });
 };
 
-/**
- * Read and concatenate every `migration.sql` under a migrations directory in
- * directory order. Returns undefined if the directory doesn't exist or has no
- * migration files.
- */
-export const readMigrationFiles = (migrationsPath: string): string | undefined => {
-  const migrations = listMigrations(migrationsPath);
-  return migrations.length > 0 ? migrations.map((m) => m.sql).join('\n') : undefined;
-};
-
-/**
- * Resolve schema SQL from {@link PushMigrationsOptions}. Priority:
- *   1. Explicit `sql`
- *   2. Explicit `migrationsPath` — read migration files
- *   3. Auto-discovered migrations via prisma.config.ts
- *   4. Throw — tell the caller to generate migration files
- */
-export const getMigrationSQL = async (options: PushMigrationsOptions): Promise<string> => {
-  if (options.sql) return options.sql;
-  const { migrations } = await resolveMigrations(options);
-  return migrations.map((m) => m.sql).join('\n');
-};
-
 /** The migrations directory that {@link pushMigrations} would use, plus its files. */
 const resolveMigrations = async (
   options: PushMigrationsOptions,
