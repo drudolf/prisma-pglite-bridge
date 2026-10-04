@@ -28,7 +28,6 @@ export default defineConfig({
   // the fast oxc-transform path instead of falling back to the tsc compiler.
   tsconfig: 'tsconfig.build.json',
   dts: true,
-  sourcemap: true,
   clean: true,
   deps: { neverBundle },
 });
