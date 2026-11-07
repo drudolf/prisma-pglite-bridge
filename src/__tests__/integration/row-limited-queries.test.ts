@@ -7,6 +7,7 @@
 // are created per test so a deadlocked query cannot poison later tests.
 import type pg from 'pg';
 import Cursor from 'pg-cursor';
+import QueryStream from 'pg-query-stream';
 import { describe, expect, it } from 'vitest';
 
 import { PgBridgePool } from '../../index.ts';
@@ -24,6 +25,9 @@ const DEADLOCK_GUARD_MS = 20_000;
 type RowLimitedQueryConfig = pg.QueryConfig & { rows: number };
 
 const rowLimited = (text: string, rows: number): RowLimitedQueryConfig => ({ text, rows });
+
+// Errors on the third page of two (i = 5); the first two pages succeed.
+const DIVIDE_BY_ZERO_SQL = 'select 10 / (5 - i) as v from generate_series(1,7) g(i)';
 
 const withPool = async (max: number, fn: (pool: PgBridgePool) => Promise<void>): Promise<void> => {
   const pool = new PgBridgePool({ max });
@@ -82,11 +86,91 @@ describe('row-limited queries (portal suspension)', () => {
     await withPool(1, async (pool) => {
       const client = await pool.connect();
       try {
-        await expect(
-          client.query(rowLimited('select 10 / (5 - i) as v from generate_series(1,7) g(i)', 2)),
-        ).rejects.toThrow(/division by zero/);
+        await expect(client.query(rowLimited(DIVIDE_BY_ZERO_SQL, 2))).rejects.toThrow(
+          /division by zero/,
+        );
 
         // The error-path RFQ was delivered, so the connection recovered.
+        const { rows } = await client.query('select 1 as ok');
+        expect(rows[0]?.ok).toBe(1);
+      } finally {
+        client.release();
+      }
+    });
+  });
+
+  it('rejects a mid-rows error inside a transaction and lets ROLLBACK recover the session', {
+    timeout: DEADLOCK_GUARD_MS,
+  }, async () => {
+    await withPool(2, async (pool) => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await expect(client.query(rowLimited(DIVIDE_BY_ZERO_SQL, 2))).rejects.toThrow(
+          /division by zero/,
+        );
+
+        // The failed transaction still owns the session; ROLLBACK must get
+        // through (it needs the recovery RFQ to be queued at all).
+        await client.query('ROLLBACK');
+        const { rows } = await client.query('select 1 as ok');
+        expect(rows[0]?.ok).toBe(1);
+      } finally {
+        client.release();
+      }
+
+      // A sibling client can take the session afterwards: nothing is wedged.
+      const other = await pool.connect();
+      try {
+        const { rows } = await other.query('select 1 as ok');
+        expect(rows[0]?.ok).toBe(1);
+      } finally {
+        other.release();
+      }
+    });
+  });
+
+  it('rejects a pg-cursor read that hits an error and keeps the client usable afterwards', {
+    timeout: DEADLOCK_GUARD_MS,
+  }, async () => {
+    await withPool(1, async (pool) => {
+      const client = await pool.connect();
+      try {
+        const cursor = client.query(new Cursor<{ v: number }>(DIVIDE_BY_ZERO_SQL));
+        const first = await cursor.read(2);
+        expect(first.map((r) => r.v)).toEqual([2, 3]);
+        const second = await cursor.read(2);
+        expect(second.map((r) => r.v)).toEqual([5, 10]);
+
+        // pg-cursor sends its own Sync after the error, so the backend sees
+        // two Syncs (bridge recovery + cursor); both must be answered.
+        await expect(cursor.read(2)).rejects.toThrow(/division by zero/);
+        await cursor.close();
+
+        const { rows } = await client.query('select 1 as ok');
+        expect(rows[0]?.ok).toBe(1);
+      } finally {
+        client.release();
+      }
+    });
+  });
+
+  it('emits a pg-query-stream error mid-stream and keeps the client usable afterwards', {
+    timeout: DEADLOCK_GUARD_MS,
+  }, async () => {
+    await withPool(1, async (pool) => {
+      const client = await pool.connect();
+      try {
+        const stream = client.query(new QueryStream(DIVIDE_BY_ZERO_SQL, [], { batchSize: 2 }));
+        const seen: number[] = [];
+        const streamError = await new Promise<Error>((resolve, reject) => {
+          stream.on('data', (row: { v: number }) => seen.push(row.v));
+          stream.on('error', resolve);
+          stream.on('end', () => reject(new Error('stream ended without an error')));
+        });
+        expect(streamError.message).toMatch(/division by zero/);
+        expect(seen).toEqual([2, 3, 5, 10]);
+
         const { rows } = await client.query('select 1 as ok');
         expect(rows[0]?.ok).toBe(1);
       } finally {

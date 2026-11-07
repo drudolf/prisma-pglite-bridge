@@ -1667,6 +1667,7 @@ describe('PGliteDuplex flush portal boundary', () => {
   const SYNC = 0x53; // 'S'
 
   const RFQ_IN_TRANSACTION_MESSAGE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x54]);
+  const RFQ_FAILED_TX_MESSAGE = Buffer.from([0x5a, 0x00, 0x00, 0x00, 0x05, 0x45]);
 
   // Minimal wire frame: type byte + 4-byte big-endian length including itself.
   const frame = (type: number): Buffer => {
@@ -1680,6 +1681,7 @@ describe('PGliteDuplex flush portal boundary', () => {
   const DATA_ROW_MESSAGE = frame(0x44); // 'D'
   const PORTAL_SUSPENDED_MESSAGE = frame(0x73); // 's'
   const ERROR_RESPONSE_MESSAGE = frame(0x45); // 'E'
+  const BARE_SYNC_MESSAGE = frame(SYNC); // 53 00 00 00 04
 
   const flushBatch = (): Buffer =>
     Buffer.concat([frame(PARSE), frame(BIND), frame(DESCRIBE_MSG), frame(EXECUTE), frame(FLUSH)]);
@@ -1808,13 +1810,14 @@ describe('PGliteDuplex flush portal boundary', () => {
     duplex.destroy();
   });
 
-  it('delivers both ErrorResponse and the trailing RFQ of an error flush batch', async () => {
+  it('delivers the recovery Sync RFQ after an error flush batch without RFQ (PGlite >= 0.5.11)', async () => {
+    const lock = new SessionLock();
     const { pglite, execProtocolRawStream } = createScriptedPGlite([
       [RFQ_IDLE_MESSAGE],
-      [ERROR_RESPONSE_MESSAGE, RFQ_IDLE_MESSAGE],
-      [RFQ_IDLE_MESSAGE], // recovery Sync response — dropped by the bridge
+      [ERROR_RESPONSE_MESSAGE], // PGlite >= 0.5.11: no RFQ until a Sync arrives
+      [RFQ_IDLE_MESSAGE], // recovery Sync response — forwarded to pg
     ]);
-    const duplex = new PGliteDuplex(pglite);
+    const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
     duplex.on('error', () => {});
     const received = collect(duplex);
 
@@ -1825,23 +1828,111 @@ describe('PGliteDuplex flush portal boundary', () => {
     await expect(writeAndAwait(duplex, flushBatch())).resolves.toBeUndefined();
     await settle();
 
-    // pg never sends a recovery Sync in rows-mode — withholding this RFQ
-    // would wedge the connection.
+    // Stock pg sends no Sync in rows mode: the only RFQ it can recover from
+    // is the one the bridge's own recovery Sync produces.
     const batchResponse = Buffer.concat(received).subarray(startupLen);
     expect(batchResponse.equals(Buffer.concat([ERROR_RESPONSE_MESSAGE, RFQ_IDLE_MESSAGE]))).toBe(
       true,
     );
 
-    // The backend enters ignore-till-sync on error; the bridge must issue a
-    // recovery Sync itself (stock pg never does in rows-mode). Its response
-    // was dropped — asserted by the byte-equality above.
+    // Exactly one bare Sync, sent without an fs sync.
     expect(execProtocolRawStream).toHaveBeenCalledTimes(3);
-    const recoveryFrame = execProtocolRawStream.mock.calls[2]?.[0] as Uint8Array;
-    expect(Buffer.from(recoveryFrame).equals(Buffer.from([0x53, 0x00, 0x00, 0x00, 0x04]))).toBe(
-      true,
-    );
+    const recoveryCall = execProtocolRawStream.mock.calls[2] as [
+      Uint8Array,
+      { syncToFs?: boolean },
+    ];
+    expect(Buffer.from(recoveryCall[0]).equals(BARE_SYNC_MESSAGE)).toBe(true);
+    expect(recoveryCall[1].syncToFs).toBe(false);
+
+    // The delivered idle RFQ releases ownership through the normal path and
+    // nothing is left suspended.
+    const other = Symbol('other-bridge');
+    let otherResolved = false;
+    void lock.acquire(other).then(() => {
+      otherResolved = true;
+    });
+    await settle();
+    expect(otherResolved).toBe(true);
+    expect(duplex.hasSuspendedPortal()).toBe(false);
 
     duplex.destroy();
+  });
+
+  it.each([
+    {
+      shape: 'premature RFQ before the error (PGlite <= 0.5.10)',
+      frames: [RFQ_IDLE_MESSAGE, ERROR_RESPONSE_MESSAGE],
+    },
+    {
+      shape: 'trailing RFQ after the error',
+      frames: [ERROR_RESPONSE_MESSAGE, RFQ_IDLE_MESSAGE],
+    },
+  ])(
+    'forwards only the recovery Sync RFQ for a legacy error flush batch ($shape)',
+    async ({ frames }) => {
+      const { pglite, execProtocolRawStream } = createScriptedPGlite([
+        [RFQ_IDLE_MESSAGE],
+        frames,
+        [RFQ_IDLE_MESSAGE], // recovery Sync response — forwarded to pg
+      ]);
+      const duplex = new PGliteDuplex(pglite);
+      duplex.on('error', () => {});
+      const received = collect(duplex);
+
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await settle();
+      const startupLen = Buffer.concat(received).length;
+
+      await expect(writeAndAwait(duplex, flushBatch())).resolves.toBeUndefined();
+      await settle();
+
+      // Flush-boundary never forwards a PGlite RFQ; pg sees exactly one RFQ,
+      // the recovery Sync's, whatever shape the backend produced.
+      const batchResponse = Buffer.concat(received).subarray(startupLen);
+      expect(batchResponse.equals(Buffer.concat([ERROR_RESPONSE_MESSAGE, RFQ_IDLE_MESSAGE]))).toBe(
+        true,
+      );
+
+      expect(execProtocolRawStream).toHaveBeenCalledTimes(3);
+      const recoveryFrame = execProtocolRawStream.mock.calls[2]?.[0] as Uint8Array;
+      expect(Buffer.from(recoveryFrame).equals(BARE_SYNC_MESSAGE)).toBe(true);
+
+      duplex.destroy();
+    },
+  );
+
+  it('records the errored flush batch as failed although the recovery Sync succeeded', async () => {
+    const { pglite } = createScriptedPGlite([
+      [RFQ_IDLE_MESSAGE],
+      [ERROR_RESPONSE_MESSAGE],
+      [RFQ_IDLE_MESSAGE], // recovery Sync response — forwarded to pg
+    ]);
+    const telemetry = createMockTelemetry();
+    const bridgeId = Symbol('bridge');
+    const duplex = new PGliteDuplex(pglite, { bridgeId, telemetry });
+    duplex.on('error', () => {});
+
+    const queryEvents: Array<{ bridgeId: symbol; succeeded: boolean }> = [];
+    const onQuery = (msg: unknown) =>
+      queryEvents.push(msg as { bridgeId: symbol; succeeded: boolean });
+    queryChannel.subscribe(onQuery);
+
+    try {
+      await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
+      await expect(writeAndAwait(duplex, flushBatch())).resolves.toBeUndefined();
+      await settle();
+
+      // The recovery Sync's clean response must not mask the batch's error.
+      const [, succeeded] = vi.mocked(telemetry.recordQuery).mock.calls.at(-1) as [number, boolean];
+      expect(succeeded).toBe(false);
+
+      const queryEvent = queryEvents.at(-1);
+      expect(queryEvent?.bridgeId).toBe(bridgeId);
+      expect(queryEvent?.succeeded).toBe(false);
+    } finally {
+      queryChannel.unsubscribe(onQuery);
+      duplex.destroy();
+    }
   });
 
   it('tears the stream down when the recovery Sync itself fails', async () => {
@@ -1854,8 +1945,7 @@ describe('PGliteDuplex flush portal boundary', () => {
           return;
         }
         if (call === 2) {
-          options.onRawData(ERROR_RESPONSE_MESSAGE);
-          options.onRawData(RFQ_IDLE_MESSAGE);
+          options.onRawData(ERROR_RESPONSE_MESSAGE); // no RFQ (PGlite >= 0.5.11)
           return;
         }
         throw new Error('recovery failed');
@@ -1870,18 +1960,16 @@ describe('PGliteDuplex flush portal boundary', () => {
     await settle();
     const startupLen = Buffer.concat(received).length;
 
-    // pg already received the error RFQ and considers the connection
-    // recovered; an unrecoverable backend would silently ignore every later
-    // query. The duplex must destroy itself so pg surfaces a connection
-    // error instead.
+    // Without the recovery Sync's RFQ pg has no way to recover this
+    // connection and an unrecovered backend would silently ignore every
+    // later query. The duplex must destroy itself so pg surfaces a
+    // connection error instead.
     const writeError = await writeAndAwait(duplex, flushBatch());
     expect(writeError).toBeInstanceOf(Error);
     await duplex.onClose;
 
     const batchResponse = Buffer.concat(received).subarray(startupLen);
-    expect(batchResponse.equals(Buffer.concat([ERROR_RESPONSE_MESSAGE, RFQ_IDLE_MESSAGE]))).toBe(
-      true,
-    );
+    expect(batchResponse.equals(ERROR_RESPONSE_MESSAGE)).toBe(true);
     expect(execProtocolRawStream).toHaveBeenCalledTimes(3);
     expect(duplex.destroyed).toBe(true);
   });
@@ -1889,8 +1977,8 @@ describe('PGliteDuplex flush portal boundary', () => {
   it('does not leak a stale error into the next flush-boundary batch (errSeen reset)', async () => {
     const { pglite } = createScriptedPGlite([
       [RFQ_IDLE_MESSAGE],
-      [ERROR_RESPONSE_MESSAGE, RFQ_IDLE_MESSAGE],
-      [RFQ_IDLE_MESSAGE], // recovery Sync response — dropped by the bridge
+      [ERROR_RESPONSE_MESSAGE],
+      [RFQ_IDLE_MESSAGE], // recovery Sync response — forwarded to pg
       [DATA_ROW_MESSAGE, RFQ_IDLE_MESSAGE],
     ]);
     const duplex = new PGliteDuplex(pglite);
@@ -1989,7 +2077,8 @@ describe('PGliteDuplex flush portal boundary', () => {
     const { pglite } = createScriptedPGlite([
       [RFQ_IDLE_MESSAGE],
       [DATA_ROW_MESSAGE, PORTAL_SUSPENDED_MESSAGE],
-      [ERROR_RESPONSE_MESSAGE],
+      [ERROR_RESPONSE_MESSAGE], // PGlite >= 0.5.11: error with no RFQ
+      [RFQ_IDLE_MESSAGE], // recovery Sync response — forwarded to pg
     ]);
     const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
     duplex.on('error', () => {});
@@ -2005,10 +2094,9 @@ describe('PGliteDuplex flush portal boundary', () => {
     await settle();
     expect(otherResolved).toBe(false);
 
-    // Mock-only shape (no observed PGlite emits it): error with no RFQ in
-    // the same call. Outside a real transaction (last RFQ status was 'I'),
-    // the duplex must drop its hold so waiters aren't stuck behind a
-    // wedged connection.
+    // Outside a real transaction the recovery Sync answers idle; that
+    // delivered RFQ drops the hold so waiters aren't stuck behind a wedged
+    // connection.
     await expect(writeAndAwait(duplex, continuationBatch())).resolves.toBeUndefined();
     await settle();
     expect(otherResolved).toBe(true);
@@ -2016,19 +2104,23 @@ describe('PGliteDuplex flush portal boundary', () => {
     duplex.destroy();
   });
 
-  it('keeps transaction ownership when a flush batch errors without RFQ mid-transaction', async () => {
+  it('delivers the recovery Sync RFQ(E) and keeps ownership when a flush batch errors mid-transaction', async () => {
     const lock = new SessionLock();
     const { pglite } = createScriptedPGlite([
       [RFQ_IDLE_MESSAGE],
-      [RFQ_IN_TRANSACTION_MESSAGE],
-      [ERROR_RESPONSE_MESSAGE], // mock-only: error with no RFQ in the call
-      [RFQ_IDLE_MESSAGE], // recovery Sync response — dropped by the bridge
+      [RFQ_IN_TRANSACTION_MESSAGE], // BEGIN
+      [ERROR_RESPONSE_MESSAGE], // PGlite >= 0.5.11: error with no RFQ
+      [RFQ_FAILED_TX_MESSAGE], // recovery Sync response — forwarded to pg
+      [RFQ_IDLE_MESSAGE], // ROLLBACK
     ]);
     const duplex = new PGliteDuplex(pglite, { sessionLock: lock });
     duplex.on('error', () => {});
+    const received = collect(duplex);
 
     await expect(writeAndAwait(duplex, startupBytes())).resolves.toBeUndefined();
     await expect(writeAndAwait(duplex, simpleQuery('BEGIN'))).resolves.toBeUndefined();
+    await settle();
+    const beforeBatchLen = Buffer.concat(received).length;
 
     const other = Symbol('other-bridge');
     let otherResolved = false;
@@ -2036,12 +2128,24 @@ describe('PGliteDuplex flush portal boundary', () => {
       otherResolved = true;
     });
 
-    // Errored flush batch without RFQ inside an open transaction: the
-    // wedged-portal release guard must NOT strip transaction ownership —
-    // the transaction still needs its COMMIT/ROLLBACK.
     await expect(writeAndAwait(duplex, flushBatch())).resolves.toBeUndefined();
     await settle();
+
+    // pg sees the error followed by the failed-transaction RFQ.
+    const batchResponse = Buffer.concat(received).subarray(beforeBatchLen);
+    expect(
+      batchResponse.equals(Buffer.concat([ERROR_RESPONSE_MESSAGE, RFQ_FAILED_TX_MESSAGE])),
+    ).toBe(true);
+
+    // Status 'E' keeps transaction ownership — the transaction still needs
+    // its ROLLBACK — and the errored portal is not suspended.
     expect(otherResolved).toBe(false);
+    expect(duplex.hasSuspendedPortal()).toBe(false);
+
+    // The ROLLBACK's idle RFQ releases ownership to the waiter.
+    await expect(writeAndAwait(duplex, simpleQuery('ROLLBACK'))).resolves.toBeUndefined();
+    await settle();
+    expect(otherResolved).toBe(true);
 
     duplex.destroy();
     await duplex.onClose;
@@ -3972,8 +4076,9 @@ describe('PGliteDuplex telemetry & recovery mutation-hardening', () => {
         options.onRawData(RFQ_IDLE); // startup → 'I'
       else if (call === 2)
         options.onRawData(RFQ_FAILED); // set lastSeenRfqStatus = 'E'
-      else if (call === 3) options.onRawData(ERROR_RESPONSE); // flush batch: error, NO RFQ
-      // call 4 (recovery Sync) → discarded by recoverySync's own onRawData
+      else if (call === 3)
+        options.onRawData(ERROR_RESPONSE); // flush batch: error, NO RFQ
+      else if (call === 4) options.onRawData(RFQ_FAILED); // recovery Sync: still failed
     });
     const pglite = createMockPGlite({ execProtocolRawStream });
     const lock = new SessionLock();
@@ -3992,9 +4097,9 @@ describe('PGliteDuplex telemetry & recovery mutation-hardening', () => {
     await settle();
     expect(otherResolved).toBe(false);
 
-    // Errored flush batch, no RFQ, pre-batch status 'E': the wedged-portal guard
-    // must NOT release — status FAILED still needs its ROLLBACK. The mutant
-    // (lastSeenRfqStatus !== FAILED forced true) would release and grant the waiter.
+    // Errored flush batch, no RFQ, pre-batch status 'E': the recovery Sync
+    // answers 'E' again, so ownership must NOT be released — status FAILED
+    // still needs its ROLLBACK.
     await expect(writeAndAwait(duplex, flushBatch)).resolves.toBeUndefined();
     await settle();
     expect(otherResolved).toBe(false);

@@ -49,6 +49,14 @@ including kysely's `.stream()` and everything else built on
   one would kill the WASM instance), and extended-protocol COPY is not
   supported — `pg-copy-streams` and psql-style clients use the simple
   protocol, which is the supported path.
+- **Errors mid-portal recover on every supported PGlite build.** A
+  rows-mode query (`rows: N`, `pg-cursor`, `pg-query-stream`) that fails
+  after a portal suspension leaves the backend waiting for a `Sync` that
+  pg's own `Query` never sends. The bridge sends that recovery `Sync`
+  itself and forwards its `ReadyForQuery`, so pg sees the stock
+  `ErrorResponse … ReadyForQuery` sequence whether or not the PGlite
+  build appends a premature `ReadyForQuery` of its own (builds before
+  0.5.11 did; 0.5.11 and later do not).
 
 ## Running and extending
 

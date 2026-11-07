@@ -209,7 +209,7 @@
     "@changesets/cli": "^3.0.2",
     "@commitlint/cli": "^21.2.2",
     "@commitlint/config-conventional": "^21.2.2",
-    "@electric-sql/pglite": "^0.5.8",
+    "@electric-sql/pglite": "^0.5.15",
     "@jest/globals": "^30.5.1",
     "@mikro-orm/core": "^7.1.15",
     "@mikro-orm/pglite": "^7.1.15",
