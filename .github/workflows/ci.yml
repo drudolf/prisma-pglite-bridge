@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pglite: ['0.5.9', '0.5.11']
+        pglite: ["0.5.9", "0.5.11"]
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
