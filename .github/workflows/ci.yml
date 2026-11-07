@@ -28,6 +28,30 @@ jobs:
       - run: pnpm check:pack
       - run: pnpm check:pool-purity
 
+  pglite-compat:
+    # The peer range is ^0.4.0 || ^0.5.0 while `check` runs only the devDep
+    # version. PGlite builds before 0.5.11 append a premature ReadyForQuery
+    # after an extended-query error; 0.5.11+ append none. Run the
+    # protocol-sensitive suites against the last build of each shape.
+    # (0.5.10 is skipped on purpose: its close() waits for in-flight work
+    # and hangs pool.end() on a pool-owned instance; fixed in 0.5.11.)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pglite: ['0.5.9', '0.5.11']
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm add -D "@electric-sql/pglite@${{ matrix.pglite }}"
+      - run: pnpm test:unit
+      - run: pnpm test:integration
+
   pool-smoke:
     # Proves the `./pool` entry works with NO @prisma/* package installed:
     # packs the tarball, installs it with peers auto-install off and only
