@@ -89,7 +89,7 @@ importers:
         version: 18.0.9
       drizzle-orm:
         specifier: ^0.45.2
-        version: 0.45.2(@electric-sql/pglite@0.5.15)(@opentelemetry/api@1.10.0)(@prisma/client@7.10.1(prisma@7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2))(typescript@7.0.2))(@types/pg@8.23.1)(knex@3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.0(pg@8.23.0))(pg@8.23.0))(kysely@0.29.5)(mysql2@3.24.4(@types/node@26.6.6))(pg@8.23.0)(postgres@3.4.7)(prisma@7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2))
+        version: 0.45.2(@electric-sql/pglite@0.5.15)(@opentelemetry/api@1.10.0)(@prisma/client@7.10.1(prisma@7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2))(typescript@7.0.2))(@types/pg@8.23.1)(knex@3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.1(pg@8.23.1))(pg@8.23.1))(kysely@0.29.5)(mysql2@3.24.4(@types/node@26.6.6))(pg@8.23.1)(postgres@3.4.7)(prisma@7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2))
       embedded-postgres:
         specifier: 18.4.0-beta.17
         version: 18.4.0-beta.17
@@ -104,10 +104,10 @@ importers:
         version: 9.1.7
       knex:
         specifier: ^3.3.0
-        version: 3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.0(pg@8.23.0))(pg@8.23.0)
+        version: 3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.1(pg@8.23.1))(pg@8.23.1)
       knex-pglite:
         specifier: ^0.14.0
-        version: 0.14.0(@electric-sql/pglite@0.5.15)(knex@3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.0(pg@8.23.0))(pg@8.23.0))
+        version: 0.14.0(@electric-sql/pglite@0.5.15)(knex@3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.1(pg@8.23.1))(pg@8.23.1))
       knip:
         specifier: ^6.44.1
         version: 6.44.1
@@ -122,10 +122,10 @@ importers:
         version: 0.23.2
       node-pg-migrate:
         specifier: ^9.0.0
-        version: 9.0.0(@types/pg@8.23.1)(pg@8.23.0)
+        version: 9.0.0(@types/pg@8.23.1)(pg@8.23.1)
       pg:
-        specifier: ^8.23.0
-        version: 8.23.0
+        specifier: ^8.23.1
+        version: 8.23.1
       pg-boss:
         specifier: ^12.38.1
         version: 12.38.1(@opentelemetry/api@1.10.0)
@@ -133,11 +133,11 @@ importers:
         specifier: ^7.0.0
         version: 7.0.0
       pg-cursor:
-        specifier: ^2.22.0
-        version: 2.22.0(pg@8.23.0)
+        specifier: ^2.22.1
+        version: 2.22.1(pg@8.23.1)
       pg-query-stream:
-        specifier: ^4.17.0
-        version: 4.17.0(pg@8.23.0)
+        specifier: ^4.17.1
+        version: 4.17.1(pg@8.23.1)
       pglite-prisma-adapter:
         specifier: ^0.7.2
         version: 0.7.2(@electric-sql/pglite@0.5.15)(@prisma/client@7.10.1(prisma@7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2))(typescript@7.0.2))
@@ -152,7 +152,7 @@ importers:
         version: 4.23.15
       typeorm:
         specifier: ^1.1.2
-        version: 1.1.2(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.0(pg@8.23.0))(pg@8.23.0)
+        version: 1.1.2(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.1(pg@8.23.1))(pg@8.23.1)
       typeorm-pglite:
         specifier: ^0.3.4
         version: 0.3.4(@electric-sql/pglite@0.5.15)
@@ -3932,22 +3932,17 @@ packages:
     peerDependencies:
       '@opentelemetry/api': ^1.9.0
 
-  pg-cloudflare@1.4.0:
-    resolution: {integrity: sha512-Vo7z/6rrQYxpNRylp4Tlob2elzbh+N/MOQbxFVWCxS7oEx6jF53GTJFxK2WWpKuBRkmiin4Mt+xofFDjx09R0A==}
+  pg-cloudflare@1.4.1:
+    resolution: {integrity: sha512-6PQbsFWZcp9EmJEwy5cGQ2La+AMWpP46lgbb8X+U/XsHIUweYDNCpeuKck5RxL2MdVFi7krbbEi5nX4Zh7JhrQ==}
 
-  pg-connection-string@2.14.0:
-    resolution: {integrity: sha512-XwWDGcLRGCXAR8F/AM5bG7Q+A3Wm2s6QeEjlOKZLlH3UYcguiqCWKyWXVag5TLTIjR7oOJUY8kcADaZgWPyLeg==}
+  pg-connection-string@2.14.1:
+    resolution: {integrity: sha512-qR3kGNPBLpCNtz0evbKA0Y/MRFXwSSdT+pTJvYp/bXTcReZbvX1kzF0IyTc1QnxqF7AZbOeBhNL8R5mYQZV/MA==}
 
   pg-connection-string@2.6.2:
     resolution: {integrity: sha512-ch6OwaeaPYcova4kKZ15sbJ2hKb/VP48ZD2gE7i1J+L4MspCtBMAx8nMgz7bksc7IojCIIWuEhHibSMFH8m8oA==}
 
   pg-copy-streams@7.0.0:
     resolution: {integrity: sha512-zBvnY6wtaBRE2ae2xXWOOGMaNVPkXh1vhypAkNSKgMdciJeTyIQAHZaEeRAxUjs/p1El5jgzYmwG5u871Zj3dQ==}
-
-  pg-cursor@2.22.0:
-    resolution: {integrity: sha512-knzXLKqarTjOvb3qDSW0JiGsazmxwEKXrqHfWRte7XUsOYccQRafn3BLnQobWwInkzFJSyOej8y8cQRh2z3kGw==}
-    peerDependencies:
-      pg: ^8.23.0
 
   pg-cursor@2.22.1:
     resolution: {integrity: sha512-X10ldv3wwBONQkOSwgWEbaEITMGLd92V2Zd+xsFPhDt3nhhU3hpAT08SERBChnIFmomczLax6lKXLJrHPPXfxA==}
@@ -3966,8 +3961,11 @@ packages:
   pg-protocol@1.16.0:
     resolution: {integrity: sha512-sILXutLVjCLjcDuOmvhX5e2Z4cS5qG/6Bu3VkpFwdf/633ElGLpEh9bgmuI5I4sqKqkifQiGyiCcx1HdtrK7tg==}
 
-  pg-query-stream@4.17.0:
-    resolution: {integrity: sha512-69bug2CH/AJi1BN8r08eZ8tAGdbZZVp9kB0FG9OC2VkJPHIyj7d3Nk9V8tmporO60wqeWvhn7qtQ5oNimwlFug==}
+  pg-protocol@1.16.1:
+    resolution: {integrity: sha512-p9VOFMiHB/ZbJATetbg+99PxssTVSQRnyuPSQ67mN1+1KBOjZaZ83ZQzltnxPhJwSsC3nwVjJ10DVJlerbFzLg==}
+
+  pg-query-stream@4.17.1:
+    resolution: {integrity: sha512-XZ6wenflIOUiT1Qss+cNNXfrm1XGQfZt/GZKagUq7ia/sIfDHiYmPUK0EehPoFu/EakvyutK/z9eah+QZhPoQQ==}
     peerDependencies:
       pg: ^8.23.0
 
@@ -3975,8 +3973,8 @@ packages:
     resolution: {integrity: sha512-qTAAlrEsl8s4OiEQY69wDvcMIdQN6wdz5ojQiOy6YRMuynxenON0O5oCpJI6lshc6scgAY8qvJ2On/p+CXY0GA==}
     engines: {node: '>=4'}
 
-  pg@8.23.0:
-    resolution: {integrity: sha512-Ip2EQCngowJLGOfCwkFhPXU7/ljlhn6Rxlmy4XYfL2Y+vyRM59+8uR2xqRWKdYmbXmxCFOAmKxBuSUCdF34qLg==}
+  pg@8.23.1:
+    resolution: {integrity: sha512-aL96AHANtWjPLDOLqnhx+ngp9+UK7ETEU8VJrDCGvsSSi/mGLcWYsS6Herg7lmaBJe4uwrfqsa7gTEFaSizDoQ==}
     engines: {node: '>= 16.0.0'}
     peerDependencies:
       pg-native: '>=3.0.1'
@@ -5925,8 +5923,8 @@ snapshots:
       '@mikro-orm/core': 7.2.7
       '@mikro-orm/sql': 7.2.7(@mikro-orm/core@7.2.7)
       kysely: 0.29.8
-      pg: 8.23.0
-      pg-cursor: 2.22.1(pg@8.23.0)
+      pg: 8.23.1
+      pg-cursor: 2.22.1(pg@8.23.1)
       postgres-array: 3.0.4
       postgres-date: 2.1.0
       postgres-interval: 4.1.0
@@ -6157,7 +6155,7 @@ snapshots:
     dependencies:
       '@prisma/driver-adapter-utils': 7.10.1
       '@types/pg': 8.23.1
-      pg: 8.23.0
+      pg: 8.23.1
       postgres-array: 3.0.4
     transitivePeerDependencies:
       - pg-native
@@ -7212,16 +7210,16 @@ snapshots:
 
   dotenv@18.0.9: {}
 
-  drizzle-orm@0.45.2(@electric-sql/pglite@0.5.15)(@opentelemetry/api@1.10.0)(@prisma/client@7.10.1(prisma@7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2))(typescript@7.0.2))(@types/pg@8.23.1)(knex@3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.0(pg@8.23.0))(pg@8.23.0))(kysely@0.29.5)(mysql2@3.24.4(@types/node@26.6.6))(pg@8.23.0)(postgres@3.4.7)(prisma@7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2)):
+  drizzle-orm@0.45.2(@electric-sql/pglite@0.5.15)(@opentelemetry/api@1.10.0)(@prisma/client@7.10.1(prisma@7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2))(typescript@7.0.2))(@types/pg@8.23.1)(knex@3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.1(pg@8.23.1))(pg@8.23.1))(kysely@0.29.5)(mysql2@3.24.4(@types/node@26.6.6))(pg@8.23.1)(postgres@3.4.7)(prisma@7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2)):
     optionalDependencies:
       '@electric-sql/pglite': 0.5.15
       '@opentelemetry/api': 1.10.0
       '@prisma/client': 7.10.1(prisma@7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2))(typescript@7.0.2)
       '@types/pg': 8.23.1
-      knex: 3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.0(pg@8.23.0))(pg@8.23.0)
+      knex: 3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.1(pg@8.23.1))(pg@8.23.1)
       kysely: 0.29.5
       mysql2: 3.24.4(@types/node@26.6.6)
-      pg: 8.23.0
+      pg: 8.23.1
       postgres: 3.4.7
       prisma: 7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2)
 
@@ -7249,7 +7247,7 @@ snapshots:
   embedded-postgres@18.4.0-beta.17:
     dependencies:
       async-exit-hook: 2.0.1
-      pg: 8.23.0
+      pg: 8.23.1
     optionalDependencies:
       '@embedded-postgres/darwin-arm64': 18.4.0-beta.17
       '@embedded-postgres/darwin-x64': 18.4.0-beta.17
@@ -7780,12 +7778,12 @@ snapshots:
     dependencies:
       commander: 8.3.0
 
-  knex-pglite@0.14.0(@electric-sql/pglite@0.5.15)(knex@3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.0(pg@8.23.0))(pg@8.23.0)):
+  knex-pglite@0.14.0(@electric-sql/pglite@0.5.15)(knex@3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.1(pg@8.23.1))(pg@8.23.1)):
     dependencies:
       '@electric-sql/pglite': 0.5.15
-      knex: 3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.0(pg@8.23.0))(pg@8.23.0)
+      knex: 3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.1(pg@8.23.1))(pg@8.23.1)
 
-  knex@3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.0(pg@8.23.0))(pg@8.23.0):
+  knex@3.3.0(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.1(pg@8.23.1))(pg@8.23.1):
     dependencies:
       colorette: 2.0.19
       commander: 10.0.1
@@ -7803,8 +7801,8 @@ snapshots:
       tildify: 2.0.0
     optionalDependencies:
       mysql2: 3.24.4(@types/node@26.6.6)
-      pg: 8.23.0
-      pg-query-stream: 4.17.0(pg@8.23.0)
+      pg: 8.23.1
+      pg-query-stream: 4.17.1(pg@8.23.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -8232,11 +8230,11 @@ snapshots:
 
   node-int64@0.4.0: {}
 
-  node-pg-migrate@9.0.0(@types/pg@8.23.1)(pg@8.23.0):
+  node-pg-migrate@9.0.0(@types/pg@8.23.1)(pg@8.23.1):
     dependencies:
       glob: 13.0.6
       jiti: 2.7.0
-      pg: 8.23.0
+      pg: 8.23.1
       yargs: 18.0.0
     optionalDependencies:
       '@types/pg': 8.23.1
@@ -8381,41 +8379,39 @@ snapshots:
     dependencies:
       '@opentelemetry/api': 1.10.0
       cron-parser: 5.10.4
-      pg: 8.23.0
+      pg: 8.23.1
       rrule-temporal: 2.2.8
       serialize-error: 13.1.0
     transitivePeerDependencies:
       - pg-native
 
-  pg-cloudflare@1.4.0:
+  pg-cloudflare@1.4.1:
     optional: true
 
-  pg-connection-string@2.14.0: {}
+  pg-connection-string@2.14.1: {}
 
   pg-connection-string@2.6.2: {}
 
   pg-copy-streams@7.0.0: {}
 
-  pg-cursor@2.22.0(pg@8.23.0):
+  pg-cursor@2.22.1(pg@8.23.1):
     dependencies:
-      pg: 8.23.0
-
-  pg-cursor@2.22.1(pg@8.23.0):
-    dependencies:
-      pg: 8.23.0
+      pg: 8.23.1
 
   pg-int8@1.0.1: {}
 
-  pg-pool@3.14.0(pg@8.23.0):
+  pg-pool@3.14.0(pg@8.23.1):
     dependencies:
-      pg: 8.23.0
+      pg: 8.23.1
 
   pg-protocol@1.16.0: {}
 
-  pg-query-stream@4.17.0(pg@8.23.0):
+  pg-protocol@1.16.1: {}
+
+  pg-query-stream@4.17.1(pg@8.23.1):
     dependencies:
-      pg: 8.23.0
-      pg-cursor: 2.22.0(pg@8.23.0)
+      pg: 8.23.1
+      pg-cursor: 2.22.1(pg@8.23.1)
 
   pg-types@2.2.0:
     dependencies:
@@ -8425,15 +8421,15 @@ snapshots:
       postgres-date: 1.0.7
       postgres-interval: 1.2.0
 
-  pg@8.23.0:
+  pg@8.23.1:
     dependencies:
-      pg-connection-string: 2.14.0
-      pg-pool: 3.14.0(pg@8.23.0)
-      pg-protocol: 1.16.0
+      pg-connection-string: 2.14.1
+      pg-pool: 3.14.0(pg@8.23.1)
+      pg-protocol: 1.16.1
       pg-types: 2.2.0
       pgpass: 1.0.5
     optionalDependencies:
-      pg-cloudflare: 1.4.0
+      pg-cloudflare: 1.4.1
 
   pglite-prisma-adapter@0.7.2(@electric-sql/pglite@0.5.15)(@prisma/client@7.10.1(prisma@7.10.1(@types/node@26.6.6)(@types/react@19.2.18)(magicast@0.5.5)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@7.0.2))(typescript@7.0.2)):
     dependencies:
@@ -8903,7 +8899,7 @@ snapshots:
     dependencies:
       '@electric-sql/pglite': 0.5.15
 
-  typeorm@1.1.2(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.0(pg@8.23.0))(pg@8.23.0):
+  typeorm@1.1.2(mysql2@3.24.4(@types/node@26.6.6))(pg-query-stream@4.17.1(pg@8.23.1))(pg@8.23.1):
     dependencies:
       '@sqltools/formatter': 1.2.5
       ansis: 4.5.0
@@ -8917,8 +8913,8 @@ snapshots:
       yargs: 18.2.0
     optionalDependencies:
       mysql2: 3.24.4(@types/node@26.6.6)
-      pg: 8.23.0
-      pg-query-stream: 4.17.0(pg@8.23.0)
+      pg: 8.23.1
+      pg-query-stream: 4.17.1(pg@8.23.1)
     transitivePeerDependencies:
       - babel-plugin-macros
       - supports-color

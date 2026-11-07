@@ -15,13 +15,13 @@ import { PgBridgeError } from '../errors.ts';
 
 /**
  * Augment pg's published types with the internal surface the bridge drives.
- * `@types/pg@8.23.1` (the latest DefinitelyTyped ships; runtime is pg@8.23.0)
+ * `@types/pg@8.23.1` (the latest DefinitelyTyped ships; runtime is pg@8.23.1)
  * omits `parsedStatements`, `sendCopyFail`, `_getActiveQuery`,
  * `connectionParameters`, and the legacy `activeQuery`/`queryQueue` fields
  * outright, and types `parse`/`bind`/`describe`/`execute`/`close` only for the
  * two-arg internal caller — mistyping `binary`/`rows` as strings. These are not
  * pg's public contract at any version; the declarations below assert the real
- * pg@8.23.0 runtime shape that the `pg seam contract` tests verify. Overloads
+ * pg@8.23.1 runtime shape that the `pg seam contract` tests verify. Overloads
  * (not replacements) — the stock two-arg signatures stay intact.
  */
 declare module 'pg' {

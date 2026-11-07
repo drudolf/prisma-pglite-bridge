@@ -2576,7 +2576,7 @@ describe('PgBridgeClient — call-time query-config snapshot (promise forms)', (
         // parameterized + extended + typed + row-limited + array rowMode +
         // timeout — so the traced path exercises the common option surface.
         // Still one executed shape, not proof over every upstream branch.
-        const target: Record<string, unknown> = {
+        const fields: Record<string, unknown> = {
           text: 'SELECT $1::int AS n',
           values: [1],
           rows: 1,
@@ -2588,6 +2588,33 @@ describe('PgBridgeClient — call-time query-config snapshot (promise forms)', (
           rowMode: 'array',
           query_timeout: 30_000,
         };
+        // Three tracing layers, because pg >= 8.23.1 reads the config twice
+        // over: `Client.query` probes `submit`/`query_timeout` on the object
+        // it was handed, then `normalizeQueryConfig` CLONES it
+        // (`Object.create(proto)` + `Object.getOwnPropertyDescriptors`) and
+        // the `Query` constructor reads every field from the clone. Accessor
+        // properties survive the descriptor copy, so getters on the target
+        // see the clone's present-key reads; the clone keeps the target's
+        // prototype, so a recording Proxy there sees its missing-key reads
+        // (`callback` on this callback-free config); the outer Proxy sees
+        // pg's probes on the original object.
+        const recordingPrototype = new Proxy(Object.prototype, {
+          get(_t, prop) {
+            accesses.push(prop);
+            return undefined;
+          },
+        });
+        const target: Record<string, unknown> = Object.create(recordingPrototype);
+        for (const [key, value] of Object.entries(fields)) {
+          Object.defineProperty(target, key, {
+            enumerable: true,
+            configurable: true,
+            get: () => {
+              accesses.push(key);
+              return value;
+            },
+          });
+        }
         const proxy = new Proxy(target, {
           get(t, prop, receiver) {
             accesses.push(prop);
