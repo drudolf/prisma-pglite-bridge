@@ -52,6 +52,10 @@ jobs:
       - run: pnpm add -D "@electric-sql/pglite@${{ matrix.pglite }}"
       - run: pnpm test:unit
       - run: pnpm test:integration
+      # The CLI suite runs against the devDep (PostgreSQL 19) in `check`; keep
+      # the PostgreSQL 18 CLI path covered on the last 0.5.x build only.
+      - if: matrix.pglite == '0.5.17'
+        run: pnpm test:cli-compat
 
   pool-smoke:
     # Proves the `./pool` entry works with NO @prisma/* package installed:
