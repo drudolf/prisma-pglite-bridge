@@ -1,5 +1,48 @@
 # prisma-pglite-bridge
 
+## 1.10.0
+
+### Minor Changes
+
+- 612a395: Accept `@electric-sql/pglite` 0.6.x (PostgreSQL 19) in the peer range. The full suite runs against 0.6.0 unchanged; CI keeps exercising the last 0.5.x (PostgreSQL 18) build alongside the protocol-shape pins.
+
+### Patch Changes
+
+- 5e83df5: Build snapshot table metadata directly in SQL and batch table copies into one
+  protocol call. Snapshot creation now uses a bounded number of PGlite API calls
+  regardless of table count, while retaining atomic replacement, identifier
+  quoting, and compatibility with the existing snapshot layout.
+- 2dd6df7: Reduce overhead for large SQL statements by skipping COPY classification when
+  the required keywords are absent, searching standard quoted literals directly,
+  and limiting query-trail case conversion to the statement prefix. Keep
+  query-trail overflow constant-time at large capacities
+  while preserving entry order and pending-query settlement.
+- f08e898: Periodically checkpoint PGlite before snapshot/reset operations after 64 MiB
+  of WAL progress. This reclaims log files that otherwise accumulate in memory
+  during long test runs. The probe shares existing database calls and leaves
+  callers without checkpoint privileges unchanged. Checkpoint failures happen
+  before snapshot replacement or data restoration, preserving the prior state.
+- 07114da: The package no longer ships sourcemaps (the build is unminified), halving the tarball from ~525 KB to ~260 KB.
+- 476b1b5: Rows-mode queries (`rows: N`, pg-cursor, pg-query-stream) that error
+  mid-portal no longer wedge the connection on PGlite 0.5.11 and later. The
+  bridge now forwards the ReadyForQuery of its own recovery Sync instead of
+  relying on the premature one older PGlite builds emitted after an error, so
+  pg sees the same `ErrorResponse … ReadyForQuery` sequence on every supported
+  PGlite version.
+- 19f382e: Speed up snapshot resets with direct column-catalog lookups, a single batched
+  restore transaction, and set-based sequence restoration. Snapshot partitioned
+  and inherited tables without duplicating descendant rows, and preserve sequence
+  `is_called` state, including never-used sequences and databases with only
+  standalone sequences. Persisted snapshots from earlier versions remain readable.
+- a6472a3: `PgBridgePoolOptions` no longer exposes the internal `onTeardownCreated` hook, which the pool ignored.
+- 3f8c9c5: `createPoolContext`, `setupPGlitePool`, `createPoolTest` and `loadPoolTemplate` now validate `pool.max` before creating or loading a PGlite, so an invalid `max` no longer leaks an orphaned WASM instance.
+- 663bd32: Pin `@prisma/schema-engine-wasm` to the engine build shipped with Prisma
+  7.10.1 (`8.1.0-1.d1b3f377`), so `pushSchema` uses the same schema engine
+  as the `prisma` CLI of the matching release.
+- 757bc2d: Use PostgreSQL's checkpoint state for snapshot/reset WAL maintenance so manual
+  and peer checkpoints are observed without per-manager bookkeeping. Batch reset
+  metadata reads to offset the control-file probe cost and reduce reset overhead.
+
 ## 1.9.0
 
 ### Minor Changes
