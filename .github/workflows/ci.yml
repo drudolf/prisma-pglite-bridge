@@ -29,17 +29,18 @@ jobs:
       - run: pnpm check:pool-purity
 
   pglite-compat:
-    # The peer range is ^0.4.0 || ^0.5.0 while `check` runs only the devDep
-    # version. PGlite builds before 0.5.11 append a premature ReadyForQuery
-    # after an extended-query error; 0.5.11+ append none. Run the
-    # protocol-sensitive suites against the last build of each shape.
+    # The peer range is ^0.4.0 || ^0.5.0 || ^0.6.0 while `check` runs only the
+    # devDep version (0.6.x = PostgreSQL 19). PGlite builds before 0.5.11 append
+    # a premature ReadyForQuery after an extended-query error; 0.5.11+ append
+    # none. Run the protocol-sensitive suites against the last build of each
+    # shape, plus the last 0.5.x (PostgreSQL 18) line.
     # (0.5.10 is skipped on purpose: its close() waits for in-flight work
     # and hangs pool.end() on a pool-owned instance; fixed in 0.5.11.)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        pglite: ["0.5.9", "0.5.11"]
+        pglite: ["0.5.9", "0.5.11", "0.5.17"]
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6

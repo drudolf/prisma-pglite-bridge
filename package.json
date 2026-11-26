@@ -179,7 +179,7 @@
     "prepare": "husky && prisma generate"
   },
   "peerDependencies": {
-    "@electric-sql/pglite": "^0.4.0 || ^0.5.0",
+    "@electric-sql/pglite": "^0.4.0 || ^0.5.0 || ^0.6.0",
     "@jest/globals": "^29.0.0 || ^30.0.0",
     "@prisma/adapter-pg": "^7.0.0",
     "@prisma/config": "^7.0.0",
@@ -209,7 +209,7 @@
     "@changesets/cli": "^3.0.3",
     "@commitlint/cli": "^21.2.4",
     "@commitlint/config-conventional": "^21.2.4",
-    "@electric-sql/pglite": "^0.5.17",
+    "@electric-sql/pglite": "^0.6.0",
     "@jest/globals": "^30.5.2",
     "@mikro-orm/core": "^7.2.11",
     "@mikro-orm/pglite": "^7.2.11",
